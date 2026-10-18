@@ -23,7 +23,8 @@ pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphic
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
 Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media). \
 For a complete edit from one request follow help('workflow'); run check (with expect) before every render and fix what it reports. \
-The edit tool description has a cheat sheet; call help(topic) for full references (edit, effects, transitions, anim, text, templates, macros, graphics, color, render).";
+Premiere/After Effects tools and panels (rolling edits, lift/extract, paste attributes, align, keyframe assistant, cameras, Lumetri, scopes, Essential Sound) are script commands: help('tools'). \
+The edit tool description has a cheat sheet; call help(topic) for full references (edit, tools, effects, transitions, anim, 3d, text, templates, macros, graphics, color, scopes, render).";
 
 pub struct Mcp {
     pub eng: Result<Arc<Engine>, String>,
@@ -73,6 +74,8 @@ Edit: cut <id|V1> at=T | trim <id> start=+1 end=-0.5 | del <ids> [ripple] | move
 Props: set <id> pos=center scale=1.2 rot=10 opacity=50% blend=screen vol=-6dB | kf <id> scale 0:1 2:1.2@outBack | expr <id> pos 'wiggle(2,20)'\n\
 Look: fx <id> blur radius=8 | color <id> cinematic | tr <a> <b> dissolve 0.5 | tr V1 dissolve | fade <id> in=0.5 out=1 | mask <id> ellipse feather=40 | anim <id> popIn,fadeOut\n\
 Pro: title lowerthird text='Jane' sub='CEO' | captions <clip> | autocut silence <clip> | montage m1,m2 music=m3 beats=2 | reframe 9:16 | duck A1 by=A2 | parent <a> <b> | precomp <ids>\n\
+Tools (help tools): roll <id> +0.3 | lift|extract 2 5 | swap a b | paste <from> <to> fx | stagger <ids> by=0.1 | align <ids> center | ease <id> all easy | kf <id> all reverse | null | camera move=pushin layers=V2 | sound <clip> dialogue | workarea 2 8\n\
+Selectors: sel (editor selection) after:T at:T kind:text V2:after:5; time playhead. Scopes: preview scope=waveform|vectorscope|all.\n\
 Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02, 90f, end, c3.end+0.5, @marker. undo / redo alone. help('edit') lists everything.",
             "inputSchema": {"type": "object", "properties": {"script": {"type": "string", "description": "MoodCut Script lines"}}, "required": ["script"]},
             "annotations": {"title": "Edit timeline", "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
@@ -89,11 +92,12 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "preview",
-            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Small widths save tokens.",
+            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Scopes: scope=waveform|parade|vectorscope|histogram|all at t gives the Lumetri scope plus measured levels, clipping and color cast (grade by numbers). Small widths save tokens.",
             "inputSchema": {"type": "object", "properties": {
                 "t": {"type": "number"}, "times": {"type": "array", "items": {"type": "number"}}, "n": {"type": "integer", "minimum": 1, "maximum": 24},
                 "range": {"type": "string", "description": "a-b seconds"}, "width": {"type": "integer"}, "comp": {"type": "string"},
-                "media": {"type": "string"}, "offset": {"type": "integer"}
+                "media": {"type": "string"}, "offset": {"type": "integer"},
+                "scope": {"type": "string", "enum": ["waveform", "parade", "vectorscope", "histogram", "all"]}
             }},
             "annotations": {"title": "Preview frames", "readOnlyHint": true, "openWorldHint": false}
         },
@@ -108,7 +112,7 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "render",
-            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b, scale, hw=auto (GPU), wait=true to block until done.",
+            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b or work (the work area), scale, hw=auto (GPU), wait=true to block until done.",
             "inputSchema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["start", "status", "list", "cancel"]},
                 "preset": {"type": "string"}, "out": {"type": "string"}, "range": {"type": "string"}, "scale": {"type": "number"},
@@ -143,7 +147,7 @@ html: full page or body fragment (Inter built in; {{key}} = vars; library media 
         },
         {
             "name": "help",
-            "description": "MoodCut reference on demand. topic: edit time props effects audio transitions anim text shapes templates macros color expr render analyze examples fonts.",
+            "description": "MoodCut reference on demand. topic: workflow edit tools time props effects audio transitions anim 3d text shapes templates macros color scopes expr render analyze graphics examples fonts.",
             "inputSchema": {"type": "object", "properties": {"topic": {"type": "string"}}},
             "annotations": {"title": "Help", "readOnlyHint": true, "openWorldHint": false}
         }
@@ -336,7 +340,17 @@ impl Mcp {
         let detail = a["detail"].as_u64().unwrap_or(1).min(2) as u8;
         let comp = s(a, "comp").unwrap_or(active.clone());
         Ok(match what.as_str() {
-            "timeline" => format!("rev {rev}\n{}", outline::timeline(&p, &comp, &active, detail)),
+            "timeline" => {
+                let ui = eng.ui();
+                let mut head = format!("rev {rev}");
+                if let Some(t) = ui.playhead {
+                    head.push_str(&format!(" | editor: playhead={}", crate::model::time::fmt_t(t)));
+                    if !ui.selection.is_empty() {
+                        head.push_str(&format!(" selected={} (script: sel)", ui.selection.join(",")));
+                    }
+                }
+                format!("{head}\n{}", outline::timeline(&p, &comp, &active, detail))
+            }
             "item" => {
                 let id = s(a, "id").ok_or_else(|| anyhow::anyhow!("view item needs id"))?;
                 if let Some(c) = p.comp(&id) {
@@ -394,6 +408,15 @@ impl Mcp {
     fn t_preview(&self, eng: &Arc<Engine>, a: &Value) -> Value {
         let r = (|| -> anyhow::Result<(Vec<u8>, String)> {
             let (p, _, active, _) = eng.snapshot();
+            if let Some(kind) = s(a, "scope") {
+                let comp = s(a, "comp").unwrap_or_else(|| active.clone());
+                let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
+                let t = a["t"].as_f64().or(eng.ui().playhead).unwrap_or(c.duration() / 2.0).clamp(0.0, (c.duration() - c.frame_dur()).max(0.0));
+                let w = a["width"].as_u64().unwrap_or(if kind == "all" { 640 } else { 384 }).clamp(128, 1280) as u32;
+                let h = if kind == "vectorscope" { w } else { w * 9 / 16 };
+                let (pm, text) = eng.scope(Some(&c.id), t, &kind, w, h)?;
+                return Ok((encode::encode_jpeg(&pm, 82)?, format!("{kind} t={}s\n{text}", crate::model::time::fmt_t(t))));
+            }
             if let Some(spec) = s(a, "media") {
                 let ids = crate::library::select_media(&p, &spec)?;
                 let parse_range = |r: String| r.split_once('-').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)));
@@ -553,10 +576,7 @@ impl Mcp {
             }
             _ => {
                 let (t0, t1) = match s(a, "range") {
-                    Some(r) => {
-                        let (x, y) = r.split_once('-').ok_or_else(|| anyhow::anyhow!("range must be a-b"))?;
-                        (x.trim().parse()?, y.trim().parse()?)
-                    }
+                    Some(r) => eng.render_range(&s(a, "comp").unwrap_or_default(), &r)?,
                     None => (0.0, 0.0),
                 };
                 let opts = RenderOpts {
@@ -694,6 +714,23 @@ pub fn prompts() -> Vec<Prompt> {
                     brief = opt(g("brief"), "?"),
                     dur = opt(g("dur"), "4"),
                     place = g("at").map(|t| format!("Place it at {t} s on a track above the video.")).unwrap_or_else(|| "Then place it where it fits best in the edit.".into()),
+                )
+            },
+        },
+        Prompt {
+            name: "color-grade",
+            title: "Color grade with scopes",
+            desc: "Balance and grade the edit shot by shot, measuring with the Lumetri scopes.",
+            args: &[("look", "the look to aim for (natural, cinematic, warm, teal-orange, moody...)", false), ("target", "web or broadcast (broadcast keeps levels legal)", false)],
+            build: |g| {
+                format!(
+                    "Color grade my MoodCut edit like a colorist, aiming for a {look} look. Read help('scopes') and help('color'). For every \
+                     distinct shot on the main video track: preview scope=all at its middle, then correct first (exposure, whites/blacks, \
+                     temp/tint until the cast is neutral and luma sits about 2-98% without clipping) with color <clip> key=value, then apply \
+                     the look consistently (color preset, colorwheels, huecurves; secondary hue=25 to protect skin), and check the scope \
+                     again. Match shots that cut together (paste <graded> <others> color). {legal}Summarize the grade per shot.",
+                    look = opt(g("look"), "natural, polished"),
+                    legal = if g("target").is_some_and(|t| t.contains("broad")) { "Finish with fx <all clips> legalize and a scope check (outside 16-235 must be ~0%). " } else { "" },
                 )
             },
         },

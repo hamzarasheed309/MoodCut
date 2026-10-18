@@ -95,6 +95,9 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/reveal", post(api_reveal))
         .route("/api/graphic", get(api_graphic_get).post(api_graphic))
         .route("/api/check", post(api_check))
+        .route("/api/scope", get(api_scope))
+        .route("/api/history", get(api_history))
+        .route("/api/layer", get(api_layer))
         .route("/api/tunnel", post(api_tunnel))
         .route("/api/setup/ffmpeg", post(api_setup_ffmpeg))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
@@ -419,7 +422,13 @@ async fn api_stream(State(st): State<St>, Query(q): Query<StreamQ>) -> Response 
 
 async fn api_render(State(st): State<St>, Json(a): Json<Value>) -> Response {
     let s = |k: &str| a[k].as_str().map(|x| x.to_string());
-    let (t0, t1) = s("range").and_then(|r| r.split_once('-').and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)))).unwrap_or((0.0, 0.0));
+    let (t0, t1) = match s("range").filter(|r| !r.trim().is_empty()) {
+        Some(r) => match st.eng.render_range(&s("comp").unwrap_or_default(), &r) {
+            Ok(x) => x,
+            Err(e) => return err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        },
+        None => (0.0, 0.0),
+    };
     let opts = RenderOpts {
         comp: s("comp").unwrap_or_default(),
         t0,
@@ -468,7 +477,8 @@ async fn api_catalog() -> Response {
     let colors: Vec<Value> = crate::ops::presets::COLOR_PRESETS.iter().map(|(n, d)| json!({"name": n, "desc": d})).collect();
     Json(json!({
         "effects": fx, "audio_effects": afx, "transitions": tr, "anims": anims, "text_anims": text_anims, "templates": templates, "presets": presets, "colors": colors,
-        "props": {"layer": pjson(schema::LAYER), "clip": pjson(schema::CLIP), "text": pjson(schema::TEXT), "solid": pjson(schema::SOLID), "comp": pjson(schema::NESTED), "shape": pjson(schema::SHAPE_COMMON), "mask": pjson(schema::MASK), "animator": pjson(schema::ANIMATOR)},
+        "props": {"layer": pjson(schema::LAYER), "clip": pjson(schema::CLIP), "text": pjson(schema::TEXT), "solid": pjson(schema::SOLID), "comp": pjson(schema::NESTED), "camera": pjson(schema::CAMERA), "shape": pjson(schema::SHAPE_COMMON), "mask": pjson(schema::MASK), "animator": pjson(schema::ANIMATOR)},
+        "scopes": crate::render::scopes::KINDS,
         "shape_kinds": schema::SHAPE_KINDS.iter().map(|k| json!({"name": k, "params": pjson(schema::shape_props(k).unwrap_or(&[]))})).collect::<Vec<_>>()
     }))
     .into_response()
@@ -694,6 +704,62 @@ async fn api_tunnel(State(st): State<St>, headers: HeaderMap, Json(a): Json<Valu
 }
 
 /// Runs the edit quality check (same arguments as the MCP `check` tool).
+#[derive(Deserialize)]
+struct ScopeQ {
+    #[serde(default)]
+    t: f64,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    comp: Option<String>,
+    #[serde(default)]
+    w: Option<u32>,
+    #[serde(default)]
+    h: Option<u32>,
+}
+
+/// Lumetri scopes for the editor: a JPEG data URL plus the exposure summary.
+async fn api_scope(State(st): State<St>, Query(q): Query<ScopeQ>) -> Response {
+    let eng = st.eng.clone();
+    let r = blocking(move || -> anyhow::Result<(Vec<u8>, String)> {
+        let kind = q.kind.unwrap_or_else(|| "waveform".into());
+        let w = q.w.unwrap_or(384).clamp(96, 1600);
+        let h = q.h.unwrap_or(if kind == "vectorscope" { w } else { w * 9 / 16 }).clamp(96, 1600);
+        let (pm, text) = eng.scope(q.comp.as_deref(), q.t, &kind, w, h)?;
+        Ok((encode::encode_jpeg(&pm, 85)?, text))
+    })
+    .await;
+    match r {
+        Ok((jpg, text)) => {
+            use base64::Engine as _;
+            Json(json!({"ok": true, "img": format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&jpg)), "text": text})).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
+}
+
+/// Undo labels (newest first) and redo labels (next first) for the History panel.
+async fn api_history(State(st): State<St>) -> Response {
+    let (undo, redo) = st.eng.history_both(100);
+    Json(json!({"undo": undo, "redo": redo})).into_response()
+}
+
+#[derive(Deserialize)]
+struct LayerQ {
+    id: String,
+    #[serde(default)]
+    t: f64,
+}
+
+/// On-screen corners and anchor of a layer (comp px) for the monitor's transform overlay.
+async fn api_layer(State(st): State<St>, Query(q): Query<LayerQ>) -> Response {
+    let (p, ..) = st.eng.snapshot();
+    let Some((ci, ti, ii)) = p.locate(&q.id) else { return err(StatusCode::NOT_FOUND, format!("no item {}", q.id)) };
+    let c = &p.comps[ci];
+    let it = &c.tracks[ti].items[ii];
+    Json(json!({"ok": true, "comp": c.id, "geom": crate::render::comp::layer_geom(&p, c, it, q.t)})).into_response()
+}
+
 async fn api_check(State(st): State<St>, Json(a): Json<Value>) -> Response {
     let mcp = st.mcp.clone();
     let r = blocking(move || mcp.call("check", &a)).await;
@@ -749,6 +815,15 @@ async fn ws_loop(st: St, mut sock: WebSocket) {
     if sock.send(Message::Text(hello.to_string().into())).await.is_err() {
         return;
     }
+    // the editor's selection and playhead count only while its socket is open
+    st.eng.gui_clients.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ws_events(&st, &mut sock, &mut rx).await;
+    if st.eng.gui_clients.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+        st.eng.set_ui(Default::default());
+    }
+}
+
+async fn ws_events(st: &St, sock: &mut WebSocket, rx: &mut tokio::sync::broadcast::Receiver<crate::engine::Event>) {
     loop {
         tokio::select! {
             ev = rx.recv() => {
@@ -764,6 +839,15 @@ async fn ws_loop(st: St, mut sock: WebSocket) {
             msg = sock.recv() => {
                 match msg {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    Some(Ok(Message::Text(t))) => {
+                        if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                            if v["kind"] == "ui" {
+                                if let Ok(ui) = serde_json::from_value::<crate::ops::Ui>(v["ui"].clone()) {
+                                    st.eng.set_ui(ui);
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
