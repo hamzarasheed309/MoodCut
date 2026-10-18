@@ -563,3 +563,19 @@ fn essential_sound_types() {
     ok(&mut p, "sound c1 clear");
     assert!(p.item("c1").unwrap().afx.is_empty() && !p.item("c1").unwrap().props.contains_key("vol"));
 }
+
+#[test]
+fn nudge_moves_scales_and_keys() {
+    let mut p = proj();
+    ok(&mut p, "solid #fff w=100 h=100 pos=500,500 at=0 dur=4 as=a\nnudge a pos=10,-20 scale=150% rot=15");
+    let a = p.item("a").unwrap();
+    assert_eq!((a.props["pos"].v.vec(), a.props["scale"].v.vec(), a.props["rot"].v.num()), ((510.0, 480.0), (1.5, 1.5), 15.0));
+    // with key: a keyframe at the given time, holding the old value before it
+    ok(&mut p, "nudge a pos=100,0 key at=2");
+    let k = &p.item("a").unwrap().props["pos"].k;
+    assert_eq!(k.iter().map(|k| (k.t, k.v.vec())).collect::<Vec<_>>(), vec![(0.0, (510.0, 480.0)), (2.0, (610.0, 480.0))]);
+    // without key, every keyframe moves
+    ok(&mut p, "nudge a pos=0,20");
+    assert_eq!(p.item("a").unwrap().props["pos"].k[1].v.vec(), (610.0, 500.0));
+    assert!(err(&mut p, "nudge a").contains("nudge <ids>"));
+}

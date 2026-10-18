@@ -101,7 +101,7 @@ AUDIO
  set <id> vol=-6dB pan=-0.3 mute=1 fadeIn=1 fadeOut=2   duck A1 by=A2 amount=-12   master vol=-1 lufs=-14 limiter=1
 TOOLS (see help tools: Premiere/AE tools and panels)
  roll <id> +0.3   lift|extract [in out]   swap <a> <b>   paste <from> <to> [fx|color|transform|...]   stagger <ids> by=0.1|seq   workarea 2 8
- align <ids> left|center|... [to=comp|safe|sel]   distribute <ids> h|v   ease <ids> [props|all] easy   kf <id> all reverse|shift=+1|stretch=2|bake|clear
+ align <ids> left|center|... [to=comp|safe|sel]   distribute <ids> h|v   nudge <ids> pos=10,0 scale=120% rot=5 [key]   ease <ids> [props|all] easy   kf <id> all reverse|shift=+1|stretch=2|bake|clear
  null [children=<ids>]   camera [move=pushin] [layers=<ids>]   sound <clips> dialogue|music|sfx|ambience   marker set <name|T> name= color= dur= note=
  selectors: sel after:T before:T at:T kind:text name:x V2:after:T; time keyword playhead
 MACROS (see help macros)
@@ -132,6 +132,7 @@ KEYFRAME ASSISTANT (Effect Controls, Graph Editor)
  stagger <ids> by=0.1 [from=T] [order=forward|reverse|random|time] | stagger <ids> seq [overlap=0.5] (Sequence Layers)
 ALIGN (After Effects Align panel)
  align <ids> left|hcenter|right|top|vcenter|bottom|center [to=comp|safe|sel] [margin=40] [at=T]   distribute <ids> h|v [gap=24]
+ nudge <ids> [pos=dx,dy] [scale=120%] [rot=15] [key] [at=T]: relative move/scale/rotate (all keyframes move; with key: a keyframe at the playhead)
  boxes are measured from the rendered layer (text, shapes, media, parenting, 3D); position keyframes move together.
 LAYERS null [at dur] [children=<ids>] | camera [move=pushin|pullout|truck|pedestal|orbit|drift|shake] [layers=<ids>] (help 3d) | set <id> blend=<mode> | matte | precomp
 COLOR (Lumetri Color panel; help color)

@@ -773,6 +773,7 @@ impl<'a> Exec<'a> {
             "paste" | "pasteattr" | "attributes" => self.c_paste(&mut a),
             "stagger" => self.c_stagger(&mut a),
             "align" => self.c_align(&mut a),
+            "nudge" => self.c_nudge(&mut a),
             "distribute" => self.c_distribute(&mut a),
             "ease" | "easyease" => self.c_ease(&mut a),
             "workarea" | "inout" => self.c_workarea(&mut a),
@@ -2037,7 +2038,7 @@ pub const VERBS: &[&str] = &[
     "import", "comp", "track", "add", "append", "insert", "text", "shape", "solid", "adjust", "del", "move", "trim", "cut", "slip", "slide", "speed", "reverse",
     "freeze", "dup", "replace", "close", "gap", "detach", "fit", "set", "kf", "kf+", "kf-", "expr", "anim", "fx", "afx", "tr", "fade", "mask", "matte", "parent",
     "color", "lut", "marker", "master", "name", "duck", "precomp", "autocut", "captions", "montage", "beats", "reframe", "title", "keep", "null", "camera", "roll",
-    "lift", "extract", "swap", "paste", "stagger", "align", "distribute", "ease", "workarea", "sound", "undo", "redo",
+    "lift", "extract", "swap", "paste", "stagger", "align", "nudge", "distribute", "ease", "workarea", "sound", "undo", "redo",
 ];
 
 pub fn same_path(a: &str, b: &str) -> bool {

@@ -574,6 +574,111 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 
+    /// Relative transform: `nudge <ids> [pos=dx,dy] [scale=1.2] [rot=15] [key]`.
+    /// Without `key` the whole animation moves; with it a keyframe is set at the playhead (`at=`).
+    pub fn c_nudge(&mut self, a: &mut A) -> Result<()> {
+        let usage = "nudge <ids> [pos=dx,dy] [scale=1.2] [rot=15] [key] [at=T]";
+        let spec = a.shift().ok_or_else(|| anyhow!(usage))?;
+        let key = a.flag("key");
+        let at = a.take(&["at", "t"]).map(|s| self.time(&s)).transpose()?;
+        let parse2 = |v: &str| -> Result<(f64, f64)> {
+            let p: Vec<f64> = v.split(',').map(|x| x.trim().trim_end_matches("px").parse::<f64>()).collect::<std::result::Result<_, _>>().map_err(|_| anyhow!("expected x,y numbers, got '{v}'"))?;
+            Ok(match p.as_slice() {
+                [x] => (*x, *x),
+                [x, y] => (*x, *y),
+                _ => bail!("expected x,y, got '{v}'"),
+            })
+        };
+        let dpos = a.take(&["pos", "by", "move"]).map(|v| parse2(&v)).transpose()?;
+        let dscale = a.take(&["scale", "size"]).map(|v| -> Result<(f64, f64)> {
+            let (x, y) = parse2(v.trim_end_matches('%'))?;
+            Ok(if v.ends_with('%') { (x / 100.0, y / 100.0) } else { (x, y) })
+        }).transpose()?;
+        let drot = a.take(&["rot", "rotate"]).map(|v| v.trim_end_matches("deg").parse::<f64>()).transpose()?;
+        if dpos.is_none() && dscale.is_none() && drot.is_none() {
+            bail!(usage);
+        }
+        for id in self.targets(&spec)? {
+            let l = self.relocate(&id)?;
+            let it = self.item_at(l).clone();
+            if it.kind == ItemKind::Camera && dscale.is_some() {
+                bail!("{id}: cameras have no scale (change zoom)");
+            }
+            let tl = self.measure_time(&it, at) - it.start;
+            let cx = self.vctx_of(l.0);
+            let mut done = vec![];
+            if let Some((dx, dy)) = dpos {
+                if key {
+                    // the delta in the parent's space, applied to the value at the playhead
+                    let (mut ddx, mut ddy) = (dx, dy);
+                    if it.parent.is_some() {
+                        let pm = Geo { p: self.p, comp: &self.p.comps[l.0] }.parent_m(&it, it.start + tl, 0);
+                        let det = (pm.sx * pm.sy - pm.kx * pm.ky) as f64;
+                        if det.abs() > 1e-12 {
+                            let (a_, b, c, d) = (pm.sx as f64, pm.ky as f64, pm.kx as f64, pm.sy as f64);
+                            (ddx, ddy) = ((d * dx - c * dy) / det, (-b * dx + a_ * dy) / det);
+                        }
+                    }
+                    self.key_at(&id, "pos", tl, Val::V(cx.cw / 2.0, cx.ch / 2.0), &|v| match v {
+                        Val::V(x, y) => Val::V(x + ddx, y + ddy),
+                        o => o,
+                    })?;
+                } else {
+                    self.nudge(&id, dx, dy, at)?;
+                }
+                done.push(format!("pos {}{},{}{}", if dx >= 0.0 { "+" } else { "" }, fmt_num(dx), if dy >= 0.0 { "+" } else { "" }, fmt_num(dy)));
+            }
+            if let Some((fx, fy)) = dscale {
+                let f = &|v: Val| match v {
+                    Val::V(x, y) => Val::V(x * fx, y * fy),
+                    o => o,
+                };
+                if key {
+                    self.key_at(&id, "scale", tl, Val::V(1.0, 1.0), f)?;
+                } else {
+                    self.map_anim(&id, "scale", Val::V(1.0, 1.0), f)?;
+                }
+                done.push(format!("scale x{}", fmt_num(fx)));
+            }
+            if let Some(r) = drot {
+                let f = &|v: Val| Val::N(v.num() + r);
+                if key {
+                    self.key_at(&id, "rot", tl, Val::N(0.0), f)?;
+                } else {
+                    self.map_anim(&id, "rot", Val::N(0.0), f)?;
+                }
+                done.push(format!("rot {}{}", if r >= 0.0 { "+" } else { "" }, fmt_num(r)));
+            }
+            self.note(format!("~{id} {}{}", done.join(" "), if key { format!(" key@{}", fmt_t(tl)) } else { String::new() }));
+        }
+        Ok(())
+    }
+
+    /// Applies `f` to a property's static value and every keyframe.
+    fn map_anim(&mut self, id: &str, prop: &str, def: Val, f: &dyn Fn(Val) -> Val) -> Result<()> {
+        let l = self.relocate(id)?;
+        let a = self.item_mut_at(l).props.entry(prop.into()).or_insert_with(|| Anim::new(def));
+        a.v = f(a.v.clone());
+        for k in a.k.iter_mut() {
+            k.v = f(k.v.clone());
+        }
+        Ok(())
+    }
+
+    /// Sets a keyframe at item time `tl` to `f(value there)` (keyframing a static property starts its animation).
+    fn key_at(&mut self, id: &str, prop: &str, tl: f64, def: Val, f: &dyn Fn(Val) -> Val) -> Result<()> {
+        let l = self.relocate(id)?;
+        let a = self.item_mut_at(l).props.entry(prop.into()).or_insert_with(|| Anim::new(def));
+        let cur = a.keyed(tl);
+        let ease = a.k.iter().rev().find(|k| k.t <= tl).map(|k| k.e).unwrap_or(Ease::Bezier(0.33, 0.0, 0.67, 1.0));
+        if a.k.is_empty() && tl > 1e-6 {
+            // hold the old value up to here, like turning on the stopwatch in AE
+            a.add_key(Key { t: 0.0, v: cur.clone(), e: ease });
+        }
+        a.add_key(Key { t: tl, v: f(cur), e: ease });
+        Ok(())
+    }
+
     pub fn c_align(&mut self, a: &mut A) -> Result<()> {
         let usage = "align <ids> left|hcenter|right|top|vcenter|bottom|center [to=comp|safe|sel] [margin=px] [at=T]";
         let spec = a.shift().ok_or_else(|| anyhow!(usage))?;
