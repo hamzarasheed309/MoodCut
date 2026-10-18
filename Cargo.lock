@@ -902,6 +902,7 @@ dependencies = [
  "serde_json",
  "svgtypes",
  "tokio",
+ "tungstenite",
  "unicode-bidi",
  "windows-sys 0.59.0",
 ]
