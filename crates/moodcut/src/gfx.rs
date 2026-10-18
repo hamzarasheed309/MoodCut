@@ -496,12 +496,39 @@ pub fn fill_vars(src: &str, vars: &BTreeMap<String, String>) -> (String, Vec<Str
 /// Substitutes placeholders, maps `mc://m3` to served media, and wraps a body
 /// fragment in a full-frame transparent page.
 pub fn prepare_html(src: &str, vars: &BTreeMap<String, String>) -> String {
+    prepare_html_with(src, vars, "")
+}
+
+/// The project's brand kit as CSS variables (`var(--brand-accent)` ...), so graphics match the titles.
+pub fn brand_css(b: &crate::model::project::Brand) -> String {
+    let weight = b.weight.as_deref().map(|w| match w.to_ascii_lowercase().as_str() {
+        "thin" => "100".to_string(),
+        "extralight" | "ultralight" => "200".into(),
+        "light" => "300".into(),
+        "regular" | "normal" => "400".into(),
+        "medium" => "500".into(),
+        "semibold" | "demibold" => "600".into(),
+        "bold" => "700".into(),
+        "extrabold" | "ultrabold" => "800".into(),
+        "black" | "heavy" => "900".into(),
+        other => other.to_string(),
+    });
+    let mut v = vec![format!("--brand-font:{}", b.font.as_deref().map(|f| format!("'{}',Inter,system-ui,sans-serif", f.replace('\'', ""))).unwrap_or_else(|| "Inter,system-ui,sans-serif".into()))];
+    v.push(format!("--brand-weight:{}", weight.unwrap_or_else(|| "800".into())));
+    for (k, val, def) in [("primary", &b.primary, "#111111"), ("accent", &b.accent, "#ff3b6b"), ("text", &b.text, "#ffffff"), ("dark", &b.dark, "#0b0b10")] {
+        v.push(format!("--brand-{k}:{}", val.as_deref().unwrap_or(def)));
+    }
+    format!(":root{{{}}}", v.join(";"))
+}
+
+/// [`prepare_html`] plus extra CSS (the brand variables) in the page head.
+pub fn prepare_html_with(src: &str, vars: &BTreeMap<String, String>, extra_css: &str) -> String {
     let mut s = fill_vars(src, vars).0;
     s = s.replace("mc://", "/mc-media/");
     let lower = s.trim_start().to_ascii_lowercase();
     if lower.starts_with("<!doctype") || lower.starts_with("<html") {
         // full document: add the bundled font faces
-        let fonts = format!("<style>{BASE_CSS}</style>");
+        let fonts = format!("<style>{BASE_CSS}{extra_css}</style>");
         if let Some(i) = s.to_ascii_lowercase().find("<head>") {
             s.insert_str(i + 6, &fonts);
         } else if let Some(i) = s.to_ascii_lowercase().find("<html") {
@@ -512,7 +539,7 @@ pub fn prepare_html(src: &str, vars: &BTreeMap<String, String>) -> String {
         s
     } else {
         format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{BASE_CSS}\
+            "<!doctype html><html><head><meta charset=\"utf-8\"><style>{BASE_CSS}{extra_css}\
              *{{box-sizing:border-box}}html,body{{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}}\
              body{{font-family:Inter,system-ui,sans-serif;color:#fff;-webkit-font-smoothing:antialiased}}</style></head><body>{s}</body></html>"
         )
@@ -765,7 +792,7 @@ impl crate::engine::Engine {
         if r.html.is_some() {
             std::fs::write(&html_path, &src).with_context(|| format!("writing {}", html_path.display()))?;
         }
-        let page = prepare_html(&src, &vars);
+        let page = prepare_html_with(&src, &vars, &brand_css(&p.brand));
         let key = crate::render::eval::hash_str(&format!("{page}|{w}x{h}|{fps}|{dur}|{alpha}|{:?}", r.at));
         let ext = if dur <= 0.0 { "png" } else { "mov" };
         let out = dir.join(format!("{slug}-{:08x}.{ext}", key as u32));

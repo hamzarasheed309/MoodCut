@@ -34,6 +34,10 @@ pub const LAYER_ENTER: &[(&str, &str)] = &[
     ("swingIn", "3D swing around X"),
     ("blurIn", "un-blur + fade"),
     ("stretchIn", "stretch horizontally from 0"),
+    ("slamIn", "slams down from 240% with a camera-shake landing (titles on a beat, with sfx hit)"),
+    ("wipeInLeft|Right|Up|Down", "soft linear-wipe reveal from that side (lines, bars, text)"),
+    ("whipInLeft|Right|Up|Down", "whips in from off-screen with motion blur (pair with sfx whoosh)"),
+    ("glitchIn", "digital glitch settling into place"),
 ];
 pub const LAYER_EXIT: &[(&str, &str)] = &[
     ("fadeOut", "fade to transparent"),
@@ -46,6 +50,9 @@ pub const LAYER_EXIT: &[(&str, &str)] = &[
     ("spinOut", "spin + scale to 0"),
     ("flipOut", "3D flip out"),
     ("blurOut", "blur + fade"),
+    ("wipeOutLeft|Right|Up|Down", "linear-wipe off, starting at that side"),
+    ("whipOutLeft|Right|Up|Down", "whips off-screen with motion blur"),
+    ("glitchOut", "glitches out"),
 ];
 pub const LAYER_LOOP: &[(&str, &str)] = &[
     ("pulse", "gentle scale pulse (amount=0.05 freq=1)"),
@@ -103,6 +110,15 @@ pub const COLOR_PRESETS: &[(&str, &str)] = &[
     ("sunset", "golden warm"),
     ("cyberpunk", "magenta/cyan neon"),
     ("natural", "neutral clean correction"),
+    ("kodak", "film print: rolled-off highlights, teal shadows, warm skin, muted greens"),
+    ("fuji", "soft cool film stock: gentle contrast, green-cyan shadows"),
+    ("bleach", "bleach bypass: desaturated, hard contrast (action, war, grit)"),
+    ("commercial", "bright glossy ad look with healthy skin (products, brands)"),
+    ("night", "blue night-city with magenta highlights"),
+    ("pastel", "lifted, soft pastel (lifestyle, fashion, beauty)"),
+    ("desert", "hot summer warmth with muted blue skies (travel)"),
+    ("documentary", "restrained, honest, slightly desaturated"),
+    ("musicvideo", "contrasty purple/orange with grain and vignette"),
 ];
 
 /// Value of a property at item-local time `t` (keyframes considered, expressions ignored).
@@ -197,6 +213,7 @@ pub fn is_layer_anim(name: &str) -> bool {
         b.as_str(),
         "fadein" | "popin" | "zoomin" | "growin" | "slidein" | "flyin" | "risein" | "dropin" | "spinin" | "flipin" | "swingin" | "blurin" | "stretchin"
             | "fadeout" | "popout" | "zoomout" | "shrinkout" | "slideout" | "flyout" | "sinkout" | "spinout" | "flipout" | "blurout"
+            | "slamin" | "wipein" | "wipeout" | "whipin" | "whipout" | "glitchin" | "glitchout"
             | "pulse" | "heartbeat" | "float" | "bounce" | "spin" | "swing" | "shake" | "wiggle" | "breathe" | "flicker"
             | "kenburns" | "punch" | "shakehit" | "zoompunchin" | "none" | "clear"
     )
@@ -209,6 +226,10 @@ pub fn apply_layer_anim(item: &mut Item, name: &str, o: &AnimOpts, cx: VCtx) -> 
         "kenburns" => item.dur,
         "dropin" => 0.9,
         "popin" | "popout" => 0.45,
+        "slamin" => 0.22,
+        "whipin" | "whipout" => 0.32,
+        "wipein" | "wipeout" => 0.6,
+        "glitchin" | "glitchout" => 0.4,
         _ => 0.5,
     })
     .max(0.01);
@@ -338,6 +359,67 @@ pub fn apply_layer_anim(item: &mut Item, name: &str, o: &AnimOpts, cx: VCtx) -> 
                 fade_in(item, d);
             } else {
                 fade_out(item, d);
+            }
+        }
+        "slamin" => {
+            merge(item, "scale", vec![k(t0, scale_v(&sc, 2.4), Ease::Out(Expo)), k(t0 + d, sc.clone(), Ease::Linear)], cx);
+            fade_in(item, d * 0.25);
+            // the landing shakes, unless position already runs an expression
+            if item.props.get("pos").is_none_or(|a| a.x.is_none()) {
+                let (a, dd) = (t0 + d, 0.28);
+                set_expr(item, "pos", format!("time>={a} && time<{e} ? value+(wiggle(20,{amp})-value)*(1-(time-{a})/{dd}) : value", a = fmt_num(a), e = fmt_num(a + dd), dd = fmt_num(dd), amp = fmt_num(o.amount.unwrap_or(14.0))), cx);
+            }
+        }
+        "wipein" | "wipeout" => {
+            let enter = b == "wipein";
+            // the wipe's hidden side is opposite its direction vector (90 = (1,0))
+            let side = dir.unwrap_or("left");
+            let angle = match (enter, side) {
+                (true, "left") | (false, "right") => 270.0,
+                (true, "right") | (false, "left") => 90.0,
+                (true, "down") | (false, "up") => 0.0,
+                _ => 180.0,
+            };
+            let fid = item.next_sub("f");
+            let mut props = Props::new();
+            let mut a = Anim::new(Val::N(0.0));
+            a.set_keys(if enter {
+                vec![k(t0, Val::N(100.0), o.ease.unwrap_or(Ease::Out(Expo))), k(t0 + d, Val::N(0.0), Ease::Linear)]
+            } else {
+                vec![k(ts, Val::N(0.0), o.ease.unwrap_or(Ease::In(Expo))), k(te, Val::N(100.0), Ease::Linear)]
+            });
+            props.insert("completion".into(), a);
+            props.insert("angle".into(), Anim::new(Val::N(angle)));
+            props.insert("feather".into(), Anim::new(Val::N(o.amount.unwrap_or(40.0))));
+            item.fx.push(Effect { id: fid, kind: "linearwipe".into(), on: true, props });
+        }
+        "whipin" | "whipout" => {
+            let enter = b == "whipin";
+            let (dx, dy) = dir_vec(dir.unwrap_or("left"));
+            let dist = o.dist.unwrap_or((if dx != 0.0 { cx.cw } else { cx.ch }) * 1.1);
+            if enter {
+                merge(item, "pos", vec![k(t0, add_v(&pos, dx * dist, dy * dist), Ease::Out(Expo)), k(t0 + d, pos.clone(), Ease::Linear)], cx);
+            } else {
+                merge(item, "pos", vec![k(ts, pos.clone(), Ease::In(Expo)), k(te, add_v(&pos, dx * dist, dy * dist), Ease::Linear)], cx);
+            }
+            item.props.insert("mblur".into(), Anim::new(Val::B(true)));
+        }
+        "glitchin" | "glitchout" => {
+            let enter = b == "glitchin";
+            let fid = item.next_sub("f");
+            let mut props = Props::new();
+            let mut a = Anim::new(Val::N(0.0));
+            a.set_keys(if enter {
+                vec![k(t0, Val::N(o.amount.unwrap_or(1.0)), Ease::Out(Quad)), k(t0 + d, Val::N(0.0), Ease::Linear)]
+            } else {
+                vec![k(ts, Val::N(0.0), Ease::In(Quad)), k(te, Val::N(o.amount.unwrap_or(1.0)), Ease::Linear)]
+            });
+            props.insert("amount".into(), a);
+            item.fx.push(Effect { id: fid, kind: "glitch".into(), on: true, props });
+            if enter {
+                fade_in(item, d * 0.2);
+            } else {
+                fade_out(item, d * 0.2);
             }
         }
         // ---- loops (expressions keep them composable with keyframes)
@@ -514,6 +596,30 @@ pub fn color_preset(name: &str) -> Option<(Vec<(&'static str, Val)>, Vec<(&'stat
         "sunset" | "golden" => (vec![("temp", n(35.0)), ("tint", n(10.0)), ("sat", n(115.0)), ("htint", c("#ffb34766"))], vec![]),
         "cyberpunk" | "neon" => (vec![("contrast", n(25.0)), ("sat", n(120.0)), ("stint", c("#00e0ff66")), ("htint", c("#ff2bd666"))], vec![]),
         "natural" | "clean" => (vec![("contrast", n(8.0)), ("vibrance", n(10.0))], vec![]),
+        "kodak" | "print" | "2383" | "filmprint" => (
+            vec![("contrast", n(18.0)), ("shadows", n(-5.0)), ("sat", n(95.0)), ("stint", c("#1a5f6b55")), ("htint", c("#ffb46a40"))],
+            vec![("curves", vec![("master", Val::S("0,0.03 .25,.2 .5,.5 .75,.82 1,.96".into()))]), ("huecurves", vec![("hueSat", Val::S("0.33,-0.3".into()))])],
+        ),
+        "fuji" | "eterna" => (
+            vec![("contrast", n(-5.0)), ("sat", n(85.0)), ("temp", n(-6.0)), ("tint", n(-4.0)), ("fade", n(8.0)), ("stint", c("#2a6b5a44"))],
+            vec![("huecurves", vec![("hueSat", Val::S("0.6,-0.2".into()))])],
+        ),
+        "bleach" | "bleachbypass" => (vec![("contrast", n(40.0)), ("sat", n(45.0)), ("highlights", n(-10.0)), ("blacks", n(-10.0))], vec![("noise", vec![("amount", n(0.04))])]),
+        "commercial" | "glossy" | "ad" => (
+            vec![("exposure", n(0.1)), ("contrast", n(12.0)), ("vibrance", n(25.0)), ("whites", n(10.0)), ("shadows", n(10.0))],
+            vec![("secondary", vec![("hue", n(25.0)), ("hueRange", n(25.0)), ("sat", n(1.05)), ("light", n(0.03))])],
+        ),
+        "night" | "nightcity" => (
+            vec![("exposure", n(-0.15)), ("temp", n(-18.0)), ("tint", n(6.0)), ("contrast", n(22.0)), ("sat", n(105.0)), ("stint", c("#0040ff55")), ("htint", c("#ff3d9a33"))],
+            vec![("vignette", vec![("amount", n(0.35))])],
+        ),
+        "pastel" | "soft" => (vec![("exposure", n(0.2)), ("fade", n(18.0)), ("contrast", n(-18.0)), ("sat", n(80.0)), ("vibrance", n(10.0)), ("stint", c("#a8d8ff44")), ("htint", c("#ffd6e844"))], vec![]),
+        "desert" | "summer" => (vec![("temp", n(20.0)), ("tint", n(6.0)), ("contrast", n(15.0)), ("sat", n(105.0)), ("htint", c("#ffcf8a55"))], vec![("huecurves", vec![("hueSat", Val::S("0.58,-0.25".into()))])]),
+        "documentary" | "doc" => (vec![("contrast", n(10.0)), ("sat", n(88.0)), ("fade", n(5.0)), ("temp", n(3.0)), ("vibrance", n(5.0))], vec![]),
+        "musicvideo" | "mv" => (
+            vec![("contrast", n(30.0)), ("sat", n(115.0)), ("stint", c("#6a00ff55")), ("htint", c("#ff5e0044"))],
+            vec![("vignette", vec![("amount", n(0.4))]), ("noise", vec![("amount", n(0.04))])],
+        ),
         _ => return None,
     })
 }

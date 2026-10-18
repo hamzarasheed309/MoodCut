@@ -211,10 +211,12 @@ impl<'a> Exec<'a> {
     pub fn c_captions(&mut self, a: &mut A) -> Result<()> {
         let id = self.item_id(&a.shift().ok_or_else(|| anyhow!("captions <clip> [style=bold|box|minimal|neon|karaoke] [words=3] [pos=bottom] [size=] [hl=#ffd60a] [track=]"))?)?;
         let style = a.take(&["style"]).unwrap_or_else(|| "bold".into());
-        let words_per: usize = a.take(&["words", "n"]).map(|s| s.parse()).transpose()?.unwrap_or(3).max(1);
+        let punch = matches!(style.to_ascii_lowercase().as_str(), "punch" | "hormozi" | "impact");
+        let words_per: usize = a.take(&["words", "n"]).map(|s| s.parse()).transpose()?.unwrap_or(if punch { 2 } else { 3 }).max(1);
         let pos = a.take(&["pos", "position"]);
         let size = a.take(&["size"]);
-        let hl = a.take(&["hl", "highlight"]).unwrap_or_else(|| "#ffd60a".into());
+        // the brand's accent marks the spoken word
+        let hl = a.take(&["hl", "highlight"]).or_else(|| self.p.brand.accent.clone()).unwrap_or_else(|| "#ffd60a".into());
         let track = a.take(&["track"]);
         let enter = a.take(&["enter", "anim"]).unwrap_or_else(|| "pop".into());
         let caps = a.take(&["caps"]);
@@ -286,13 +288,27 @@ impl<'a> Exec<'a> {
                 self.pick_track_above(TrackKind::Video, s, e)
             }
         };
-        let style_props: Vec<(String, String)> = match style.to_ascii_lowercase().as_str() {
+        let base_px = base_size.parse::<f64>().unwrap_or(72.0);
+        let mut style_props: Vec<(String, String)> = match style.to_ascii_lowercase().as_str() {
+            "punch" | "hormozi" | "impact" => vec![
+                ("size".into(), fmt_num((base_px * 1.15).round())),
+                ("weight".into(), "black".into()),
+                ("stroke".into(), "#000000".into()),
+                ("strokeW".into(), fmt_num((base_px * 0.16).round())),
+                ("shadow".into(), "#000000b0".into()),
+                ("shadowY".into(), fmt_num((base_px * 0.06).round())),
+                ("shadowBlur".into(), fmt_num((base_px * 0.12).round())),
+                ("caps".into(), caps.clone().unwrap_or_else(|| "1".into())),
+            ],
             "bold" | "tiktok" | "karaoke" => vec![("weight".into(), "black".into()), ("stroke".into(), "#000000".into()), ("strokeW".into(), fmt_num(base_size.parse::<f64>().unwrap_or(72.0) * 0.11)), ("caps".into(), caps.clone().unwrap_or_else(|| "1".into()))],
             "box" | "boxed" => vec![("weight".into(), "bold".into()), ("bg".into(), "#000000b3".into()), ("bgMode".into(), "line".into())],
             "minimal" | "clean" => vec![("weight".into(), "medium".into()), ("shadow".into(), "#000000aa".into())],
             "neon" => vec![("weight".into(), "bold".into()), ("shadow".into(), hl.clone()), ("shadowY".into(), "0".into()), ("shadowBlur".into(), "24".into())],
-            other => bail!("unknown caption style '{other}' (bold box minimal neon karaoke)"),
+            other => bail!("unknown caption style '{other}' (punch bold box minimal neon karaoke)"),
         };
+        if let Some(f) = &self.p.brand.font {
+            style_props.push(("font".into(), f.clone()));
+        }
         let karaoke = !matches!(style.to_ascii_lowercase().as_str(), "minimal" | "clean");
         let n = phrases.len();
         let ci = self.ci();
@@ -325,7 +341,7 @@ impl<'a> Exec<'a> {
                 p.insert("times".into(), Anim::new(Val::S(times.join(","))));
                 p.insert("dur".into(), Anim::new(Val::N(0.06)));
                 p.insert("color".into(), Anim::new(Val::C(crate::model::value::Color::parse(&hl)?)));
-                p.insert("scale".into(), Anim::new(Val::N(1.06)));
+                p.insert("scale".into(), Anim::new(Val::N(if punch { 1.18 } else { 1.06 })));
                 itm.anims.push(Effect { id: xid, kind: "hl".into(), on: true, props: p });
             }
             if enter != "none" {

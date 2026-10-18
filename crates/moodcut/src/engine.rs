@@ -128,6 +128,17 @@ impl<'a> Env for EnvImpl<'a> {
     fn ui(&self) -> ops::Ui {
         self.eng.ui()
     }
+    fn sfx(&self, kind: &str, dur: f64, pitch: f64, seed: u64) -> Result<Media> {
+        let k = crate::sfx::kind(kind).ok_or_else(|| anyhow!("unknown sound effect '{kind}'"))?;
+        // next to the project's graphics (or in the data folder until it is saved)
+        let gdir = crate::gfx::graphics_dir(self.eng.st.read().path.as_deref());
+        let dir = gdir.parent().map(|d| d.join("sfx")).unwrap_or_else(|| gdir.join("sfx"));
+        let path = dir.join(crate::sfx::file_name(k, dur, pitch, seed));
+        if !path.exists() {
+            crate::sfx::write_wav(&path, &crate::sfx::synth(k, dur, pitch, seed))?;
+        }
+        self.eng.probe_cached(&path.to_string_lossy())
+    }
 }
 
 impl Engine {

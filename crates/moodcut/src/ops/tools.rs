@@ -29,7 +29,7 @@ fn signed(ex: &Exec, s: &str) -> Result<f64> {
     Ok(if neg { -v } else { v })
 }
 
-fn parse_factor(s: &str) -> Result<f64> {
+pub(crate) fn parse_factor(s: &str) -> Result<f64> {
     let l = s.trim().to_ascii_lowercase();
     let v = match l.strip_suffix('%') {
         Some(p) => p.parse::<f64>().map(|x| x / 100.0),

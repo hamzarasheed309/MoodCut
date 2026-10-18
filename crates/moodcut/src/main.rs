@@ -21,6 +21,7 @@ pub mod ops;
 pub mod render;
 pub mod server;
 pub mod setup;
+pub mod sfx;
 pub mod tunnel;
 
 use anyhow::{bail, Context, Result};

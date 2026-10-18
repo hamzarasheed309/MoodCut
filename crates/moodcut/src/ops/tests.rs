@@ -7,6 +7,12 @@ use std::collections::BTreeMap;
 struct Mock;
 
 impl Env for Mock {
+    fn sfx(&self, kind: &str, dur: f64, pitch: f64, seed: u64) -> Result<Media> {
+        let k = crate::sfx::kind(kind).unwrap();
+        let mut m = self.probe(&format!("/sfx/{}", crate::sfx::file_name(k, dur, pitch, seed)))?;
+        m.dur = dur;
+        Ok(m)
+    }
     fn probe(&self, path: &str) -> Result<Media> {
         let name = path.rsplit(['/', '\\']).next().unwrap().to_string();
         let (kind, dur, hv, ha) = if name.ends_with(".mp3") || name.ends_with(".wav") {
@@ -589,4 +595,144 @@ fn move_accepts_mode_overwrite() {
     ok(&mut p, "move a by=+0.5 mode=overwrite");
     let b = p.item("b").unwrap();
     assert_eq!((p.item("a").unwrap().start, b.start, b.dur), (0.5, 2.5, 1.5));
+}
+
+fn items_on(p: &Project, track: &str) -> Vec<Item> {
+    p.comps[0].track(track).map(|t| t.items.clone()).unwrap_or_default()
+}
+
+#[test]
+fn sfx_lands_on_its_moment() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4 /m/song.mp3\nappend m1[0-2] m1[3-5] m1[6-8]\nadd m2 A1 at=0");
+    // a whoosh peaks 60% in: placed so the peak sits on the time asked for
+    ok(&mut p, "sfx whoosh at=2");
+    let w = items_on(&p, "A2");
+    assert_eq!(w.len(), 1, "sfx go above the music track");
+    assert!((w[0].start - (2.0 - 0.6 * 0.7)).abs() < 1e-9 && (w[0].dur - 0.7).abs() < 1e-9);
+    assert_eq!(w[0].props["vol"].v.num(), -10.0);
+    assert!(p.media.iter().any(|m| m.tags.contains(&"sfx".to_string()) && m.name == "whoosh 1"));
+    // one per cut, each a different variation
+    ok(&mut p, "sfx swish on=cuts vol=-14dB");
+    let swishes: Vec<Item> = p.comps[0].items().filter(|i| i.name.as_deref() == Some("swish")).cloned().collect();
+    assert_eq!(swishes.len(), 2);
+    assert_ne!(swishes[0].src, swishes[1].src);
+    // a riser ending at 0.5 s can't start before 0: its head is cut instead
+    ok(&mut p, "sfx riser at=0.5");
+    let r = p.comps[0].items().find(|i| i.name.as_deref() == Some("riser")).unwrap().clone();
+    assert_eq!((r.start, r.src_in, r.dur), (0.0, 1.5, 0.5));
+    ok(&mut p, "text 'Title' at=3 dur=2\nsfx hit on=titles");
+    assert!(p.comps[0].items().any(|i| i.name.as_deref() == Some("hit") && (i.start - 3.0).abs() < 1e-9));
+    assert!(err(&mut p, "sfx wosh at=1").contains("Did you mean 'whoosh'"));
+}
+
+#[test]
+fn speed_ramp_remaps_time() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nadd m1[0-10] at=0");
+    ok(&mut p, "speedramp c1 at=2 to=4x dur=1 ramp=0.25");
+    let c = p.item("c1").unwrap();
+    let r = &c.props["remap"];
+    assert!(r.is_animated() && c.props["mute"].v.bool());
+    let at = |t: f64| r.keyed(t).num();
+    // untouched before the ramp; after it, (1 - 0.25) * (4 - 1) = 2.25 s of extra source
+    assert!((at(1.0) - 1.0).abs() < 1e-6 && (at(2.0) - 2.0).abs() < 1e-6);
+    assert!((at(3.0) - 5.25).abs() < 0.01, "{}", at(3.0));
+    assert!((at(10.0) - 12.25).abs() < 0.01);
+    assert_eq!(c.dur, 10.0, "the clip keeps its place and length");
+    // near the end of the source the peak speed is lowered to fit
+    let mut q = proj();
+    ok(&mut q, "import /v/a.mp4\nadd m1[20-30] at=0");
+    let log = ok(&mut q, "speedramp c1 at=4 to=8x dur=2");
+    assert!(log.iter().any(|l| l.contains("ramp peaks at")), "{log:?}");
+    let end = q.item("c1").unwrap().props["remap"].keyed(10.0).num();
+    assert!(end <= 30.0 && end > 29.0, "{end}");
+    // slow motion turns on frame blending
+    ok(&mut q, "add m1[0-5] at=12\nspeedramp c2 at=13 to=25% dur=2");
+    assert_eq!(q.item("c2").unwrap().props["interp"].v.str(), "blend");
+    assert!(err(&mut q, "speedramp c2 at=20").contains("inside the clip"));
+}
+
+#[test]
+fn punch_ins_alternate() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-2] m1[3-5] m1[6-8] m1[9-11]\npunchin V1");
+    let s = |id: &str| p.item(id).unwrap().props["scale"].v.vec().0;
+    assert_eq!([s("c1"), s("c2"), s("c3"), s("c4")], [1.0, 1.12, 1.0, 1.12]);
+    // the focus point (centered, a bit above the middle by default) stays put on screen
+    let (x, y) = p.item("c2").unwrap().props["pos"].v.vec();
+    assert_eq!(x, 960.0);
+    assert!((y - (453.6 - (453.6 - 540.0) * 1.12)).abs() < 0.06, "{y}");
+    ok(&mut p, "punchin c1..c4 scale=130% every=3 focus=600,400");
+    assert_eq!(p.item("c3").unwrap().props["scale"].v.vec().0, 1.3);
+    assert_eq!(p.item("c2").unwrap().props["scale"].v.vec().0, 1.0);
+}
+
+#[test]
+fn j_and_l_cuts() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[2-6] m1[10-14]");
+    ok(&mut p, "jcut c2 by=0.5");
+    let a2 = p.comps[0].items().find(|i| i.id != "c2" && i.src.as_deref() == Some("m1") && i.start > 3.0 && i.start < 4.0).unwrap().clone();
+    assert_eq!((a2.start, a2.dur, a2.src_in), (3.5, 4.5, 9.5));
+    assert!(a2.props["fadeIn"].v.num() > 0.0);
+    assert!(p.item("c2").unwrap().props["mute"].v.bool(), "picture keeps no audio of its own");
+    ok(&mut p, "lcut c1 by=0.75");
+    let a1 = p.comps[0].items().find(|i| i.id != "c1" && i.src.as_deref() == Some("m1") && i.start == 0.0 && i.kind == ItemKind::Clip && p.comps[0].tracks.iter().any(|t| t.kind == TrackKind::Audio && t.items.iter().any(|x| x.id == i.id))).unwrap().clone();
+    assert_eq!(a1.dur, 4.75);
+    // running it again reuses the detached audio
+    ok(&mut p, "jcut c2 by=0.25");
+    let n_audio = p.comps[0].tracks.iter().filter(|t| t.kind == TrackKind::Audio).map(|t| t.items.len()).sum::<usize>();
+    assert_eq!(n_audio, 2);
+    assert!(err(&mut p, "jcut c1").contains("nothing before it"));
+}
+
+#[test]
+fn brand_kit_sets_defaults() {
+    let mut p = proj();
+    ok(&mut p, "brand bold accent=#ff2d55");
+    assert_eq!(p.brand.accent.as_deref(), Some("#ff2d55"));
+    assert_eq!(p.brand.weight.as_deref(), Some("black"));
+    ok(&mut p, "text 'Hello' as=h\ntext 'Small' style=caption as=sm\ntext 'Red' color=#ff0000 as=r\nshape rect w=100 h=50 as=bx");
+    let h = p.item("h").unwrap();
+    assert_eq!(h.props["font"].v.str(), "Inter");
+    assert_eq!(h.props["weight"].v.str(), "900");
+    assert_eq!(p.item("r").unwrap().props["color"].v.str(), "#ff0000", "what was asked beats the brand");
+    assert_ne!(p.item("sm").unwrap().props.get("weight").map(|w| w.v.str()), Some("black".into()), "captions keep their weight");
+    assert_eq!(p.item("bx").unwrap().shapes[0].props["fill"].v.str(), "#ff2d55");
+    // templates take the accent
+    ok(&mut p, "title lowerthird text='Jane Doe' sub='Founder' at=1");
+    let inner = p.comps.last().unwrap();
+    assert!(inner.items().any(|i| i.props.values().chain(i.shapes.iter().flat_map(|s| s.props.values())).any(|v| v.v.str() == "#ff2d55")));
+    assert!(outline::timeline(&p, "s1", "s1", 0).contains("brand font=Inter"));
+    ok(&mut p, "brand clear");
+    assert!(p.brand.is_empty());
+    assert!(err(&mut p, "brand size=3").contains("unknown brand field"));
+}
+
+#[test]
+fn pro_looks_exist() {
+    let mut p = proj();
+    ok(&mut p, "solid #808080 at=0 dur=2 as=s");
+    for look in ["kodak", "fuji", "bleach", "commercial", "night", "pastel", "desert", "documentary", "musicvideo"] {
+        ok(&mut p, &format!("color s none\ncolor s {look}"));
+    }
+}
+
+#[test]
+fn pro_entrances() {
+    let mut p = proj();
+    ok(&mut p, "text 'BOOM' at=0 dur=3 as=t\nanim t slamIn\ntext 'Line' at=0 dur=3 as=w\nanim w wipeInLeft,wipeOutRight\nshape rect w=200 h=20 as=r\nanim r whipInLeft\ntext 'ERR' as=g\nanim g glitchIn");
+    let t = p.item("t").unwrap();
+    assert_eq!(t.props["scale"].k[0].v.vec(), (2.4, 2.4));
+    assert!(t.props["pos"].x.is_some(), "landing shake");
+    let w = p.item("w").unwrap();
+    let wipes: Vec<&Effect> = w.fx.iter().filter(|e| e.kind == "linearwipe").collect();
+    assert_eq!(wipes.len(), 2);
+    // in: reveals from the left (hidden side shrinks to the right); out: hides from the right first
+    assert_eq!((wipes[0].props["angle"].v.num(), wipes[1].props["angle"].v.num()), (270.0, 270.0));
+    assert_eq!(wipes[0].props["completion"].k[0].v.num(), 100.0);
+    let r = p.item("r").unwrap();
+    assert!(r.props["mblur"].v.bool() && r.props["pos"].k[0].v.vec().0 < 0.0);
+    assert!(p.item("g").unwrap().fx.iter().any(|e| e.kind == "glitch"));
 }

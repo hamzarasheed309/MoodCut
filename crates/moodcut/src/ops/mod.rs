@@ -5,6 +5,7 @@ pub mod lex;
 pub mod macros;
 pub mod outline;
 pub mod presets;
+pub mod pro;
 pub mod templates;
 pub mod tools;
 

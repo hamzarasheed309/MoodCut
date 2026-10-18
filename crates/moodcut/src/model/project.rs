@@ -47,6 +47,38 @@ pub struct Project {
     /// Cached analysis results keyed by "<media>:<kind>".
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub analysis: BTreeMap<String, serde_json::Value>,
+    /// Brand kit used as the default look of titles, captions, shapes and HTML graphics.
+    #[serde(default, skip_serializing_if = "Brand::is_empty")]
+    pub brand: Brand,
+}
+
+/// Brand kit: the fonts and colors new titles, captions, shapes and graphics use unless told otherwise,
+/// so a whole video shares one consistent design.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Brand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// Title weight (100-900 or bold, black...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<String>,
+    /// Main brand color: cards, bars, backgrounds of graphics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<String>,
+    /// Highlight color: accents, lines, the active caption word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    /// Text color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Dark color for backgrounds and text boxes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark: Option<String>,
+}
+
+impl Brand {
+    pub fn is_empty(&self) -> bool {
+        *self == Brand::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -589,6 +621,7 @@ impl Project {
             mseq: 0,
             cseq: 0,
             analysis: BTreeMap::new(),
+            brand: Brand::default(),
         };
         let id = p.next_comp_id();
         p.comps.push(Comp::new(&id, "Main", w, h, fps));

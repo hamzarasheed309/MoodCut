@@ -7,7 +7,7 @@ use crate::model::anim::Anim;
 use crate::model::project::*;
 use crate::model::schema::{self, VCtx};
 use crate::model::time::{fmt_t, parse_time, TimeCtx};
-use crate::model::value::{fmt_num, Val};
+use crate::model::value::{fmt_num, Color, Val};
 use anyhow::{anyhow, bail, Result};
 use std::collections::BTreeMap;
 
@@ -21,6 +21,11 @@ pub trait Env {
     /// scripts can say `sel` and `playhead`.
     fn ui(&self) -> Ui {
         Ui::default()
+    }
+    /// Renders (or reuses) a procedural sound effect file (see `crate::sfx`) and probes it.
+    fn sfx(&self, kind: &str, dur: f64, pitch: f64, seed: u64) -> Result<Media> {
+        let _ = (kind, dur, pitch, seed);
+        bail!("sound effects need the MoodCut engine")
     }
 }
 
@@ -147,6 +152,11 @@ pub struct A {
 }
 
 impl A {
+    /// Arguments for calling another command internally.
+    pub fn from_pos(pos: Vec<String>) -> A {
+        A { pos, kv: vec![] }
+    }
+
     pub fn new(c: &Cmd) -> A {
         let mut pos = vec![];
         let mut kv = vec![];
@@ -777,6 +787,12 @@ impl<'a> Exec<'a> {
             "distribute" => self.c_distribute(&mut a),
             "ease" | "easyease" => self.c_ease(&mut a),
             "workarea" | "inout" => self.c_workarea(&mut a),
+            "sfx" | "sound-effect" | "soundfx" => self.c_sfx(&mut a),
+            "speedramp" | "ramp" | "timeremap" => self.c_speedramp(&mut a),
+            "punchin" | "punch-in" | "punchins" => self.c_punchin(&mut a),
+            "jcut" => self.c_splitedit(&mut a, true),
+            "lcut" => self.c_splitedit(&mut a, false),
+            "brand" | "brandkit" => self.c_brand(&mut a),
             "sound" | "essentialsound" => self.c_sound(&mut a),
             "undo" | "redo" => bail!("undo/redo must be sent on their own (or use the project tool)"),
             v => {
@@ -1253,8 +1269,14 @@ impl<'a> Exec<'a> {
         it.text = Some(content.replace("\\n", "\n"));
         it.name = alias;
         let id = it.id.clone();
+        // style defaults, then the brand kit, then what was asked
         let mut props = text_style(style.as_deref())?;
-        props.extend(a.rest());
+        let asked = a.rest();
+        let mut brand = asked.clone();
+        let headline = !matches!(style.as_deref().map(|s| s.to_ascii_lowercase()).as_deref(), Some("caption" | "subtitle" | "minimal"));
+        self.brand_text_props(&mut brand, headline);
+        props.extend(brand.into_iter().skip(asked.len()));
+        props.extend(asked);
         let tid = self.place_overlay(it, track)?;
         self.apply_props(&id, &props)?;
         let n_chars = content.chars().filter(|c| !c.is_whitespace()).count();
@@ -1330,6 +1352,11 @@ impl<'a> Exec<'a> {
                     shape_props.insert(p.name.to_string(), Anim::new(schema::clamp_val(p, schema::parse_val(p, &v, cx)?)));
                 }
                 _ => layer_kv.push((k, v)),
+            }
+        }
+        if target.is_none() && !shape_props.contains_key("fill") {
+            if let Some(c) = self.p.brand.accent.as_deref().and_then(|c| Color::parse(c).ok()) {
+                shape_props.insert("fill".into(), Anim::new(Val::C(c)));
             }
         }
         if kind_raw.eq_ignore_ascii_case("circle") {
@@ -1902,7 +1929,7 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 
-    fn c_detach(&mut self, a: &mut A) -> Result<()> {
+    pub(crate) fn c_detach(&mut self, a: &mut A) -> Result<()> {
         let spec = a.shift().ok_or_else(|| anyhow!("detach <ids>"))?;
         for id in self.targets(&spec)? {
             let l = self.relocate(&id)?;
@@ -2021,7 +2048,7 @@ pub const VERBS: &[&str] = &[
     "import", "comp", "track", "add", "append", "insert", "text", "shape", "solid", "adjust", "del", "move", "trim", "cut", "slip", "slide", "speed", "reverse",
     "freeze", "dup", "replace", "close", "gap", "detach", "fit", "set", "kf", "kf+", "kf-", "expr", "anim", "fx", "afx", "tr", "fade", "mask", "matte", "parent",
     "color", "lut", "marker", "master", "name", "duck", "precomp", "autocut", "captions", "montage", "beats", "reframe", "title", "keep", "null", "camera", "roll",
-    "lift", "extract", "swap", "paste", "stagger", "align", "nudge", "distribute", "ease", "workarea", "sound", "undo", "redo",
+    "lift", "extract", "swap", "paste", "stagger", "align", "nudge", "distribute", "ease", "workarea", "sound", "sfx", "speedramp", "punchin", "jcut", "lcut", "brand", "undo", "redo",
 ];
 
 /// How a placed clip treats clips already there: `overwrite` / `insert` (or `ripple`) as flags or `mode=`.

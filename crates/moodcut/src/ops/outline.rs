@@ -189,6 +189,9 @@ pub fn timeline(p: &Project, comp_id: &str, active: &str, detail: u8) -> String 
     let Some(c) = p.comp(comp_id) else { return format!("no comp '{comp_id}'") };
     let mut s = comp_header(p, c, active);
     s.push('\n');
+    if !p.brand.is_empty() {
+        let _ = writeln!(s, "brand {}", super::pro::brand_line(&p.brand));
+    }
     let mut tracks: Vec<&Track> = c.vtracks().collect();
     tracks.reverse(); // top track first, like an NLE
     tracks.extend(c.atracks());
