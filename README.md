@@ -19,18 +19,25 @@ Every click in the GUI goes through the same engine, so the AI always sees what 
 
 ## What it can do
 
-**Editing (Premiere-style)**: multi-track timeline, ripple/insert/overwrite, razor, trim, slip, slide, speed
-ramps and reverse, freeze frames, time remapping, frame-blend/optical-flow slow motion, nested sequences,
-24 transitions (plus FFmpeg's xfade set), Lumetri-style grading with 15 looks and `.cube` LUTs, blur-fill for
-portrait footage in landscape edits, audio gain automation, crossfades, sidechain ducking, measured loudness
-normalization (hits the LUFS target exactly) and a limiter, 15 audio effects, and markers.
+**Editing (Premiere-style)**: multi-track timeline with the Premiere tools (selection, track select forward,
+ripple and rolling edit, rate stretch, razor, slip, slide), a Source monitor with In/Out and insert/overwrite,
+lift/extract over a work area, swap, paste attributes, speed ramps and reverse, freeze frames, time remapping,
+frame-blend/optical-flow slow motion, nested sequences, 35 transitions (plus FFmpeg's xfade set), Lumetri color
+(basic correction, 15 looks, RGB and hue/saturation curves, color wheels, HSL secondary, `.cube` LUTs) with
+waveform, parade, vectorscope and histogram scopes, blur-fill for portrait footage in landscape edits,
+Essential Sound (dialogue / music / effects / ambience), an audio track mixer, gain automation, crossfades,
+sidechain ducking, measured loudness normalization (hits the LUFS target exactly) and a limiter, 32 audio
+effects, and markers with colors, durations and comments.
 
 **Motion design (After Effects-style)**: keyframes on every property with 30+ easing curves and custom béziers,
-keyframe loops, expressions (`wiggle`, `linear`, `ease`, `random`, `noise`…), parenting, 2.5D layers (X/Y
-rotation and depth with perspective), corner pin, motion blur, masks (feather, expand, modes), track mattes,
-adjustment layers, shape layers with trim paths and repeaters, per-character text animators, 49 video effects
-(glow, blur, chroma key, wave warp, glitch, light leaks…), 50+ animation presets and 15 editable motion graphics
-templates (lower thirds, kinetic titles, counters, bar charts, callouts, progress bars…).
+a keyframe assistant (Easy Ease, reverse, bake, sequence layers), expressions (`wiggle`, `linear`, `ease`,
+`random`, `noise`…), parenting and null objects, 3D layers seen through cameras (two-node or one-node, with
+push-in, orbit, truck and shake moves) and depth-sorted, the Align panel, a transform gizmo in the monitor,
+corner pin, motion blur, masks (feather, expand, modes), track mattes, 32 blend modes, adjustment layers, shape
+layers with trim paths and repeaters, per-character text animators, 91 video effects (glow, blurs, chroma key,
+wave warp, turbulent displace, linear/radial/venetian-blind wipes, echo and posterize time, lens flare,
+glitch, light leaks…), 50+ animation presets and 15 editable motion graphics templates (lower thirds, kinetic
+titles, counters, bar charts, callouts, progress bars…).
 
 **HTML motion graphics**: the AI (or you) designs a title, lower third, chart or full-screen animation as
 HTML/CSS/JS, the same way Claude builds web artifacts. MoodCut renders it frame by frame in headless Edge/Chrome
@@ -122,9 +129,36 @@ MoodCut also offers MCP prompts that clients show as slash commands or prompt pi
 of footage to a finished video), **talking-head**, **social-cutdown** (vertical versions), **motion-graphic** and
 **review** (check an edit and fix it). Each one runs the full workflow below with your arguments.
 
+## The editor
+
+The window follows Premiere Pro's layout: Project and Library on the left, the Source and Program monitors in the
+middle, Effect Controls, Lumetri, Audio, Markers, History and the AI console on the right, and the timeline with
+the Tools panel below. Every control writes a MoodCut Script line through the same engine the AI uses, so each
+action is undoable, shows up in History, and is something the AI can do too.
+
+| Panel / tool | What it does | Script it sends |
+| --- | --- | --- |
+| Tools: Selection (V), Track Select Forward (A), Ripple (B), Rolling (N), Rate Stretch (R), Razor (C), Slip (Y), Slide (U), Hand (H), Zoom (Z) | timeline editing | `move`, `trim … ripple`, `roll`, `fit`, `cut`, `slip`, `slide` |
+| Type (T), Shape / Mask (G) | click or drag in the Program monitor | `text … pos=`, `shape rect …`, Alt: `mask <id> rect …` |
+| Program monitor | drag a layer to move it, corners to scale, the handle to rotate (keyed when animated); safe guides; scopes | `nudge <id> pos=…`, `preview scope=` |
+| Source monitor | preview media, mark In / Out, Insert (`,`) or Overwrite (`.`) into the targeted track | `add m1[2-5] V1 at=… mode=insert` |
+| Lumetri Color | basic correction, looks, split toning, curves, hue/sat curves, color wheels, HSL secondary, vignette | `color`, `fx … curves`, `fx … colorwheels` |
+| Audio | Essential Sound tags; mixer with pan, faders, mute/solo, track and master effects, loudness target, peak meter | `sound`, `track set`, `master`, `afx` |
+| Effect Controls | every property and effect with keyframe navigation, Align & Distribute, Keyframe Assistant | `set`, `kf`, `fx`, `align`, `ease`, `stagger` |
+| Markers / History | colored markers with durations and comments; click any step to go back | `marker set`, `undo 3` |
+
+Shortcuts follow Premiere Pro and After Effects: Space, I / O (work area, or In / Out in the Source monitor),
+`;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+←/→ nudge clips a frame, Ctrl+arrows
+nudge position, Up / Down edit points, Shift+M next marker, J / K keyframes, F9 Easy Ease, Shift+E enable,
+`[` `]` and Alt+`[` `]` move or trim layers to the playhead, Ctrl+C / Ctrl+V / Ctrl+Alt+V (paste attributes),
+S snapping, X mark clip, Ctrl+Shift+C precompose.
+
+The AI sees the editor too: `sel` and `playhead` in a script mean your selection and playhead, so "grade what I
+selected" becomes `color sel cinematic` and "a title here" becomes `text 'Hi' at=playhead`.
+
 ## How the AI edits
 
-MoodCut exposes **10 tools** whose definitions total about 8.7 KB (~2,200 tokens), so connecting it costs little context:
+MoodCut exposes **10 tools** whose definitions total about 10.3 KB (~2,600 tokens), so connecting it costs little context:
 
 | Tool | Purpose |
 | --- | --- |

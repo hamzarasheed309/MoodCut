@@ -9,7 +9,7 @@ MoodCut: AI-native video editor. Loop: media import -> view -> edit (batch many 
 Ids: m1 media, c2 clips, t3 text, g4 shapes, o5 solids, j6 adjustment, n7 nested comps, s1 comps; sub-objects c2.f1 (effect) c2.m1 (mask) g4.s1 (shape) t3.x1 (text animator).
 Tracks: V1 is the bottom video track (higher = on top), A1.. audio. Times are seconds.
 Scripts are atomic: if any line fails nothing changes and the error names the line.
-Topics: workflow (a complete edit from one request, step by step), edit (every MoodCut Script command), time (time & reference syntax), props (layer/clip/text/solid properties), effects (video effects + params), audio (audio effects, ducking, loudness), transitions (transition types), anim (animation presets, easing, keyframes), text (titles, text animators, captions), shapes (shape layers & masks), templates (motion graphics templates), macros (autocut, captions, montage, reframe...), color (color grading), expr (expressions), render (export presets), analyze (analysis kinds), graphics (HTML/CSS/JS motion graphics), examples (complete example scripts), fonts (installed fonts)
+Topics: workflow (a complete edit from one request, step by step), edit (every MoodCut Script command), tools (Premiere Pro / After Effects tools and panels as commands), time (time & reference syntax), props (layer/clip/text/solid properties), effects (video effects + params), audio (audio effects, ducking, loudness), transitions (transition types), anim (animation presets, easing, keyframes), 3d (cameras, nulls, 3D layers and parallax), text (titles, text animators, captions), shapes (shape layers & masks), templates (motion graphics templates), macros (autocut, captions, montage, reframe...), color (color grading), scopes (Lumetri scopes and grading by measurement), expr (expressions), render (export presets), analyze (analysis kinds), graphics (HTML/CSS/JS motion graphics), examples (complete example scripts), fonts (installed fonts)
 ```
 
 ## workflow: a complete edit from one request, step by step
@@ -64,10 +64,50 @@ LOOK
  fade <ids> [in=0.5] [out=1] [video|audio]
 AUDIO
  set <id> vol=-6dB pan=-0.3 mute=1 fadeIn=1 fadeOut=2   duck A1 by=A2 amount=-12   master vol=-1 lufs=-14 limiter=1
+TOOLS (see help tools: Premiere/AE tools and panels)
+ roll <id> +0.3   lift|extract [in out]   swap <a> <b>   paste <from> <to> [fx|color|transform|...]   stagger <ids> by=0.1|seq   workarea 2 8
+ align <ids> left|center|... [to=comp|safe|sel]   distribute <ids> h|v   nudge <ids> pos=10,0 scale=120% rot=5 [key]   ease <ids> [props|all] easy   kf <id> all reverse|shift=+1|stretch=2|bake|clear
+ null [children=<ids>]   camera [move=pushin] [layers=<ids>]   sound <clips> dialogue|music|sfx|ambience   marker set <name|T> name= color= dur= note=
+ selectors: sel after:T before:T at:T kind:text name:x V2:after:T; time keyword playhead
 MACROS (see help macros)
  autocut silence|scenes <clip>   captions <clip> [style=]   montage m1,m2 music=<m|clip> [beats=2]   beats <music>
  reframe 9:16 [mode=blur|fill|fit]   keep <media> 0-12.5,15-30   title <template> [params]
 REFERENCES  $ last created, $2 second created in this script; names given with as= work anywhere an id does.
+```
+
+## tools: Premiere Pro / After Effects tools and panels as commands
+
+```text
+Premiere Pro and After Effects tools and panels as MoodCut Script. The editor's panels send these same lines, so everything is undoable and visible to both of you.
+TIMELINE TOOLS
+ selection (V): move <ids> at=T|by=+1f|track=V2   track select forward (A): any command with after:T or V2:after:T
+ ripple edit (B): trim <id> start=+0.5 ripple | trim <id> end=-1 ripple   rolling edit (N): roll <id> +0.3 | roll <id> to=T (cut between <id> and the next clip)
+ rate stretch (R): fit <id> dur=4 | speed <id> 150% [ripple]   razor (C): cut <id|V1|all> at=T   slip (Y): slip <id> +0.5   slide (U): slide <id> -0.3
+ rearrange: swap <a> <b>   lift (;): lift 2 5 [tracks=V1,A1]   extract ('): extract 2 5   both use the work area when no range is given
+ work area / sequence in-out: workarea 2 8 | workarea c3 | workarea all | workarea clear (render range=work)
+ paste attributes: paste <from> <to ids> [fx|color|transform|opacity|masks|audio|speed|anims|all] [stack] (default fx+transform+opacity+masks; same-kind effects are replaced)
+ enable/disable: set <id> off=1   label color: set <id> label=green   nudge: move <ids> by=+1f
+SELECTORS (anywhere ids go) sel = the editor's selection | after:T | before:T | at:T | kind:text|clip|video|audio|image|graphic|shape|solid|adjust|comp|null|camera | name:intro | V2:after:10
+ time keyword playhead (or now) = the editor's playhead, e.g. text 'Hi' at=playhead
+KEYFRAME ASSISTANT (Effect Controls, Graph Editor)
+ ease <ids|id.f1> [prop,prop|all] easy|easeIn|easeOut|linear|hold|outBack|bezier(x1,y1,x2,y2) [at=T]   (F9 Easy Ease = ease <id> all easy)
+ kf <id|id.f1> <prop|all> reverse | shift=+0.5 | stretch=2 | bake [step=1f] (expression/loop -> keyframes) | clear | smooth
+ stagger <ids> by=0.1 [from=T] [order=forward|reverse|random|time] | stagger <ids> seq [overlap=0.5] (Sequence Layers)
+ALIGN (After Effects Align panel)
+ align <ids> left|hcenter|right|top|vcenter|bottom|center [to=comp|safe|sel] [margin=40] [at=T]   distribute <ids> h|v [gap=24]
+ nudge <ids> [pos=dx,dy] [scale=120%] [rot=15] [key] [at=T]: relative move/scale/rotate (all keyframes move; with key: a keyframe at the playhead)
+ boxes are measured from the rendered layer (text, shapes, media, parenting, 3D); position keyframes move together.
+LAYERS null [at dur] [children=<ids>] | camera [move=pushin|pullout|truck|pedestal|orbit|drift|shake] [layers=<ids>] (help 3d) | set <id> blend=<mode> | matte | precomp
+COLOR (Lumetri Color panel; help color)
+ basic correction: color <ids> exposure= contrast= highlights= shadows= whites= blacks= temp= tint= sat= vibrance=   creative: color <ids> <look> + fade= stint= htint=
+ curves: fx <id> curves master='0,0 .25,.2 .75,.85 1,1' | fx <id> huecurves hueSat='0.33,-0.6' lumaSat='0.05,-1'
+ color wheels: fx <id> colorwheels shadows=#2a6cff40 highlights=#ff9a4440 midtonesL=5   HSL secondary: fx <id> secondary hue=120 hueRange=25 sat=0.6
+ vignette: fx <id> vignette   match a grade: paste <graded> <others> color   scopes: preview scope=all (help scopes)
+AUDIO (Essential Sound, Audio Track Mixer)
+ sound <clips> dialogue|music|sfx|ambience|clear [amount=1] [match=0] [under=A1] [duck=-12]: loudness match, speech chain (voice+de-ess), music ducks under dialogue
+ mixer: track set A2 vol=-3 pan=-0.2 mute=1 solo=1 | master vol=-1 lufs=-14 limiter=1 | afx <clip|A1|master> <effect> (help audio)
+MARKERS marker add T 'name' [color=#f00 dur=2 note='...'] | marker set <name|T> name= t= color= dur= note= | marker del <name|T> | marker clear
+HISTORY project action=history (undo labels) | undo [n] / redo [n]
 ```
 
 ## time: time & reference syntax
@@ -94,8 +134,10 @@ Every layer:
  ry=0 [num] 3D rotation around Y axis (degrees, perspective)
  z=0 [num] 3D depth (positive = farther, perspective)
  skew=0 [num -85..85] Horizontal skew in degrees
- blend=normal [normal|multiply|screen|overlay|darken|lighten|colordodge|colorburn|hardlight|softlight|difference|exclusion|hue|saturation|color|luminosity|add] (static) Blend mode
+ blend=normal [normal|multiply|screen|overlay|darken|lighten|colordodge|colorburn|hardlight|softlight|difference|exclusion|hue|saturation|color|luminosity|add|subtract|divide|linearburn|lineardodge|linearlight|vividlight|pinlight|hardmix|darkercolor|lightercolor|dissolve|stencilalpha|stencilluma|silhouettealpha|silhouetteluma] (static) Blend mode
  mblur=false [bool] (static) Motion blur for animated transforms
+ 3d=false [bool] (static) 3D layer: seen through the comp camera even without rotation or depth
+ label=none [none|red|orange|yellow|green|aqua|blue|violet|pink|gray] (static) Label color in the timeline (organizing only)
 Media clip:
  speed=1 [num] (static) Playback speed (2 = 2x faster, 50% = half). Changes duration via the speed command
  reverse=false [bool] (static) Play backwards
@@ -145,12 +187,20 @@ Nested comp:
  remap=-1 [num] Time remap keyframes -> nested comp seconds (-1 = off)
  vol=0 [num -96..24] Audio gain of the nested comp in dB
  mute=false [bool] (static) Mute nested audio
+Camera (camera layers; also pos z rx ry rot):
+ zoom=0 [num 0..100000] Focal length in px (0 = default: 0.926 x comp width, like a 50mm lens)
+ poi=center [x,y] Point of interest the camera aims at (two-node camera)
+ poiZ=0 [num] Depth of the point of interest
+ aim=true [bool] (static) Aim at the point of interest (off: one-node camera aimed with rx/ry/rot)
+Blend modes: normal multiply screen overlay darken lighten colordodge colorburn hardlight softlight difference exclusion hue saturation color luminosity add subtract divide linearburn lineardodge linearlight vividlight pinlight hardmix darkercolor lightercolor dissolve stencilalpha stencilluma silhouettealpha silhouetteluma
+Null layers have only the layer props.
 ```
 
 ## effects: video effects + params
 
 ```text
-fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param> ...). Spatial params in comp px.
+fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param> ...). Spatial params in comp px. Effects run top to bottom; reorder with fx <id.fN> up|down.
+After Effects / Premiere names work as aliases (gaussian blur, keylight, fractal noise, turbulent displace, venetian blinds, motion tile...). [transition] effects hide the layer as completion goes 0->100; [time] effects change when frames are taken.
 [color]
  lumetri (aka grade color colorgrade): Premiere-style basic correction. exposure=0 contrast=0 highlights=0 shadows=0 whites=0 blacks=0 temp=0 tint=0 sat=100 vibrance=0 fade=0 stint=none htint=none
  bc (aka brightness contrast brightnesscontrast): Brightness & contrast. brightness=0 contrast=0
@@ -170,10 +220,23 @@ fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param>
  lut (aka lut3d cube): Apply a .cube 3D LUT. file='' amount=1
  posterize: Reduce color levels. levels=6
  threshold: Black/white threshold. level=0.5
+ colorwheels (aka wheels liftgammagain colorbalance threeway): Lumetri color wheels: tint shadows / midtones / highlights (color alpha = strength) and shift their brightness. shadows=none midtones=none highlights=none shadowsL=0 midtonesL=0 highlightsL=0
+ channelmixer (aka mixer channels): Channel mixer: each output channel as % of the input red, green and blue. rr=100 rg=0 rb=0 gr=0 gg=100 gb=0 br=0 bg=0 bb=100 mono=false
+ leavecolor (aka colorpass keepcolor colorsplash): Leave color: keep one color, desaturate everything else. color=#e02020 tolerance=0.1 soft=0.08 amount=1
+ changecolor (aka changetocolor colorreplace replacecolor): Change one color to another. from=#e02020 to=#2060ff tolerance=0.1 soft=0.08 mode=hue amount=1
+ secondary (aka hslsecondary hsl2 qualifier selectivecolor): Lumetri HSL secondary: key a hue / saturation / luma range and correct only that range. hue=25 hueRange=30 satMin=0.1 lumMin=0.05 lumMax=0.95 soft=0.15 shift=0 sat=1 light=0 temp=0 tint=0 show=false invert=false
+ huecurves (aka huesatcurves huevssat hslcurves): Lumetri hue/saturation curves. Each point 'x,y[,width]' adds a smooth bump: x = position 0..1 (hue or luma), y = change -1..1. hueSat='' hueHue='' hueLuma='' lumaSat='' satSat=''
+ photofilter (aka filter warmingfilter coolingfilter): Photo filter: tint as with a colored lens filter. color=#ec8a00 density=0.25 preserve=true
+ tritone: Map shadows, midtones and highlights to three colors. shadows=#0b0b1a midtones=#7f6a4f highlights=#fff6e5 amount=1
+ autolevels (aka autocontrast autocolor autotone autocorrect): Auto levels: stretch every frame to the full range (perchannel=1 also removes color casts). amount=1 clip=0.005 perchannel=false
+ legalize (aka videolimiter broadcastsafe legal): Video limiter: keep levels inside the broadcast-legal range. min=0.063 max=0.922 mode=compress
 [blur]
- blur (aka gaussian gaussianblur): Gaussian blur. radius=10 dir=both
+ blur (aka gaussian gaussianblur boxblur fastblur): Gaussian blur. radius=10 dir=both
  dirblur (aka motionblurfx directionalblur): Directional (motion) blur. angle=0 length=30
- zoomblur (aka radialblur): Radial zoom blur. amount=0.15 cx=0.5 cy=0.5
+ zoomblur (aka radialblur spinblur): Radial blur: zoom (streaks from a center) or spin (rotational). amount=0.15 cx=0.5 cy=0.5 type=zoom
+ tiltshift (aka miniature): Tilt-shift: a sharp band with blur above and below (miniature look). center=0.55 width=0.12 soft=0.25 radius=18 angle=0
+ smooth (aka surfaceblur skinsmooth beauty bilateral smartblur): Edge-preserving blur (skin smoothing, clean surfaces). radius=6 threshold=0.08 amount=1
+ lensblur (aka bokeh defocus camerablur cameralensblur): Camera lens blur with blooming bokeh highlights. radius=12 bright=1.5 threshold=0.75
  sharpen (aka unsharp): Unsharp mask sharpening. amount=1 radius=1.5
 [stylize]
  glow (aka bloom): Glow / bloom. radius=24 intensity=1 threshold=0.6 color=none
@@ -186,9 +249,21 @@ fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param>
  glitch (aka datamosh): Digital glitch (slice displacement + RGB split). amount=0.5 slices=14 speed=12
  scanlines (aka crt): CRT scanlines. spacing=4 opacity=0.3
  letterbox (aka cinemabars bars): Cinematic bars. ratio=2.39 color=#000000
+ findedges (aka edges sobel edgedetect): Find edges (line-drawing look). invert=true strength=1 amount=1
+ emboss (aka relief): Emboss. angle=135 relief=2 amount=1 color=false
+ halftone (aka colorhalftone dots comic): Halftone dots (print / comic look). size=10 angle=45 mono=true amount=1
+ strobe (aka strobelight flashing): Strobe light. color=#ffffff freq=4 duty=0.25 amount=1 mode=flash
+ bevel (aka bevelalpha bevelemboss): Bevel the layer's edges (text, logos). depth=6 angle=135 intensity=0.6 light=#ffffff dark=#000000
+ innershadow: Inner shadow inside the layer's edges. color=#000000 opacity=0.6 angle=135 distance=8 blur=10
+ outerglow (aka alphaglow halo neonglow): Colored glow around the layer's alpha (neon text, logo halos). color=#ffdd55 opacity=0.8 size=20 spread=0.1
 [generate]
  gradient (aka ramp gradientramp): Gradient overlay (blends over layer content). c1=#000000 c2=#ffffff type=linear angle=90 amount=1
  lightleak (aka leak): Animated warm light leaks (screen blend). color=#ff7a18 amount=0.6 speed=0.25
+ fourcolor (aka 4color fourcolorgradient): Four-color corner gradient over the layer (apply to a solid for a background). tl=#ff3b6b tr=#ffb020 bl=#3b5bff br=#20d0a0 amount=1
+ checker (aka checkerboard): Checkerboard pattern over the layer. size=64 c1=#ffffff c2=#000000 offset=0,0 amount=1
+ grid (aka gridlines): Grid lines over the layer. spacing=80 width=2 color=#ffffff80 offset=0,0
+ fractal (aka fractalnoise clouds noisetexture): Fractal noise texture over the layer (smoke, clouds, animated backgrounds; apply to a solid). scale=240 complexity=5 contrast=1 brightness=0 speed=0.3 type=smooth c1=#000000 c2=#ffffff offset=0,0 amount=1
+ lensflare (aka flare): Lens flare, screen-blended over the layer (use on footage or an adjustment layer). pos=0,0 brightness=1 color=#ffd7a0 rays=10 streak=0.6 ghosts=0.5
 [distort]
  wave (aka wavewarp): Wave warp. amp=12 length=120 speed=1 dir=h
  twirl (aka swirl): Twirl around a center. angle=90 radius=0.4 cx=0.5 cy=0.5
@@ -198,9 +273,28 @@ fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param>
  flip: Flip horizontally / vertically. h=true v=false
  crop: Crop layer edges (fractions of the layer). l=0 t=0 r=0 b=0 soft=0
  cornerpin (aka pin perspective): Pin the layer corners to comp points (screen replacement). tl=0,0 tr=1920,0 br=1920,1080 bl=0,1080
+ transform (aka xform): Transform inside the effect stack (applies after the effects above it: shakes and pulses on top of motion). offset=0,0 scale=1,1 rot=0 skew=0 anchor=0.5,0.5 opacity=1
+ offset (aka wrap scroll): Offset: shift the image with wrap-around (seamless scrolling). x=0 y=0 blend=0
+ polar (aka polarcoordinates littleplanet): Polar coordinates (rect to polar = 'little planet', or back). amount=1 mode=topolar
+ ripple (aka waterripple rings): Concentric ripples. amp=8 length=60 speed=1 radius=0.8 cx=0.5 cy=0.5
+ lens (aka lensdistortion barrel optics opticscompensation lenscorrection): Lens distortion: barrel (+) or pincushion (-); negative removes action-cam curvature. amount=0.25 zoom=1 cx=0.5 cy=0.5
+ turbulence (aka turbulentdisplace displace warpnoise): Turbulent displace: organic wobble, heat haze, liquid. amount=20 size=120 complexity=3 speed=0.5
+ tile (aka motiontile repeat): Motion tile: repeat the layer to fill a larger area (mirror for seamless edges). outW=3 outH=3 tileW=1 tileH=1 mirror=false phase=0,0
 [keying]
  chromakey (aka greenscreen keylight key): Remove a key color (green screen). color=#00ff00 similarity=0.35 smooth=0.12 spill=0.6
  lumakey: Key out dark (or bright) areas. threshold=0.1 smooth=0.1 invert=false
+ choke (aka matterchoke simplechoker erode mattechoker): Matte choker: shrink (+) or spread (-) the alpha edge after a key. amount=2 soft=1
+ spill (aka spillsuppress despill spillsuppressor): Spill suppressor: remove green/blue spill from edges after a key. color=#00ff00 amount=0.7
+[transition]
+ linearwipe: Linear wipe: hides the layer along a line (animate completion 0->100). completion=0 angle=90 feather=0
+ radialwipe (aka clockwipefx): Radial wipe: clock-hand reveal around a center. completion=0 start=0 cx=0.5 cy=0.5 dir=cw feather=0
+ iriswipe (aka circlewipe): Iris wipe: a circle closes onto the center (invert opens from the center). completion=0 cx=0.5 cy=0.5 feather=0 invert=false
+ blockdissolve (aka dissolveblocks): Block dissolve: the layer disappears in random blocks. completion=0 size=16 soft=0
+ venetianblinds (aka blindsfx stripes): Venetian blinds wipe. completion=0 angle=0 width=40 feather=0
+ gradientwipe (aka lumawipefx): Gradient wipe: dark areas disappear first (by the layer's own luminance). completion=0 soft=0.1 invert=false
+[time]
+ posterizetime (aka framerate choppy stutter lowfps): Posterize time: the layer updates at a lower frame rate (stop-motion look). fps=12
+ echo (aka trails timeecho ghosting): Echo: trails of the layer's earlier frames. time=0.05 count=4 decay=0.6 mode=behind
 [ffmpeg] decode-time, video clips only, static params
  denoise (aka hqdn3d): Video denoise (FFmpeg hqdn3d). strength=4
  stabilize (aka deshake warpstabilizer): Stabilize shaky footage (FFmpeg deshake). strength=16
@@ -228,6 +322,23 @@ Ducking: duck A2 by=A1 amount=-12 attack=20 release=400. Master: master vol=-1 l
  deess: De-esser. amount=0.5
  voice: Voice enhancement chain (HPF + denoise + compress + presence). amount=1
  telephone: Telephone / radio band-pass. 
+ peq: Parametric EQ: three bell bands (freq Hz, gain dB, q). f1=200 g1=0 q1=1 f2=1000 g2=0 q2=1 f3=5000 g3=0 q3=1
+ bassboost: Bass boost (low shelf). gain=6 freq=120
+ gain: Static gain stage. db=0
+ chorus: Chorus (thicker, doubled sound). depth=0.5 mix=0.5
+ flanger: Flanger (jet sweep). depth=2 speed=0.5
+ phaser: Phaser. speed=0.5 decay=0.4
+ tremolo: Tremolo (volume wobble). freq=5 depth=0.5
+ vibrato: Vibrato (pitch wobble). freq=5 depth=0.5
+ distortion: Distortion / saturation. amount=0.5
+ bitcrush: Bit crusher (lo-fi). bits=8 downsample=1
+ widen: Stereo widener (1 = unchanged, 0 = mono). amount=1.6
+ mono: Sum to mono (both channels). 
+ swap: Swap left and right channels. 
+ dehum: Remove mains hum (notches at the hum frequency and its harmonics). freq=50 harmonics=4
+ declick: Remove clicks and crackle. 
+ exciter: Harmonic exciter (adds brightness and presence). amount=1 freq=7500
+ autogain: Dynamic leveler: evens out loud and quiet passages. strength=0.5
  ff: Raw FFmpeg audio filter chain. filter=''
 ```
 
@@ -259,6 +370,17 @@ tr <a> <b> <kind> [dur] [params] (adjacent clips, centered on the cut; uses sour
  pixelate: Pixelate out and in. size=60
  luma: Luminance-based wipe. soft=0.1 invert=false
  flip: 3D card flip. dir=h
+ cube: 3D cube spin: both clips are faces of a turning cube. dir=left
+ blocks: Random blocks dissolve. size=48
+ checker: Checkerboard wipe. count=8
+ inset: Inset: incoming clip grows from a corner. dir=tl soft=0
+ irisbox: Box iris from the center. soft=0.03
+ iriscross: Cross-shaped iris from the center. soft=0.03
+ band: Band wipe: alternating bands slide in from both sides. count=8 dir=h
+ filmdissolve: Film dissolve (linear-light, smoother highlights)
+ additive: Additive dissolve: both images add up at the middle
+ leak: Dissolve through a burst of light leaks. color=#ff7a18
+ burn: Film burn: the image burns away in noisy, glowing patches. color=#ff6a00 soft=0.08
 ```
 
 ## anim: animation presets, easing, keyframes
@@ -275,6 +397,20 @@ anim presets write keyframes/expressions on any layer (combine with commas):
 [text, per character] typewriter (characters appear one by one), fadeUp (chars fade in rising 40px), pop (chars pop in with overshoot), slideUp (lines slide up + fade), blurIn (chars un-blur + fade), wordPop (words pop in one by one), bounceIn (chars drop in with bounce), dropIn (chars drop from above), spinIn (chars spin in), trackIn (letter spacing collapses + fade (cinematic)), fadeChars (chars fade in (no motion)), wave (continuous wave (loop)), jitter (continuous random jitter (loop)), fadeDown (exit: chars fade out sinking), popOut (exit: chars shrink away), blurOut (exit: chars blur out), typeOut (exit: chars disappear in reverse), slideDown (exit: lines slide down + fade)
 Options: dur= delay= ease= amount= freq= dist= at=T (one-shots, timeline time). Exit presets end at the item end.
 Keyframes: kf c1 pos 0:-200,540@outExpo 0.6:960,540 | kf c1.f1 radius 0:30 0.5:0 | kf t3 opacity 0:0 0.3:1 end-0.3:1 end:0
+```
+
+## 3d: cameras, nulls, 3D layers and parallax
+
+```text
+3D layers and cameras (After Effects style). x right, y down, z into the screen (bigger z = farther away).
+A layer is 3D when it has rx, ry or z, or 3d=1 (flat layers need 3d=1 to move with a camera). 3D layers are drawn back to front as seen from the camera; 2D layers keep track order and ignore the camera.
+camera [at= dur=] [zoom=px] [pos=x,y] [z=offset] [poi=x,y] [poiZ=] [aim=0] [move=<preset> amount= ease=] [layers=<ids>]
+ zoom 0 = default (0.926 x comp width, like a 50mm lens). z moves the camera along its view: + dollies in. poi is the point it aims at (two-node);
+ aim=0 makes a one-node camera turned with rx/ry/rot. The topmost camera layer active at a time is used. Keyframe pos, z, poi and zoom like any property; parent it to a null for rigs.
+ move presets: pushin, pullout (z, amount=px), truck, truckleft (x), pedestal, pedestaldown (y), orbit, orbitleft (around the poi, amount=degrees), drift, shake. layers=V2,V3 switches those layers to 3D.
+null [at dur] [pos=] [children=<ids>]: an invisible layer to parent others to (parent <ids> <null>) and animate them together.
+Parallax recipe: background at z=800 scale=150%, b-roll at z=0, title at z=-300, all 3d=1, then camera move=pushin amount=400.
+Layers behind the camera aren't drawn. Card flips and tilts: kf <id> ry 0:-90 0.6:0@outBack (no camera needed).
 ```
 
 ## text: titles, text animators, captions
@@ -421,9 +557,20 @@ title <template> ...                    motion graphics (help templates)
 ```text
 color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 sat=105`.
 lumetri params: exposure(stops) contrast highlights shadows whites blacks temp tint (-100..100) sat(%) vibrance fade stint htint (split-tone colors, alpha=strength).
-Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
+Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
+Measure with preview scope=all (help scopes); copy a grade with paste <from> <to> color.
 Use analyze stats to check exposure first. Presets:
 cinematic (contrasty teal shadows / warm highlights), tealorange (strong teal & orange blockbuster look), vintage (faded warm film with grain), film (subtle film emulation), bw (black & white), noir (high-contrast B&W with vignette), warm (warmer white balance), cool (cooler white balance), punchy (contrast + vibrance), faded (matte, low contrast), moody (dark, desaturated, cool), airy (bright & soft), sunset (golden warm), cyberpunk (magenta/cyan neon), natural (neutral clean correction)
+```
+
+## scopes: Lumetri scopes and grading by measurement
+
+```text
+preview scope=waveform|parade|vectorscope|histogram|all [t=seconds] [comp=] [width=] returns the Lumetri scope and a measured line:
+ luma 1st-99th percentile, median and mean | clipped (any channel >= 99.5%) | crushed (luma <= 1%) | outside broadcast 16-235 | saturation | color cast (warm/cool, green/magenta) | hints.
+ all = the frame + luma waveform + vectorscope (75% color targets, skin-tone line) + RGB parade. The time defaults to the editor's playhead, else the comp middle.
+Grade by numbers: correct first (exposure/whites/blacks until luma spans roughly 2-98% with under 1% clipped; temp/tint until the cast reads neutral), then apply a look.
+Normal scenes have a median around 35-55%; skin tones sit on the vectorscope's skin line. fx autolevels (perchannel=1) fixes levels and casts per frame; fx legalize keeps broadcast levels.
 ```
 
 ## expr: expressions
