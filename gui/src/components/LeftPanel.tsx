@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { activeId, catalog, importPaths, pickFiles, playhead, project, run, selection, toast } from "../store";
+import { activeId, catalog, graphicEditor, importPaths, pickFiles, playhead, project, run, selection, toast } from "../store";
 import type { Media } from "../types";
 import { fmtNum } from "../util";
 
@@ -17,8 +17,13 @@ function MediaCard({ m }: { m: Media }) {
       }}
       onDblClick={add}
     >
-      <div class={"bin-thumb" + (m.kind === "audio" ? " audio-thumb" : "")} style={{ backgroundImage: thumb }}>
-        <span class="kind">{m.kind}</span>
+      <div class={"bin-thumb" + (m.kind === "audio" ? " audio-thumb" : "") + (m.gfx ? " gfx-thumb" : "")} style={{ backgroundImage: thumb }}>
+        <span class="kind">{m.gfx ? "html" : m.kind}</span>
+        {m.gfx && (
+          <button class="btn sm edit-gfx" title="Edit the HTML and re-render" onClick={(e) => (e.stopPropagation(), (graphicEditor.value = { id: m.id }))}>
+            Edit
+          </button>
+        )}
         {m.kind === "audio" && <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "26px", opacity: 0.6 }}>♫</span>}
         {m.dur > 0 && <span class="dur">{m.dur >= 60 ? `${Math.floor(m.dur / 60)}:${String(Math.round(m.dur % 60)).padStart(2, "0")}` : `${fmtNum(m.dur, 1)}s`}</span>}
       </div>
@@ -42,6 +47,9 @@ function ProjectTab() {
         </button>
         <button class="btn" title="Import a whole folder" onClick={async () => importPaths(await pickFiles("folder"))}>
           Folder
+        </button>
+        <button class="btn" title="Design a motion graphic in HTML/CSS/JS" onClick={() => (graphicEditor.value = {})}>
+          HTML
         </button>
       </div>
       <input class="search" placeholder="Search media…" value={filter} onInput={(e) => setFilter((e.target as HTMLInputElement).value)} onKeyDown={(e) => e.stopPropagation()} />

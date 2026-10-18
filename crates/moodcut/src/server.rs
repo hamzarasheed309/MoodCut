@@ -77,6 +77,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/ws", get(api_ws))
         .route("/fonts/{name}", get(font_file))
         .route("/api/reveal", post(api_reveal))
+        .route("/api/graphic", get(api_graphic_get).post(api_graphic))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
@@ -527,6 +528,30 @@ async fn font_file(AxPath(name): AxPath<String>) -> Response {
         _ => return (StatusCode::NOT_FOUND, "no such font").into_response(),
     };
     ([(header::CONTENT_TYPE, "font/otf"), (header::CACHE_CONTROL, "max-age=31536000")], data).into_response()
+}
+
+/// Source and settings of an HTML graphic, for the editor dialog.
+async fn api_graphic_get(State(st): State<St>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let Some(id) = q.get("id") else { return err(StatusCode::BAD_REQUEST, "id required") };
+    let (p, ..) = st.eng.snapshot();
+    let Some(m) = p.media(id) else { return err(StatusCode::NOT_FOUND, format!("unknown media {id}")) };
+    let Some(g) = &m.gfx else { return err(StatusCode::BAD_REQUEST, format!("{id} isn't an HTML graphic")) };
+    let html = std::fs::read_to_string(&g.html).unwrap_or_default();
+    Json(json!({"ok": true, "id": m.id, "name": m.name, "html": html, "dur": g.dur, "fps": g.fps, "w": g.w, "h": g.h, "alpha": g.alpha, "vars": g.vars})).into_response()
+}
+
+/// Renders an HTML graphic (same arguments as the MCP `graphic` tool).
+async fn api_graphic(State(st): State<St>, Json(a): Json<Value>) -> Response {
+    let eng = st.eng.clone();
+    let req = crate::mcp::graphic_req(&a);
+    match blocking(move || eng.graphic(req, "gui")).await {
+        Ok(o) => {
+            use base64::Engine as _;
+            let sheet = o.sheet.map(|j| format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(j)));
+            Json(json!({"ok": true, "id": o.id, "text": o.text, "sheet": sheet})).into_response()
+        }
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
 }
 
 /// Shows a rendered file in the OS file manager.

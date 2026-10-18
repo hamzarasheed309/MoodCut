@@ -50,7 +50,7 @@ pub fn doctor() -> Result<()> {
     Ok(())
 }
 
-fn which(name: &str) -> Option<PathBuf> {
+pub fn which(name: &str) -> Option<PathBuf> {
     let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     std::env::var("PATH").ok().and_then(|p| std::env::split_paths(&p).map(|d| d.join(&exe)).find(|p| p.is_file()))
 }

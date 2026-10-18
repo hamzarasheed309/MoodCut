@@ -22,6 +22,7 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("expr", "expressions"),
     ("render", "export presets"),
     ("analyze", "analysis kinds"),
+    ("graphics", "HTML/CSS/JS motion graphics"),
     ("examples", "complete example scripts"),
     ("fonts", "installed fonts"),
 ];
@@ -30,6 +31,24 @@ const OVERVIEW: &str = "MoodCut: AI-native video editor. Loop: media import -> v
 Ids: m1 media, c2 clips, t3 text, g4 shapes, o5 solids, j6 adjustment, n7 nested comps, s1 comps; sub-objects c2.f1 (effect) c2.m1 (mask) g4.s1 (shape) t3.x1 (text animator).
 Tracks: V1 is the bottom video track (higher = on top), A1.. audio. Times are seconds.
 Scripts are atomic: if any line fails nothing changes and the error names the line.";
+
+const GRAPHICS: &str = "graphic tool: html -> rendered video with alpha (or a still, dur=0) in the library. The page is the frame: 100% width/height = comp size (or size=). Transparent unless you paint a background (alpha=false keeps an opaque page).
+Timing runs on a virtual clock, so animate any way you like and every frame is exact:
+ CSS @keyframes/transitions (animation-delay to sequence; fill-mode both to hold), el.animate() (Web Animations), requestAnimationFrame + performance.now(), setTimeout/setInterval,
+ GSAP / anime.js / Lottie / three.js / canvas / SVG <animate> (load from a CDN or files next to the html).
+ Finish (or loop) within dur; for an outro start it at dur-0.6s.
+Hooks: MC.onFrame = t => {...} runs each frame (t seconds); MC.time = now; MC.ready = a promise awaited before frame 0; MC.duration/fps/width/height/vars.
+Values: {{name}} is replaced from vars (escaped). Variant: graphic from=m7 vars={...}. Fix/redo in place: graphic id=m7 html=... (every clip using it updates).
+Media: <img src='mc://m3'>, <video src='mc://m4' muted> (seeked frame-accurately) use library media.
+Fonts: Inter 100-900 built in; Google Fonts <link> works when online; system fonts.
+Layout: size with %, vw/vh so it scales; keep text inside the 5% title-safe margin. The reply reports the content box and warns on overflow, empty frames and JS errors; check the contact sheet.
+Use: place='V3 at=2' or later `add m7 V3 at=2`; it is a normal clip (trim, move, fade, effects, blend).
+Example lower third (vars name, role):
+<style>.l3{position:absolute;left:6%;bottom:12%;font:800 4.4vh Inter;color:#fff}
+.bar{height:.6vh;margin:.8vh 0;background:#ff3b6b;transform-origin:left;animation:grow .6s cubic-bezier(.2,.8,.2,1) both}
+.name{animation:up .6s .1s both}.role{font:500 2.6vh Inter;opacity:.85;animation:up .6s .25s both}
+@keyframes grow{from{transform:scaleX(0)}}@keyframes up{from{opacity:0;transform:translateY(40%)}}</style>
+<div class=l3><div class=name>{{name}}</div><div class=bar></div><div class=role>{{role}}</div></div>";
 
 const EDIT: &str = "MoodCut Script — `verb args key=value`, one per line (or `;`). Quote text with '...'. Flags are bare words (ripple).
 PLACE
@@ -247,6 +266,7 @@ pub fn help(topic: &str) -> String {
             s
         }
         "examples" | "example" | "recipes" => EXAMPLES.to_string(),
+        "graphics" | "graphic" | "html" | "gfx" | "design" => GRAPHICS.to_string(),
         "fonts" => {
             let f = crate::render::text::families();
             format!("{} families: {}", f.len(), f.join(", "))

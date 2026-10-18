@@ -21,7 +21,8 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05
 
 pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphics engine. Workflow: media(import) -> view -> edit (send MANY script lines per call; atomic) -> preview (small contact sheet to check) -> render. \
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
-The edit tool description has a cheat sheet; call help(topic) for full references (edit, effects, transitions, anim, text, templates, macros, color, render).";
+Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media). \
+The edit tool description has a cheat sheet; call help(topic) for full references (edit, effects, transitions, anim, text, templates, macros, graphics, color, render).";
 
 pub struct Mcp {
     pub eng: Result<Arc<Engine>, String>,
@@ -105,6 +106,17 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
             "annotations": {"title": "Render", "destructiveHint": false, "openWorldHint": false}
         },
         {
+            "name": "graphic",
+            "description": "Design motion graphics as HTML/CSS/JS (like a web page or artifact) and import them as media. CSS animations/transitions, Web Animations, GSAP/anime.js/Lottie, canvas and SVG render frame-accurately in a headless browser, transparent by default. Returns the media id, layout checks, JS errors and a contact sheet.\n\
+html: full page or body fragment (Inter built in; {{key}} = vars; library media as src='mc://m3'; window.MC = {duration,fps,width,height,vars}). Optional: name, dur (s; 0 = still; default 5), size (default comp), fps, alpha (default true), vars, place ('V3 at=2' also adds a clip), id (re-render that graphic in place, e.g. fixed html), from (new variant, e.g. other vars), preview (frames in sheet, default 6). help('graphics') for patterns.",
+            "inputSchema": {"type": "object", "properties": {
+                "html": {"type": "string"}, "name": {"type": "string"}, "dur": {"type": "number"}, "size": {"type": "string"}, "fps": {"type": "number"},
+                "alpha": {"type": "boolean"}, "vars": {"type": "object", "additionalProperties": {"type": ["string", "number"]}},
+                "place": {"type": "string"}, "id": {"type": "string"}, "from": {"type": "string"}, "preview": {"type": "integer", "minimum": 0, "maximum": 12}
+            }},
+            "annotations": {"title": "HTML motion graphic", "destructiveHint": false, "openWorldHint": true}
+        },
+        {
             "name": "help",
             "description": "MoodCut reference on demand. topic: edit time props effects audio transitions anim text shapes templates macros color expr render analyze examples fonts.",
             "inputSchema": {"type": "object", "properties": {"topic": {"type": "string"}}},
@@ -183,6 +195,7 @@ impl Mcp {
             "edit" => self.t_edit(&eng, a),
             "view" => self.t_view(&eng, a),
             "preview" => return self.t_preview(&eng, a),
+            "graphic" => return self.t_graphic(&eng, a),
             "analyze" => self.t_analyze(&eng, a),
             "render" => self.t_render(&eng, a),
             other => Err(anyhow::anyhow!("unknown tool '{other}'")),
@@ -366,6 +379,21 @@ impl Mcp {
         }
     }
 
+    fn t_graphic(&self, eng: &Arc<Engine>, a: &Value) -> Value {
+        let req = graphic_req(a);
+        match eng.graphic(req, "mcp") {
+            Ok(o) => {
+                let mut content = vec![];
+                if let Some(jpg) = o.sheet {
+                    content.push(json!({"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&jpg), "mimeType": "image/jpeg"}));
+                }
+                content.push(json!({"type": "text", "text": o.text}));
+                json!({"content": content})
+            }
+            Err(e) => err_result(format!("{e:#}")),
+        }
+    }
+
     fn t_analyze(&self, eng: &Arc<Engine>, a: &Value) -> anyhow::Result<String> {
         let target = s(a, "target").ok_or_else(|| anyhow::anyhow!("analyze needs target"))?;
         let kind = s(a, "kind").ok_or_else(|| anyhow::anyhow!("analyze needs kind"))?;
@@ -428,5 +456,36 @@ impl Mcp {
                 Ok(job.status().to_string())
             }
         }
+    }
+}
+
+/// Parses `graphic` tool / API arguments.
+pub fn graphic_req(a: &Value) -> crate::gfx::GraphicReq {
+    let vars = a["vars"]
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| {
+                    let vs = match v {
+                        Value::String(x) => x.clone(),
+                        other => other.to_string(),
+                    };
+                    (k.clone(), vs)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::gfx::GraphicReq {
+        html: s(a, "html"),
+        name: s(a, "name"),
+        dur: a["dur"].as_f64(),
+        size: s(a, "size").and_then(|x| crate::ops::exec::parse_size(&x)),
+        fps: a["fps"].as_f64(),
+        alpha: a["alpha"].as_bool(),
+        vars,
+        id: s(a, "id"),
+        from: s(a, "from"),
+        place: s(a, "place"),
+        preview: a["preview"].as_u64().unwrap_or(6) as usize,
     }
 }

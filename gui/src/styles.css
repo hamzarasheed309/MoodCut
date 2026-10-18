@@ -864,3 +864,79 @@ input[type="checkbox"] {
     grid-template-columns: 220px 1fr 270px;
   }
 }
+
+/* HTML graphic editor */
+.modal.gfx-editor {
+  width: min(1180px, calc(100vw - 32px));
+  height: min(760px, calc(100vh - 48px));
+}
+.gfx-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.gfx-body textarea.code {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  font: 12.5px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+  background: #0b0b10;
+  color: #e6e6f0;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 10px;
+  tab-size: 2;
+}
+.gfx-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  min-height: 0;
+}
+.gfx-side .check {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.gfx-sheet {
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+}
+.gfx-log {
+  font: 11px/1.45 ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  user-select: text;
+}
+.gfx-side .hint {
+  font-size: 12px;
+  color: var(--faint);
+  line-height: 1.5;
+}
+.bin-thumb.gfx-thumb {
+  background-color: #2a2a33;
+}
+.bin-thumb .edit-gfx {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 8px;
+  font-size: 10.5px;
+  opacity: 0;
+}
+.bin-item:hover .edit-gfx {
+  opacity: 1;
+}
+@media (max-width: 760px) {
+  .gfx-body {
+    grid-template-columns: 1fr;
+  }
+}

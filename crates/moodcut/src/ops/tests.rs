@@ -35,6 +35,9 @@ impl Env for Mock {
             codec: "h264".into(),
             size: 1,
             mtime: 1,
+            gfx: None,
+            tags: vec![],
+            note: String::new(),
         })
     }
     fn analyze(&self, _p: &Project, _m: &str, kind: &str, _o: &BTreeMap<String, String>) -> Result<serde_json::Value> {

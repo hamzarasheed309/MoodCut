@@ -413,6 +413,55 @@ pub fn contact_sheet(rc: &RenderCtx, comp_id: &str, times: &[f64], thumb_w: u32,
     Ok(sheet)
 }
 
+/// One labelled thumbnail for `tile_sheet`.
+pub struct Tile {
+    pub label: String,
+    pub img: Pixmap,
+}
+
+/// Tiles thumbnails into one image: each is fitted (aspect kept) and centered in
+/// a `cell_w` x `cell_h` cell. `checker` shows transparency as a checkerboard.
+pub fn tile_sheet(tiles: &[Tile], cell_w: u32, cell_h: u32, cols: usize, checker: bool) -> Result<Pixmap> {
+    let cols = cols.max(1).min(tiles.len().max(1));
+    let rows = tiles.len().div_ceil(cols).max(1);
+    let gap = 4u32;
+    let mut sheet = Pixmap::new(cols as u32 * (cell_w + gap) - gap, rows as u32 * (cell_h + gap) - gap).ok_or_else(|| anyhow!("sheet too big"))?;
+    sheet.fill(resvg::tiny_skia::Color::from_rgba8(24, 24, 24, 255));
+    for (i, t) in tiles.iter().enumerate() {
+        let (cx, cy) = ((i % cols) as u32 * (cell_w + gap), (i / cols) as u32 * (cell_h + gap));
+        let mut cell = Pixmap::new(cell_w, cell_h).ok_or_else(|| anyhow!("cell"))?;
+        if checker {
+            let sq = (cell_h / 12).max(6);
+            for y in 0..cell_h {
+                for x in 0..cell_w {
+                    let v = if ((x / sq) + (y / sq)) % 2 == 0 { 92u8 } else { 64u8 };
+                    let o = ((y * cell_w + x) * 4) as usize;
+                    cell.data_mut()[o..o + 4].copy_from_slice(&[v, v, v, 255]);
+                }
+            }
+        } else {
+            cell.fill(resvg::tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+        }
+        let (iw, ih) = (t.img.width().max(1) as f32, t.img.height().max(1) as f32);
+        let k = (cell_w as f32 / iw).min(cell_h as f32 / ih);
+        let (fw, fh) = (((iw * k).round() as u32).max(1), ((ih * k).round() as u32).max(1));
+        let fitted = super::decode::resize_pixmap(&t.img, fw, fh);
+        cell.draw_pixmap(((cell_w - fw) / 2) as i32, ((cell_h - fh) / 2) as i32, fitted.as_ref(), &resvg::tiny_skia::PixmapPaint::default(), Transform::identity(), None);
+        if !t.label.is_empty() {
+            label(&mut cell, &t.label, 3.0, 3.0, (cell_h as f32 * 0.09).clamp(9.0, 20.0));
+        }
+        super::pixel::blit(&mut sheet, &cell, cx as i32, cy as i32);
+    }
+    Ok(sheet)
+}
+
+/// Decodes PNG/JPEG bytes into a premultiplied pixmap.
+pub fn decode_image(bytes: &[u8]) -> Result<Pixmap> {
+    let img = image::load_from_memory(bytes)?.to_rgba8();
+    let (w, h) = img.dimensions();
+    super::decode::pixmap_from_rgba(img.into_raw(), w, h, true).ok_or_else(|| anyhow!("bad image"))
+}
+
 /// Default output path for a render.
 pub fn default_out(project_path: Option<&Path>, name: &str, ext: &str) -> PathBuf {
     let base = project_path.and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| {

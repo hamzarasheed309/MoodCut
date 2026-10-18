@@ -177,27 +177,44 @@ impl Engine {
                 bail!("{msg}\n(no changes applied)")
             }
             Ok(out) => {
-                let rev;
-                {
-                    let mut s = self.st.write();
-                    let old = std::mem::replace(&mut s.p, work);
-                    s.undo.push((old, first_line(script)));
-                    if s.undo.len() > MAX_UNDO {
-                        s.undo.remove(0);
-                    }
-                    s.redo.clear();
-                    s.rev += 1;
-                    s.active = out.comp.clone();
-                    s.dirty = true;
-                    rev = s.rev;
-                }
-                self.autosave();
-                let summary = out.log.join("\n");
-                self.push_log(LogEntry { rev, source: source.into(), script: script.into(), result: summary.clone(), ok: true });
-                self.emit("changed", rev, source, first_line(script));
+                let rev = self.commit(work, Some(out.comp.clone()), script, source, &out.log);
                 Ok(EditOutcome { log: out.log, rev, ops: out.ops })
             }
         }
+    }
+
+    /// Replaces the project with an edited copy as one undo step, then
+    /// autosaves, logs and notifies listeners. Returns the new revision.
+    pub(crate) fn commit(&self, work: Project, active: Option<String>, label: &str, source: &str, log: &[String]) -> u64 {
+        let rev;
+        {
+            let mut s = self.st.write();
+            let old = std::mem::replace(&mut s.p, work);
+            s.undo.push((old, first_line(label)));
+            if s.undo.len() > MAX_UNDO {
+                s.undo.remove(0);
+            }
+            s.redo.clear();
+            s.rev += 1;
+            if let Some(a) = active {
+                s.active = a;
+            }
+            if s.p.comp(&s.active).is_none() {
+                s.active = s.p.main.clone();
+            }
+            s.dirty = true;
+            rev = s.rev;
+        }
+        self.autosave();
+        self.push_log(LogEntry { rev, source: source.into(), script: label.into(), result: log.join("\n"), ok: true });
+        self.emit("changed", rev, source, first_line(label));
+        rev
+    }
+
+    /// Runs script lines against a working copy (for multi-step transactions).
+    pub(crate) fn run_ops(&self, work: &mut Project, active: &str, script: &str) -> Result<ops::exec::ExecOut> {
+        let env = EnvImpl { eng: self };
+        ops::run(work, &env, active, script).map_err(|e| anyhow!("{e}"))
     }
 
     fn push_log(&self, e: LogEntry) {

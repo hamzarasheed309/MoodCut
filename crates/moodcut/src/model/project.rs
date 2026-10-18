@@ -88,6 +88,15 @@ pub struct Media {
     pub size: u64,
     #[serde(default)]
     pub mtime: u64,
+    /// HTML source when this media is a rendered motion graphic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gfx: Option<crate::gfx::Gfx>,
+    /// Free-form tags for organizing large libraries (`tag m3 broll drone`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// A short description (what's in the shot), written by a person or the AI.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 impl Media {

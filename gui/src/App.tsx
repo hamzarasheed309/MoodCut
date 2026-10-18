@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Console } from "./components/Console";
 import { Inspector } from "./components/Inspector";
 import { LeftPanel } from "./components/LeftPanel";
+import { GraphicEditor } from "./components/GraphicEditor";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
 import { Monitor } from "./components/Monitor";
 import { Timeline } from "./components/Timeline";
@@ -235,6 +236,7 @@ export function App() {
       </div>
       <RenderPanel />
       <FileBrowser />
+      <GraphicEditor />
       {connect && <ConnectAI onClose={() => setConnect(false)} />}
       <Toasts />
     </div>

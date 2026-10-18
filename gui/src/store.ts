@@ -22,6 +22,8 @@ export const toasts = signal<{ id: number; msg: string; err: boolean }[]>([]);
 export const aiPulse = signal(0);
 export const connected = signal(false);
 export const showRender = signal(false);
+/** HTML graphic editor: null = closed, {} = new graphic, {id} = edit that graphic. */
+export const graphicEditor = signal<null | { id?: string }>(null);
 export const fileBrowser = signal<null | { kind: "open" | "save" | "import" | "folder"; filter: string; resolve: (p: string[]) => void }>(null);
 
 export const comp = computed<Comp | null>(() => {

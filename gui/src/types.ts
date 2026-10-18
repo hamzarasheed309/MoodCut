@@ -89,6 +89,9 @@ export interface Media {
   has_video: boolean;
   has_audio: boolean;
   alpha?: boolean;
+  gfx?: { html: string; w: number; h: number; fps: number; dur: number; alpha: boolean; vars?: Record<string, string> };
+  tags?: string[];
+  note?: string;
 }
 
 export interface Project {

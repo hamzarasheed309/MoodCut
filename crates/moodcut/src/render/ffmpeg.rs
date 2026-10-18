@@ -215,6 +215,9 @@ impl Ff {
                 codec: "svg".into(),
                 size: meta.len(),
                 mtime,
+                gfx: None,
+                tags: vec![],
+                note: String::new(),
             });
         }
         let out = command(&self.ffprobe)
@@ -250,6 +253,9 @@ impl Ff {
             codec: String::new(),
             size: meta.len(),
             mtime,
+            gfx: None,
+            tags: vec![],
+            note: String::new(),
         };
         if let Some(a) = a {
             m.channels = a["channels"].as_u64().unwrap_or(2) as u32;

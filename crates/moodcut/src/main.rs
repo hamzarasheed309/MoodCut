@@ -11,6 +11,7 @@
 pub mod analyze;
 pub mod config;
 pub mod engine;
+pub mod gfx;
 pub mod mcp;
 pub mod model;
 pub mod ops;
@@ -100,6 +101,33 @@ enum Cmd {
         out: String,
         #[arg(long, default_value_t = 1280)]
         width: u32,
+    },
+    /// Render an HTML/CSS/JS motion graphic to video with alpha (or a still), optionally into a project.
+    Graphic {
+        /// The .html file (full page or body fragment).
+        html: String,
+        /// Output file: .mov (PNG with alpha) or .png for a still. Not needed with --project.
+        #[arg(short, long)]
+        out: Option<String>,
+        /// Seconds (0 = still image).
+        #[arg(long, default_value_t = 5.0)]
+        dur: f64,
+        #[arg(long, default_value = "1920x1080")]
+        size: String,
+        #[arg(long, default_value_t = 30.0)]
+        fps: f64,
+        /// Keep the page background instead of transparency.
+        #[arg(long)]
+        opaque: bool,
+        /// Import into this project and save it.
+        #[arg(long)]
+        project: Option<String>,
+        /// With --project: also place it, e.g. "V3 at=2".
+        #[arg(long)]
+        place: Option<String>,
+        /// key=value for {{key}} placeholders (repeatable).
+        #[arg(long = "var")]
+        vars: Vec<String>,
     },
     /// Check FFmpeg, encoders, GPU, fonts and speech-to-text.
     Doctor,
@@ -225,6 +253,42 @@ fn real_main() -> Result<()> {
             let bytes = if out.ends_with(".jpg") || out.ends_with(".jpeg") { render::encode::encode_jpeg(&pm, 90)? } else { render::encode::encode_png(&pm)? };
             std::fs::write(&out, bytes)?;
             println!("wrote {out} ({}x{})", pm.width(), pm.height());
+            Ok(())
+        }
+        Cmd::Graphic { html, out, dur, size, fps, opaque, project, place, vars } => {
+            let src = std::fs::read_to_string(&html).with_context(|| format!("reading {html}"))?;
+            let (w, h) = ops::exec::parse_size(&size).ok_or_else(|| anyhow::anyhow!("bad size {size}"))?;
+            let vars: std::collections::BTreeMap<String, String> = vars.iter().filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
+            match project {
+                Some(proj) => {
+                    let eng = load_engine()?;
+                    if std::path::Path::new(&proj).exists() {
+                        eng.open(&proj)?;
+                    } else {
+                        eng.new_project("Untitled", w, h, fps, Some(PathBuf::from(&proj)))?;
+                    }
+                    let name = std::path::Path::new(&html).file_stem().map(|s| s.to_string_lossy().to_string());
+                    let req = gfx::GraphicReq { html: Some(src), name, dur: Some(dur), size: Some((w, h)), fps: Some(fps), alpha: Some(!opaque), vars, place, preview: 0, ..Default::default() };
+                    let o = eng.graphic(req, "cli")?;
+                    println!("{}", o.text);
+                    println!("{}", eng.save(None)?);
+                }
+                None => {
+                    let ff = render::ffmpeg::Ff::find()?;
+                    let out = PathBuf::from(out.unwrap_or_else(|| format!("{}.{}", html.trim_end_matches(".html"), if dur > 0.0 { "mov" } else { "png" })));
+                    let page = gfx::prepare_html(&src, &vars);
+                    let dir = std::path::Path::new(&html).parent().map(|d| d.to_path_buf()).filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| PathBuf::from("."));
+                    let spec = gfx::RenderSpec { html: &page, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &vars, keep: vec![dur / 2.0] };
+                    let r = gfx::render(&ff, &spec, &out, None)?;
+                    println!("wrote {} ({} frames in {:.1}s)", out.display(), r.frames, r.secs);
+                    if r.empty {
+                        println!("! nothing visible was rendered");
+                    }
+                    for e in r.errors {
+                        println!("! {e}");
+                    }
+                }
+            }
             Ok(())
         }
         Cmd::Doctor => setup::doctor(),
