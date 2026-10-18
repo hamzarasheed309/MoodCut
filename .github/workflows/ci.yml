@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      commit_exe:
+        description: "Commit the tested Windows exe to release/windows-x64 on this branch"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -125,6 +130,42 @@ jobs:
             README.md
             LICENSE
           if-no-files-found: error
+
+  commit-exe:
+    name: Commit the tested exe to the branch
+    if: github.event_name == 'workflow_dispatch' && inputs.commit_exe
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: moodcut-windows-x64
+          path: artifact
+      - name: Commit release/windows-x64/moodcut.exe
+        run: |
+          mkdir -p release/windows-x64
+          cp artifact/target/release/moodcut.exe release/windows-x64/moodcut.exe
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          {
+            echo "MoodCut $version for Windows x64"
+            echo "source commit: ${{ github.sha }}"
+            echo "built by: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "built at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "sha256: $(sha256sum release/windows-x64/moodcut.exe | cut -d' ' -f1)"
+            echo "size: $(stat -c %s release/windows-x64/moodcut.exe) bytes"
+          } > release/windows-x64/BUILD.txt
+          cat release/windows-x64/BUILD.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release/windows-x64
+          if git diff --cached --quiet; then echo "exe unchanged"; exit 0; fi
+          git commit -m "Windows exe $version built and tested by CI from ${GITHUB_SHA::7}"
+          git push origin HEAD:${{ github.ref_name }}
 
   release:
     name: Publish release
