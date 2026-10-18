@@ -1,0 +1,34 @@
+[package]
+name = "moodcut"
+description = "MoodCut - AI-native FFmpeg video editor & motion graphics engine controllable over MCP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "moodcut"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "io-std", "net", "process", "time", "fs", "signal"] }
+axum = { version = "0.8", features = ["ws"] }
+futures = "0.3"
+rayon = "1"
+parking_lot = "0.12"
+resvg = "0.48"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tiff", "gif"] }
+unicode-bidi = "0.3"
+rustybuzz = "0.20"
+base64 = "0.22"
+rust-embed = "8"
+mime_guess = "2"
+clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[dev-dependencies]

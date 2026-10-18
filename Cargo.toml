@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/moodcut"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hamzarasheed309/MoodCut"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+# Pixel loops need optimisation even in debug builds to be usable.
+[profile.dev.package."*"]
+opt-level = 3
+[profile.dev]
+opt-level = 1

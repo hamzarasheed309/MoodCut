@@ -1,0 +1,7 @@
+/target
+**/node_modules
+/gui/dist
+*.mcut.bak
+.moodcut-cache/
+/out/
+*.log
