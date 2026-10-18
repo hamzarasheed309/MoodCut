@@ -1,0 +1,26 @@
+<!-- Kinetic title: letters rise in one by one, an underline sweeps, then everything exits.
+     Variables: title, sub.  moodcut graphic examples/graphics/kinetic-title.html --dur 4 --var title="MAKE IT MOVE" -->
+<style>
+  .wrap { position: absolute; inset: 0; display: grid; place-items: center; }
+  h1 { margin: 0; font: 900 13vh/1 Inter; color: #fff; letter-spacing: -0.02em; white-space: nowrap; }
+  h1 span { display: inline-block; animation: rise .7s cubic-bezier(.2,.9,.25,1.2) both; }
+  .line { height: 1vh; margin-top: 2vh; background: linear-gradient(90deg, #7c5cff, #ff3b6b); border-radius: 1vh;
+          transform-origin: left; animation: sweep .8s .5s cubic-bezier(.7,0,.2,1) both; }
+  p { margin: 2vh 0 0; text-align: center; font: 600 3.4vh Inter; color: #ffffffcc; animation: fade .6s .9s both; }
+  .all { animation: exit .5s 3.4s cubic-bezier(.6,0,.8,.2) forwards; }
+  @keyframes rise { from { transform: translateY(60%) rotate(8deg); opacity: 0 } }
+  @keyframes sweep { from { transform: scaleX(0) } }
+  @keyframes fade { from { opacity: 0; transform: translateY(30%) } }
+  @keyframes exit { to { opacity: 0; transform: scale(1.08); filter: blur(12px) } }
+</style>
+<div class="wrap"><div class="all">
+  <h1 id="t">{{title}}</h1>
+  <div class="line"></div>
+  <p>{{sub|}}</p>
+</div></div>
+<script>
+  // split the title into letters with a staggered delay
+  const h = document.getElementById('t');
+  h.innerHTML = [...h.textContent].map((c, i) =>
+    `<span style="animation-delay:${(i * 0.045).toFixed(3)}s">${c === ' ' ? '&nbsp;' : c}</span>`).join('');
+</script>

@@ -9,6 +9,7 @@
 //!   moodcut doctor     check FFmpeg, encoders, GPU, fonts, speech-to-text
 
 pub mod analyze;
+pub mod check;
 pub mod config;
 pub mod engine;
 pub mod gfx;
@@ -120,6 +121,9 @@ enum Cmd {
         /// Keep the page background instead of transparency.
         #[arg(long)]
         opaque: bool,
+        /// For a still (--dur 0): the animation time to capture, in seconds.
+        #[arg(long)]
+        at: Option<f64>,
         /// Import into this project and save it.
         #[arg(long)]
         project: Option<String>,
@@ -129,6 +133,28 @@ enum Cmd {
         /// key=value for {{key}} placeholders (repeatable).
         #[arg(long = "var")]
         vars: Vec<String>,
+    },
+    /// Quality-check an edit (black gaps, title-safe, contrast, loudness, ...) and optionally fix it.
+    Check {
+        project: String,
+        /// web (default) | youtube | social | podcast | broadcast
+        #[arg(long)]
+        target: Option<String>,
+        /// Apply the proposed fixes and save.
+        #[arg(long)]
+        fix: bool,
+        /// Skip measuring the audio mix.
+        #[arg(long)]
+        no_audio: bool,
+        /// Expected duration in seconds.
+        #[arg(long)]
+        dur: Option<f64>,
+        /// Expected size, e.g. 1080x1920.
+        #[arg(long)]
+        size: Option<String>,
+        /// Exit with status 1 when errors are found (for scripts/CI).
+        #[arg(long)]
+        strict: bool,
     },
     /// Check FFmpeg, encoders, GPU, fonts and speech-to-text.
     Doctor,
@@ -256,7 +282,7 @@ fn real_main() -> Result<()> {
             println!("wrote {out} ({}x{})", pm.width(), pm.height());
             Ok(())
         }
-        Cmd::Graphic { html, out, dur, size, fps, opaque, project, place, vars } => {
+        Cmd::Graphic { html, out, dur, size, fps, opaque, at, project, place, vars } => {
             let src = std::fs::read_to_string(&html).with_context(|| format!("reading {html}"))?;
             let (w, h) = ops::exec::parse_size(&size).ok_or_else(|| anyhow::anyhow!("bad size {size}"))?;
             let vars: std::collections::BTreeMap<String, String> = vars.iter().filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
@@ -269,18 +295,18 @@ fn real_main() -> Result<()> {
                         eng.new_project("Untitled", w, h, fps, Some(PathBuf::from(&proj)))?;
                     }
                     let name = std::path::Path::new(&html).file_stem().map(|s| s.to_string_lossy().to_string());
-                    let req = gfx::GraphicReq { html: Some(src), name, dur: Some(dur), size: Some((w, h)), fps: Some(fps), alpha: Some(!opaque), vars, place, preview: 0, ..Default::default() };
+                    let req = gfx::GraphicReq { html: Some(src), name, dur: Some(dur), size: Some((w, h)), fps: Some(fps), alpha: Some(!opaque), vars, place, preview: 0, at, ..Default::default() };
                     let o = eng.graphic(req, "cli")?;
                     println!("{}", o.text);
                     println!("{}", eng.save(None)?);
                 }
                 None => {
-                    let ff = render::ffmpeg::Ff::find()?;
+                    let ff = if dur > 0.0 { Some(render::ffmpeg::Ff::find()?) } else { render::ffmpeg::Ff::find().ok() };
                     let out = PathBuf::from(out.unwrap_or_else(|| format!("{}.{}", html.trim_end_matches(".html"), if dur > 0.0 { "mov" } else { "png" })));
                     let page = gfx::prepare_html(&src, &vars);
                     let dir = std::path::Path::new(&html).parent().map(|d| d.to_path_buf()).filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| PathBuf::from("."));
-                    let spec = gfx::RenderSpec { html: &page, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &vars, keep: vec![dur / 2.0] };
-                    let r = gfx::render(&ff, &spec, &out, None)?;
+                    let spec = gfx::RenderSpec { html: &page, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &vars, keep: vec![dur / 2.0], still_at: at.unwrap_or(0.0) };
+                    let r = gfx::render(ff.as_ref(), &spec, &out, None)?;
                     println!("wrote {} ({} frames in {:.1}s)", out.display(), r.frames, r.secs);
                     if r.empty {
                         println!("! nothing visible was rendered");
@@ -289,6 +315,26 @@ fn real_main() -> Result<()> {
                         println!("! {e}");
                     }
                 }
+            }
+            Ok(())
+        }
+        Cmd::Check { project, target, fix, no_audio, dur, size, strict } => {
+            let eng = load_engine()?;
+            eng.open(&project)?;
+            let o = check::CheckOpts {
+                target,
+                fix,
+                audio: !no_audio,
+                expect: check::Expect { dur, size: size.as_deref().and_then(ops::exec::parse_size), ..Default::default() },
+                ..Default::default()
+            };
+            let r = eng.check(&o, "cli")?;
+            println!("{}", r.text);
+            if fix {
+                println!("{}", eng.save(None)?);
+            }
+            if strict && r.text.lines().any(|l| l.starts_with('E') && l.chars().nth(1).is_some_and(|c| c.is_ascii_digit())) {
+                std::process::exit(1);
             }
             Ok(())
         }

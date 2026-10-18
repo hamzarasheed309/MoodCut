@@ -118,13 +118,27 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         {
             "name": "graphic",
             "description": "Design motion graphics as HTML/CSS/JS (like a web page or artifact) and import them as media. CSS animations/transitions, Web Animations, GSAP/anime.js/Lottie, canvas and SVG render frame-accurately in a headless browser, transparent by default. Returns the media id, layout checks, JS errors and a contact sheet.\n\
-html: full page or body fragment (Inter built in; {{key}} = vars; library media as src='mc://m3'; window.MC = {duration,fps,width,height,vars}). Optional: name, dur (s; 0 = still; default 5), size (default comp), fps, alpha (default true), vars, place ('V3 at=2' also adds a clip), id (re-render that graphic in place, e.g. fixed html), from (new variant, e.g. other vars), preview (frames in sheet, default 6). help('graphics') for patterns.",
+html: full page or body fragment (Inter built in; {{key}} = vars; library media as src='mc://m3'; window.MC = {duration,fps,width,height,vars}). Optional: name, dur (s; 0 = still, captured at `at` s; default 5), size (default comp), fps, alpha (default true), vars, place ('V3 at=2' also adds a clip), id (re-render that graphic in place, e.g. fixed html), from (new variant, e.g. other vars), preview (frames in sheet, default 6). help('graphics') for patterns.",
             "inputSchema": {"type": "object", "properties": {
                 "html": {"type": "string"}, "name": {"type": "string"}, "dur": {"type": "number"}, "size": {"type": "string"}, "fps": {"type": "number"},
                 "alpha": {"type": "boolean"}, "vars": {"type": "object", "additionalProperties": {"type": ["string", "number"]}},
-                "place": {"type": "string"}, "id": {"type": "string"}, "from": {"type": "string"}, "preview": {"type": "integer", "minimum": 0, "maximum": 12}
+                "place": {"type": "string"}, "id": {"type": "string"}, "from": {"type": "string"}, "preview": {"type": "integer", "minimum": 0, "maximum": 12},
+                "at": {"type": "number", "description": "stills: animation time to capture (s)"}
             }},
             "annotations": {"title": "HTML motion graphic", "destructiveHint": false, "openWorldHint": true}
+        },
+        {
+            "name": "check",
+            "description": "Quality-check the edit before rendering (and after big changes). Finds black gaps, 1-2 frame gaps, flash frames, layers hidden under opaque clips, offline media, upscaled/soft footage, fps judder, transitions without handles, text/graphics outside title-safe, off-screen or overlapping, small or low-contrast text, text too short to read, fast captions, audio past the picture, music under dialogue without ducking, and the real mix loudness/true peak vs the delivery target. Each problem has an id/time and usually a fix line; fix=true applies them as one undoable edit. expect verifies the request: {dur, dur_tol, size:'1080x1920', aspect, fps, lufs, captions, music, max_shot, min_shot}. target: web (default, -14 LUFS) | youtube | social | podcast (-16) | broadcast (-23). Returns frames of visual problems with title-safe guides.",
+            "inputSchema": {"type": "object", "properties": {
+                "comp": {"type": "string"}, "target": {"type": "string"}, "fix": {"type": "boolean"}, "audio": {"type": "boolean"}, "frames": {"type": "boolean"},
+                "safe": {"type": "number", "description": "title-safe margin fraction, default 0.05"},
+                "expect": {"type": "object", "properties": {
+                    "dur": {"type": "number"}, "dur_tol": {"type": "number"}, "size": {"type": "string"}, "aspect": {"type": "string"}, "fps": {"type": "number"},
+                    "lufs": {"type": "number"}, "captions": {"type": "boolean"}, "music": {"type": "boolean"}, "max_shot": {"type": "number"}, "min_shot": {"type": "number"}
+                }}
+            }},
+            "annotations": {"title": "Check edit quality", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
         },
         {
             "name": "help",
@@ -206,6 +220,7 @@ impl Mcp {
             "view" => self.t_view(&eng, a),
             "preview" => return self.t_preview(&eng, a),
             "graphic" => return self.t_graphic(&eng, a),
+            "check" | "qa" | "review" => return self.t_check(&eng, a),
             "analyze" => self.t_analyze(&eng, a),
             "render" => self.t_render(&eng, a),
             other => Err(anyhow::anyhow!("unknown tool '{other}'")),
@@ -437,6 +452,45 @@ impl Mcp {
         }
     }
 
+    fn t_check(&self, eng: &Arc<Engine>, a: &Value) -> Value {
+        let e = &a["expect"];
+        let aspect = e["aspect"].as_str().and_then(|x| {
+            let (w, h) = x.split_once([':', 'x', '/'])?;
+            Some(w.trim().parse::<f64>().ok()? / h.trim().parse::<f64>().ok()?)
+        }).or_else(|| e["aspect"].as_f64());
+        let o = crate::check::CheckOpts {
+            comp: s(a, "comp"),
+            target: s(a, "target"),
+            expect: crate::check::Expect {
+                dur: e["dur"].as_f64(),
+                dur_tol: e["dur_tol"].as_f64(),
+                size: e["size"].as_str().and_then(crate::ops::exec::parse_size),
+                aspect,
+                fps: e["fps"].as_f64(),
+                lufs: e["lufs"].as_f64(),
+                captions: e["captions"].as_bool(),
+                music: e["music"].as_bool(),
+                max_shot: e["max_shot"].as_f64(),
+                min_shot: e["min_shot"].as_f64(),
+            },
+            audio: a["audio"].as_bool().unwrap_or(true),
+            frames: a["frames"].as_bool().unwrap_or(true),
+            fix: a["fix"].as_bool().unwrap_or(false),
+            safe: a["safe"].as_f64(),
+        };
+        match eng.check(&o, "mcp") {
+            Ok(r) => {
+                let mut content = vec![];
+                if let Some(jpg) = r.sheet {
+                    content.push(json!({"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&jpg), "mimeType": "image/jpeg"}));
+                }
+                content.push(json!({"type": "text", "text": r.text}));
+                json!({"content": content})
+            }
+            Err(e) => err_result(format!("{e:#}")),
+        }
+    }
+
     fn t_analyze(&self, eng: &Arc<Engine>, a: &Value) -> anyhow::Result<String> {
         let target = s(a, "target").ok_or_else(|| anyhow::anyhow!("analyze needs target"))?;
         let kind = s(a, "kind").ok_or_else(|| anyhow::anyhow!("analyze needs kind"))?;
@@ -538,5 +592,6 @@ pub fn graphic_req(a: &Value) -> crate::gfx::GraphicReq {
         from: s(a, "from"),
         place: s(a, "place"),
         preview: a["preview"].as_u64().unwrap_or(6) as usize,
+        at: a["at"].as_f64(),
     }
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Console } from "./components/Console";
 import { Inspector } from "./components/Inspector";
 import { LeftPanel } from "./components/LeftPanel";
+import { CheckPanel } from "./components/CheckPanel";
 import { GraphicEditor } from "./components/GraphicEditor";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
 import { Monitor } from "./components/Monitor";
@@ -25,6 +26,7 @@ import {
   scrollX,
   selection,
   setPlayhead,
+  showCheck,
   showRender,
   tool,
   undoN,
@@ -83,6 +85,9 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
       </div>
       <button class="btn sm" onClick={onConnect}>
         Connect AI
+      </button>
+      <button class="btn sm" title="Find problems before exporting (gaps, title-safe, contrast, loudness…)" onClick={() => (showCheck.value = true)}>
+        Check
       </button>
       <button class="btn sm primary" onClick={() => (showRender.value = true)}>
         Export
@@ -237,6 +242,7 @@ export function App() {
       <RenderPanel />
       <FileBrowser />
       <GraphicEditor />
+      <CheckPanel />
       {connect && <ConnectAI onClose={() => setConnect(false)} />}
       <Toasts />
     </div>

@@ -38,7 +38,7 @@ Timing runs on a virtual clock, so animate any way you like and every frame is e
  GSAP / anime.js / Lottie / three.js / canvas / SVG <animate> (load from a CDN or files next to the html).
  Finish (or loop) within dur; for an outro start it at dur-0.6s.
 Hooks: MC.onFrame = t => {...} runs each frame (t seconds); MC.time = now; MC.ready = a promise awaited before frame 0; MC.duration/fps/width/height/vars.
-Values: {{name}} is replaced from vars (escaped). Variant: graphic from=m7 vars={...}. Fix/redo in place: graphic id=m7 html=... (every clip using it updates).
+Values: {{name}} or {{name|default}} from vars (escaped; unset ones render empty and are reported). Variant: graphic from=m7 vars={...}. Fix/redo in place: graphic id=m7 html=... (every clip using it updates). Stills: dur=0 at=2 captures the design at 2s.
 Media: <img src='mc://m3'>, <video src='mc://m4' muted> (seeked frame-accurately) use library media.
 Fonts: Inter 100-900 built in; Google Fonts <link> works when online; system fonts.
 Layout: size with %, vw/vh so it scales; keep text inside the 5% title-safe margin. The reply reports the content box and warns on overflow, empty frames and JS errors; check the contact sheet.

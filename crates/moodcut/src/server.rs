@@ -79,6 +79,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/fonts/{name}", get(font_file))
         .route("/api/reveal", post(api_reveal))
         .route("/api/graphic", get(api_graphic_get).post(api_graphic))
+        .route("/api/check", post(api_check))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
@@ -550,6 +551,21 @@ async fn api_graphic(State(st): State<St>, Json(a): Json<Value>) -> Response {
         }
         Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
     }
+}
+
+/// Runs the edit quality check (same arguments as the MCP `check` tool).
+async fn api_check(State(st): State<St>, Json(a): Json<Value>) -> Response {
+    let mcp = st.mcp.clone();
+    let r = blocking(move || mcp.call("check", &a)).await;
+    let mut text = String::new();
+    let mut sheet = None;
+    for c in r["content"].as_array().into_iter().flatten() {
+        match c["type"].as_str() {
+            Some("image") => sheet = c["data"].as_str().map(|d| format!("data:image/jpeg;base64,{d}")),
+            _ => text = c["text"].as_str().unwrap_or("").to_string(),
+        }
+    }
+    Json(json!({"ok": r.get("isError").is_none(), "text": text, "sheet": sheet})).into_response()
 }
 
 /// Shows a rendered file in the OS file manager.

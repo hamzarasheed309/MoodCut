@@ -58,6 +58,8 @@ pub struct RenderSpec<'a> {
     pub vars: &'a BTreeMap<String, String>,
     /// Frames to keep as PNG for the preview sheet (times in seconds).
     pub keep: Vec<f64>,
+    /// For stills (dur 0): the animation time to capture, in seconds.
+    pub still_at: f64,
 }
 
 pub struct RenderOut {
@@ -436,13 +438,57 @@ const BASE_CSS: &str = "@font-face{font-family:Inter;src:url(/mc-fonts/Inter-Reg
 @font-face{font-family:Inter;src:url(/mc-fonts/Inter-Bold.otf);font-weight:600 800}\
 @font-face{font-family:Inter;src:url(/mc-fonts/Inter-Black.otf);font-weight:900}";
 
-/// Substitutes `{{var}}`, maps `mc://m3` to served media, and wraps a body
+/// Replaces `{{name}}` / `{{name|default}}` placeholders; unset ones without a
+/// default become empty. Returns the text and the names left unset.
+pub fn fill_vars(src: &str, vars: &BTreeMap<String, String>) -> (String, Vec<String>) {
+    // inside <script>, an unknown {{x}} may be real code: leave it alone
+    let lower = src.to_ascii_lowercase();
+    let mut scripts = vec![];
+    let mut from = 0;
+    while let Some(a) = lower[from..].find("<script").map(|x| x + from) {
+        let b = lower[a..].find("</script").map(|x| x + a).unwrap_or(src.len());
+        scripts.push((a, b));
+        from = b.max(a + 7);
+    }
+    let in_script = |pos: usize| scripts.iter().any(|(a, b)| pos >= *a && pos < *b);
+    let mut out = String::with_capacity(src.len());
+    let mut missing = vec![];
+    let mut rest = src;
+    while let Some(i) = rest.find("{{") {
+        let at = src.len() - rest.len() + i;
+        let Some(j) = rest[i + 2..].find("}}") else { break };
+        let inner = &rest[i + 2..i + 2 + j];
+        let (name, def) = match inner.split_once('|') {
+            Some((n, d)) => (n.trim(), Some(d)),
+            None => (inner.trim(), None),
+        };
+        // only identifier-like names are placeholders (leave JS/CSS braces alone)
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            out.push_str(&rest[..i + 2]);
+            rest = &rest[i + 2..];
+            continue;
+        }
+        out.push_str(&rest[..i]);
+        match (vars.get(name), def) {
+            (Some(v), _) => out.push_str(&html_escape(v)),
+            (None, Some(d)) => out.push_str(d),
+            (None, None) if in_script(at) => out.push_str(&rest[i..i + 2 + j + 2]),
+            (None, None) => {
+                if !missing.iter().any(|m| m == name) {
+                    missing.push(name.to_string());
+                }
+            }
+        }
+        rest = &rest[i + 2 + j + 2..];
+    }
+    out.push_str(rest);
+    (out, missing)
+}
+
+/// Substitutes placeholders, maps `mc://m3` to served media, and wraps a body
 /// fragment in a full-frame transparent page.
 pub fn prepare_html(src: &str, vars: &BTreeMap<String, String>) -> String {
-    let mut s = src.to_string();
-    for (k, v) in vars {
-        s = s.replace(&format!("{{{{{k}}}}}"), &html_escape(v));
-    }
+    let mut s = fill_vars(src, vars).0;
     s = s.replace("mc://", "/mc-media/");
     let lower = s.trim_start().to_ascii_lowercase();
     if lower.starts_with("<!doctype") || lower.starts_with("<html") {
@@ -477,7 +523,8 @@ pub fn frame_count(fps: f64, dur: f64) -> usize {
 // ------------------------------------------------------------------ render
 
 /// Renders the page to `out` (.mov PNG with alpha, or .png for stills).
-pub fn render(ff: &Ff, spec: &RenderSpec, out: &Path, cancel: Option<&AtomicBool>) -> Result<RenderOut> {
+/// `ff` is only needed for animated graphics (stills are written as PNG directly).
+pub fn render(ff: Option<&Ff>, spec: &RenderSpec, out: &Path, cancel: Option<&AtomicBool>) -> Result<RenderOut> {
     let t_start = Instant::now();
     let (w, h) = (spec.w.clamp(16, 7680), spec.h.clamp(16, 7680));
     let site = Site { index: spec.html.to_string(), dir: spec.dir.to_path_buf(), media: spec.media.clone() };
@@ -518,6 +565,7 @@ pub fn render(ff: &Ff, spec: &RenderSpec, out: &Path, cancel: Option<&AtomicBool
     let mut enc = if still {
         None
     } else {
+        let ff = ff.ok_or_else(|| anyhow!("animated graphics need FFmpeg (moodcut setup); a still (dur 0) doesn't"))?;
         let mut c = command(&ff.ffmpeg);
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "image2pipe", "-framerate"]).arg(format!("{}", spec.fps)).args(["-c:v", "png", "-i", "-", "-c:v", "png", "-pix_fmt"]).arg(if spec.alpha { "rgba" } else { "rgb24" }).arg(out);
         Some(c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().context("starting ffmpeg")?)
@@ -526,11 +574,18 @@ pub fn render(ff: &Ff, spec: &RenderSpec, out: &Path, cancel: Option<&AtomicBool
     let mut kept = vec![];
     let mut empty = true;
     let mut bounds: Option<[f64; 4]> = None;
+    if still && spec.still_at > 0.0 {
+        // play up to the capture time so frame-by-frame (incremental) animations are right too
+        let steps = (spec.still_at * spec.fps).floor() as usize;
+        for k in 0..steps {
+            cdp.eval(&format!("window.__mc.seek({})", k as f64 * 1000.0 / spec.fps))?;
+        }
+    }
     for i in 0..n {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             bail!("cancelled");
         }
-        let ms = i as f64 * 1000.0 / spec.fps;
+        let ms = if still { spec.still_at.max(0.0) * 1000.0 } else { i as f64 * 1000.0 / spec.fps };
         cdp.eval(&format!("window.__mc.seek({ms})"))?;
         let shot = cdp.call("Page.captureScreenshot", json!({"format": "png", "fromSurface": true, "captureBeyondViewport": false, "optimizeForSpeed": true}))?;
         let png = base64::engine::general_purpose::STANDARD.decode(shot["data"].as_str().unwrap_or("")).context("decoding screenshot")?;
@@ -608,6 +663,8 @@ pub struct GraphicReq {
     pub place: Option<String>,
     /// Frames in the returned preview sheet (0 = none).
     pub preview: usize,
+    /// For stills: the animation time to capture (seconds).
+    pub at: Option<f64>,
 }
 
 pub struct GraphicOut {
@@ -701,7 +758,7 @@ impl crate::engine::Engine {
             std::fs::write(&html_path, &src).with_context(|| format!("writing {}", html_path.display()))?;
         }
         let page = prepare_html(&src, &vars);
-        let key = crate::render::eval::hash_str(&format!("{page}|{w}x{h}|{fps}|{dur}|{alpha}"));
+        let key = crate::render::eval::hash_str(&format!("{page}|{w}x{h}|{fps}|{dur}|{alpha}|{:?}", r.at));
         let ext = if dur <= 0.0 { "png" } else { "mov" };
         let out = dir.join(format!("{slug}-{:08x}.{ext}", key as u32));
         let tmp = dir.join(format!(".{slug}-{:08x}.tmp.{ext}", key as u32));
@@ -709,8 +766,8 @@ impl crate::engine::Engine {
         let n_prev = r.preview.min(12);
         let keep: Vec<f64> = if dur <= 0.0 || n_prev == 0 { vec![0.0] } else { (0..n_prev).map(|i| (i as f64 + 0.5) * dur / n_prev as f64).collect() };
         let page_dir = html_path.parent().map(|d| d.to_path_buf()).unwrap_or(dir.clone());
-        let spec = RenderSpec { html: &page, dir: &page_dir, media, w, h, fps, dur, alpha, vars: &vars, keep };
-        let ro = render(&self.ff, &spec, &tmp, None)?;
+        let spec = RenderSpec { html: &page, dir: &page_dir, media, w, h, fps, dur, alpha, vars: &vars, keep, still_at: r.at.unwrap_or(0.0) };
+        let ro = render(Some(&self.ff), &spec, &tmp, None)?;
         if out.exists() {
             let _ = std::fs::remove_file(&tmp); // identical render already on disk (and maybe in use)
         } else {
@@ -766,6 +823,10 @@ impl crate::engine::Engine {
         for e in &ro.errors {
             text.push_str(&format!("\n! {e}"));
         }
+        let unset = fill_vars(&src, &vars).1;
+        if !unset.is_empty() {
+            text.push_str(&format!("\n! unset variables (rendered empty): {} (pass vars, or write {{{{name|default}}}})", unset.join(", ")));
+        }
         let sheet = if n_prev > 0 {
             // small graphics (lower thirds, bugs) are cropped to their content so details stay legible
             let crop = ro.bounds.and_then(|[x0, y0, x1, y1]| {
@@ -812,7 +873,10 @@ mod tests {
     #[test]
     fn fragments_are_wrapped_and_vars_escaped() {
         let vars = BTreeMap::from([("name".to_string(), "Tom & <Jerry>".to_string())]);
-        let page = prepare_html("<h1>{{name}}</h1><img src='mc://m3'>", &vars);
+        let page = prepare_html("<h1>{{name}}</h1><img src='mc://m3'><p>{{role|CEO}}{{gone}}</p><script>if(a){{b}}</script>", &vars);
+        assert!(page.contains("<p>CEO</p>"), "{page}");
+        assert!(page.contains("if(a){{b}}"), "JS braces must survive: {page}");
+        assert_eq!(fill_vars("{{a}} {{b|x}} {{c}}", &BTreeMap::new()).1, vec!["a", "c"]);
         assert!(page.starts_with("<!doctype html>"));
         assert!(page.contains("<h1>Tom &amp; &lt;Jerry&gt;</h1>"));
         assert!(page.contains("src='/mc-media/m3'"));

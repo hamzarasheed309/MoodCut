@@ -128,6 +128,9 @@
         if (v.readyState < 2) await within(new Promise((r) => v.addEventListener('loadeddata', r, { once: true })), timeoutMs);
       }
       if (MC.ready && typeof MC.ready.then === 'function') await within(MC.ready, timeoutMs);
+      // everything that exists after loading started at time 0
+      syncAnimations();
+      for (const v of document.querySelectorAll('video')) if (!born.has(v)) born.set(v, 0);
       return Math.round(realNow() - t0);
     },
     async seek(ms) {

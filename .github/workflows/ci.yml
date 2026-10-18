@@ -45,11 +45,17 @@ jobs:
         run: |
           mc=target/release/moodcut
           $mc doctor || true
-          $mc run smoke.mcut @examples/motion-graphics.mcs --create 1280x720@30
+          $mc run smoke.mcut @examples/motion-graphics.mcs --create 1920x1080@30
           $mc frame smoke.mcut -t 1.5 -o smoke.png
-          $mc render smoke.mcut --preset draft --range 0-3 -o smoke.mp4
+          $mc render smoke.mcut --preset draft --range 0-3 --scale 0.5 -o smoke.mp4
           ffprobe -v error -show_entries format=duration:stream=codec_name,width,height -of compact smoke.mp4
           test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 smoke.mp4 | cut -d. -f1)" -ge 2
+      - name: Quality check passes on the example
+        run: target/release/moodcut check smoke.mcut --strict
+      - name: HTML motion graphic renders (headless Chrome)
+        run: |
+          target/release/moodcut graphic examples/graphics/kinetic-title.html -o title.mov --dur 2 --size 1280x720 --var title="CI TEST" --var sub=ok
+          test "$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 title.mov)" -eq 60
 
   windows:
     name: Build (Windows x64)
@@ -78,6 +84,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           .\target\release\moodcut.exe frame smoke.mcut -t 5 -o smoke.png
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path smoke.png)) { exit 1 }
+      - name: HTML motion graphic still renders (headless Edge)
+        shell: pwsh
+        run: |
+          .\target\release\moodcut.exe graphic examples\graphics\lower-third.html -o lt.png --dur 0 --size 1280x720 --at 2 --var name=CI --var role=Windows
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path lt.png)) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: moodcut-windows-x64

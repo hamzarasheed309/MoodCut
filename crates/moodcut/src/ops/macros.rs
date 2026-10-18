@@ -340,7 +340,12 @@ impl<'a> Exec<'a> {
             }
             self.created.push(iid);
         }
-        let _ = ci;
+        // name the track so tools (and people) can tell captions from titles
+        if let Some(t) = self.p.comps[ci].track_mut(&tid) {
+            if t.name.is_none() {
+                t.name = Some("Captions".into());
+            }
+        }
         self.note(format!("+{n} caption item(s) on {tid} ({style}, {words_per} words)"));
         Ok(())
     }

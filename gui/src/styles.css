@@ -964,3 +964,12 @@ input[type="checkbox"] {
   font-size: 11px;
   color: var(--faint);
 }
+
+.modal.check-panel {
+  width: min(860px, calc(100vw - 32px));
+}
+.check-log {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
