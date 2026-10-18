@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Test + render smoke test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Build GUI
+        working-directory: gui
+        run: npm ci && npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        run: cargo test --release
+      - name: Script reference is up to date
+        run: |
+          cargo run --release -q -- docs > docs/REFERENCE.md
+          git diff --exit-code docs/REFERENCE.md || (echo "::error::docs/REFERENCE.md is stale; run 'moodcut docs > docs/REFERENCE.md'" && exit 1)
+      - name: Install FFmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - name: Render an example end to end
+        run: |
+          mc=target/release/moodcut
+          $mc doctor || true
+          $mc run smoke.mcut @examples/motion-graphics.mcs --create 1280x720@30
+          $mc frame smoke.mcut -t 1.5 -o smoke.png
+          $mc render smoke.mcut --preset draft --range 0-3 -o smoke.mp4
+          ffprobe -v error -show_entries format=duration:stream=codec_name,width,height -of compact smoke.mp4
+          test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 smoke.mp4 | cut -d. -f1)" -ge 2
+
+  windows:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Build GUI
+        working-directory: gui
+        run: npm ci && npm run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          .\target\release\moodcut.exe --version
+          .\target\release\moodcut.exe run smoke.mcut "@examples/motion-graphics.mcs" --create 1280x720@30
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          .\target\release\moodcut.exe frame smoke.mcut -t 5 -o smoke.png
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path smoke.png)) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moodcut-windows-x64
+          path: |
+            target/release/moodcut.exe
+            README.md
+            LICENSE
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: moodcut-windows-x64
+          path: dist
+      - name: Package
+        run: cd dist && zip -r ../moodcut-${{ github.ref_name }}-windows-x64.zip .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: moodcut-${{ github.ref_name }}-windows-x64.zip
+          generate_release_notes: true

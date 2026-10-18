@@ -1,0 +1,35 @@
+# Motion-graphics explainer: no footage needed.
+#   moodcut run explainer.mcut @examples/motion-graphics.mcs --create 1920x1080@30
+#   moodcut render explainer.mcut
+
+comp set s1 dur=12 bg=#0b0b12
+
+# Animated gradient background with grain and a slow drift
+solid #1a1040 at=0 dur=12 color2=#0b0b12 gradType=radial as=bg
+expr bg pos 'wiggle(0.3,40)'
+adjust at=0 dur=12 fx=vignette
+fx $ noise amount=0.06
+
+# Scene 1: kinetic title with a drawn-on underline
+text 'MAKE IT MOVE' at=0.3 dur=3.4 size=170 weight=900 tracking=8 enter=trackIn exit=blurOut as=title
+shape line from=-420,0 to=420,0 stroke=#ff3b6b strokeW=10 pos=960,650 at=0.6 dur=3.1 as=underline
+kf underline.s1 trimEnd 0:0 0.7:100@outExpo
+anim underline fadeOut dur=0.4
+
+# Scene 2: counter + bar chart
+title counter at=4 dur=4 from=0 to=12500 suffix=' users' color=#ffffff size=110 as=count
+set count pos=960,230
+title bars at=4.4 dur=3.6 values=35,62,48,90 labels=Q1,Q2,Q3,Q4 color=#7c5cff suffix=% as=chart
+set chart pos=960,600
+
+# Scene 3: star burst with a repeater, a pulsing call to action and a light leak
+shape star points=8 r1=170 r2=80 fill=#ffd60a pos=960,420 at=8.2 dur=3.8 as=star
+set star.s1 repeat=4 repRot=22.5 repScale=0.72,0.72 repOpacity=0.35
+anim star popIn,spin freq=0.08
+text 'START CREATING' at=8.6 dur=3.4 size=84 weight=900 style=box bg=#ff3b6b pos=960,760 enter=pop
+anim $ pulse at=9.5
+title lightleak at=8 dur=4 amount=0.4
+
+# Fast whip-style flash between scenes
+title shapewipe at=3.6 dur=0.7 color=#7c5cff color2=#ff3b6b
+title shapewipe at=7.8 dur=0.7 color=#ff3b6b color2=#ffd60a dir=right

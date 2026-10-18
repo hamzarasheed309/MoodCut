@@ -1,0 +1,13 @@
+# Beat-synced promo: cuts land on every 2nd beat, with titles and a progress bar.
+#   moodcut run promo.mcut @examples/beat-montage.mcs --create 1920x1080@30
+
+import 'C:\Footage\shot1.mp4' 'C:\Footage\shot2.mp4' 'C:\Footage\shot3.mp4' 'C:\Music\track.mp3'
+
+montage m1,m2,m3 music=m4 beats=2 kenburns tr=dissolve
+color V1 tealorange
+title title text='SUMMER DROP' sub='new collection' style=kinetic at=0.2 dur=3
+title lowerthird text='Available now' sub='link in bio' style=box at=4
+title progress color=#ff3b6b height=10 pos=bottom
+title grain amount=0.06
+title letterbox ratio=2.39
+master lufs=-14 limiter=1

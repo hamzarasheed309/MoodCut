@@ -1,0 +1,24 @@
+# Talking-head cleanup: jump cuts, grade, captions, music bed with ducking.
+# Edit the paths, then:
+#   moodcut run talk.mcut @examples/talking-head.mcs --create 1920x1080@30
+# Captions need speech-to-text (whisper.cpp / openai-whisper) or an .srt next to the video.
+
+import 'C:\Videos\talk.mp4' as=talk
+import 'C:\Music\bed.mp3' as=bed
+
+add talk
+autocut silence $ thresh=-35 min=0.4 pad=0.12
+color $ natural
+color $ exposure=0.15 vibrance=10
+afx A1 voice
+captions $ style=bold words=3 hl=#ffd60a
+
+# Punch-in for emphasis and a name tag
+anim V1 zoomPunchIn at=3
+title lowerthird text='Jane Doe' sub='Founder, Studio North' at=1
+
+# Music bed under the voice
+add bed A2 at=0 dur=end vol=-16dB
+fade $ in=1 out=2
+duck A2 by=A1 amount=-12
+master lufs=-14 limiter=1

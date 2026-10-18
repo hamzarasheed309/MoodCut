@@ -1,0 +1,6 @@
+# Turn the current 16:9 edit into a 9:16 Short / Reel / TikTok.
+# Run on an existing project:  moodcut run talk.mcut @examples/vertical-short.mcs
+#   moodcut render talk.mcut --preset social
+
+reframe 9:16 mode=blur main
+title subscribe text='Follow for more' at=end-3 dur=3
