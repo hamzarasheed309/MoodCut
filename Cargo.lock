@@ -900,6 +900,7 @@ dependencies = [
  "rustybuzz",
  "serde",
  "serde_json",
+ "svgtypes",
  "tokio",
  "unicode-bidi",
  "windows-sys 0.59.0",

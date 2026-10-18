@@ -105,6 +105,17 @@ pub const COLOR_PRESETS: &[(&str, &str)] = &[
     ("natural", "neutral clean correction"),
 ];
 
+/// Value of a property at item-local time `t` (keyframes considered, expressions ignored).
+fn base_at(item: &Item, prop: &str, cx: VCtx, t: f64) -> Val {
+    if let Some(a) = item.props.get(prop) {
+        return if a.k.is_empty() { a.v.clone() } else { a.keyed(t) };
+    }
+    match schema::item_prop(item.kind, prop) {
+        Some(p) => schema::default_val(p, cx),
+        None => Val::N(0.0),
+    }
+}
+
 fn base(item: &Item, prop: &str, cx: VCtx) -> Val {
     if let Some(a) = item.props.get(prop) {
         return a.v.clone();
@@ -204,10 +215,13 @@ pub fn apply_layer_anim(item: &mut Item, name: &str, o: &AnimOpts, cx: VCtx) -> 
     let t0 = o.delay; // enter start
     let te = item.dur - o.delay; // exit end
     let ts = (te - d).max(0.0); // exit start
-    let pos = base(item, "pos", cx);
-    let sc = base(item, "scale", cx);
-    let op = base(item, "opacity", cx);
-    let rot = base(item, "rot", cx).num();
+    let is_exit = b.ends_with("out") && b != "zoompunchin";
+    // rest values: right after an enter animation, or right before an exit animation
+    let rest_t = if is_exit { ts } else { t0 + d };
+    let pos = base_at(item, "pos", cx, rest_t);
+    let sc = base_at(item, "scale", cx, rest_t);
+    let op = base_at(item, "opacity", cx, rest_t);
+    let rot = base_at(item, "rot", cx, rest_t).num();
     let e_out = o.ease.unwrap_or(Ease::Out(crate::model::anim::Curve::Cubic));
     let e_in = o.ease.unwrap_or(Ease::In(crate::model::anim::Curve::Cubic));
     use crate::model::anim::Curve::*;
