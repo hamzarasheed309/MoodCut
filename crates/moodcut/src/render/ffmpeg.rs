@@ -232,6 +232,25 @@ impl Ff {
         ok
     }
 
+    /// Hardware AV1 encoders that actually work here (tested on each call; only
+    /// consulted when the build has no software AV1 encoder).
+    pub fn hw_encoders_av1(&self) -> Vec<String> {
+        ["av1_nvenc", "av1_qsv", "av1_amf"]
+            .into_iter()
+            .filter(|enc| self.has_encoder(enc))
+            .filter(|enc| {
+                self.cmd()
+                    .args(["-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2", "-frames:v", "3", "-c:v", enc, "-f", "null", "-"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
     /// Probes a media file.
     pub fn probe(&self, path: &str) -> Result<Media> {
         let p = Path::new(path);

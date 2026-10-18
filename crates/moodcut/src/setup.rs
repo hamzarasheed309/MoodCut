@@ -24,8 +24,12 @@ pub fn doctor() -> Result<()> {
     match Ff::find() {
         Ok(ff) => {
             println!("✔ FFmpeg {} at {}", ff.version(), ff.ffmpeg_path().display());
-            for (enc, what) in [("libx264", "H.264"), ("libx265", "HEVC"), ("libsvtav1", "AV1"), ("libvpx-vp9", "VP9"), ("prores_ks", "ProRes"), ("aac", "AAC"), ("libmp3lame", "MP3"), ("libopus", "Opus")] {
+            for (enc, what) in [("libx264", "H.264"), ("libx265", "HEVC"), ("libvpx-vp9", "VP9"), ("prores_ks", "ProRes"), ("aac", "AAC"), ("libmp3lame", "MP3"), ("libopus", "Opus")] {
                 println!("  {} {what} ({enc})", if ff.has_encoder(enc) { "✔" } else { "✘" });
+            }
+            match ["libsvtav1", "libaom-av1"].into_iter().find(|e| ff.has_encoder(e)) {
+                Some(e) => println!("  ✔ AV1 ({e})"),
+                None => println!("  – AV1 (not in this FFmpeg build; the av1 preset needs a full build or a GPU AV1 encoder)"),
             }
             for (f, what) in [("rubberband", "pitch shifting"), ("sidechaincompress", "auto ducking"), ("loudnorm", "loudness normalization"), ("whisper", "built-in speech-to-text (FFmpeg 8+)"), ("minterpolate", "optical-flow slow motion")] {
                 println!("  {} {what} ({f})", if ff.has_filter(f) { "✔" } else { "–" });

@@ -120,6 +120,9 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path smoke.mp4)) { exit 1 }
           & $mc check smoke.mcut --strict
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # informational: which AV1 encoder the default portable build offers
+          & $mc render smoke.mcut -p av1 --range 0-1 --scale 0.25 -o smoke_av1.mp4
+          Write-Host "av1 preset exit code: $LASTEXITCODE"
           & $mc render smoke.mcut -p xml -o smoke.xml
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v4

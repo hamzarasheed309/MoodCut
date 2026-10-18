@@ -129,8 +129,10 @@ pub fn resolve_preset(name: &str, ff: &Ff, hw: &str) -> Result<Preset> {
                 sv(&["-c:v", "libsvtav1", "-crf", "32", "-preset", "8", "-pix_fmt", "yuv420p"])
             } else if ff.has_encoder("libaom-av1") {
                 sv(&["-c:v", "libaom-av1", "-crf", "32", "-b:v", "0", "-cpu-used", "6", "-row-mt", "1", "-pix_fmt", "yuv420p"])
+            } else if let Some(hw) = ["av1_nvenc", "av1_qsv", "av1_amf"].into_iter().find(|e| ff.hw_encoders_av1().iter().any(|h| h == e)) {
+                sv(&["-c:v", hw, "-b:v", "6M", "-pix_fmt", "yuv420p"])
             } else {
-                bail!("this FFmpeg build has no AV1 encoder")
+                bail!("this FFmpeg build has no AV1 encoder; use preset=hevc, or install a full FFmpeg build and point MOODCUT_FFMPEG at it")
             };
             p("av1", "mp4", Some(v), aac("192k"), false)
         }
