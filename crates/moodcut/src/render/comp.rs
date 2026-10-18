@@ -92,13 +92,11 @@ struct Extra {
     opacity: f32,
     rx: f64,
     ry: f64,
-    /// 3D offset added before projection (cube transitions).
-    off: (f64, f64, f64),
 }
 
 impl Extra {
     fn none() -> Extra {
-        Extra { mat: Transform::identity(), opacity: 1.0, rx: 0.0, ry: 0.0, off: (0.0, 0.0, 0.0) }
+        Extra { mat: Transform::identity(), opacity: 1.0, rx: 0.0, ry: 0.0 }
     }
 }
 
@@ -361,7 +359,7 @@ impl<'a> Geo<'a> {
             return None;
         }
         let cam = cam.unwrap_or_else(|| Cam::default_for(self.comp.w as f64, self.comp.h as f64));
-        let q = self.project_corners(w, corners, (0.0, 0.0, (0.0, 0.0, 0.0)), &cam)?;
+        let q = self.project_corners(w, corners, (0.0, 0.0), &cam)?;
         Some(q.map(|(x, y)| {
             let mut pt = Point::from_xy(x as f32, y as f32);
             w.parent.map_point(&mut pt);
@@ -395,12 +393,12 @@ impl<'a> Geo<'a> {
     }
 
     /// Layer corners through the camera (comp px, before the parent's 2D transform). None if any is behind it.
-    fn project_corners(&self, w: &World, corners: [(f32, f32); 4], ex: (f64, f64, (f64, f64, f64)), cam: &Cam) -> Option<[(f64, f64); 4]> {
+    fn project_corners(&self, w: &World, corners: [(f32, f32); 4], ex: (f64, f64), cam: &Cam) -> Option<[(f64, f64); 4]> {
         let mut q = [(0.0, 0.0); 4];
         for (i, (cx, cy)) in corners.iter().enumerate() {
             let v = ((*cx as f64 - w.anchor.0) * w.sc.0, (*cy as f64 - w.anchor.1) * w.sc.1, 0.0);
             let r = warp::rotate3(v, w.rx + ex.0, w.ry + ex.1, w.rot);
-            q[i] = cam.project((w.pos.0 + r.0 + ex.2 .0, w.pos.1 + r.1 + ex.2 .1, w.z + r.2 + ex.2 .2))?;
+            q[i] = cam.project((w.pos.0 + r.0, w.pos.1 + r.1, w.z + r.2))?;
         }
         Some(q)
     }
@@ -758,7 +756,7 @@ impl<'a> CompR<'a> {
     }
 
     fn has_3d(&self, it: &Item, w: &World, ex: &Extra, camera: bool) -> bool {
-        self.g().is_3d(it, w, camera) || ex.rx.abs() > 1e-6 || ex.ry.abs() > 1e-6 || ex.off != (0.0, 0.0, 0.0)
+        self.g().is_3d(it, w, camera) || ex.rx.abs() > 1e-6 || ex.ry.abs() > 1e-6
     }
 
     fn cornerpin<'b>(it: &'b Item) -> Option<&'b Effect> {
@@ -910,7 +908,7 @@ impl<'a> CompR<'a> {
             let post = out_t.pre_concat(ex.mat).pre_concat(w.parent);
             let cam = cam.unwrap_or_else(|| Cam::default_for(self.comp.w as f64, self.comp.h as f64));
             // a layer crossing the camera plane is not drawn (After Effects clips it)
-            let Some(q) = self.g().project_corners(&w, corners, (ex.rx, ex.ry, ex.off), &cam) else { return Ok(None) };
+            let Some(q) = self.g().project_corners(&w, corners, (ex.rx, ex.ry), &cam) else { return Ok(None) };
             let q: Vec<(f64, f64)> = q
                 .iter()
                 .map(|(px, py)| {
@@ -1083,6 +1081,54 @@ impl<'a> CompR<'a> {
         }))
     }
 
+    /// Cube spin as two perspective faces that always fill the frame (a real
+    /// camera can't see both faces of a frame-filling cube), meeting at an edge
+    /// that sweeps across, with a slight pull-back at the middle.
+    fn render_cube(&self, a: Option<&Item>, b: Option<&Item>, q: f64, dir: &str, t: f64) -> Result<Option<LayerBuf>> {
+        let full = self.out_rect();
+        let side = |it: Option<&Item>| -> Result<Option<Pixmap>> {
+            Ok(self.render_side(it, t, Extra::none())?.map(|mut lb| {
+                lb.expand_to(full);
+                lb.pm.get().clone()
+            }))
+        };
+        let (sa, sb) = (side(a)?, side(b)?);
+        let (w, h) = (self.ow as f64, self.oh as f64);
+        let s = (q * std::f64::consts::PI).sin();
+        let (bulge, far_a, far_b) = (0.06 * s, 0.18 * q, 0.18 * (1.0 - q));
+        let back = 1.0 - 0.08 * s;
+        let vert = matches!(dir, "up" | "down");
+        // A leaves toward `dir`; quads are (along, across) corner lists TL TR BR BL in a frame where A exits to the left
+        let len = if vert { h } else { w };
+        let e = len * (1.0 - q);
+        let qa = [(0.0, far_a), (e, -bulge), (e, 1.0 + bulge), (0.0, 1.0 - far_a)];
+        let qb = [(e, -bulge), (len, far_b), (len, 1.0 - far_b), (e, 1.0 + bulge)];
+        let mirror = matches!(dir, "right" | "down");
+        let place = |quad: [(f64, f64); 4]| -> [(f64, f64); 4] {
+            let mut out = quad.map(|(along, across)| {
+                let along = if mirror { len - along } else { along };
+                let (x, y) = if vert { (across * w, along) } else { (along, across * h) };
+                (w / 2.0 + (x - w / 2.0) * back, h / 2.0 + (y - h / 2.0) * back)
+            });
+            if mirror {
+                // keep corners in TL TR BR BL order after flipping
+                out = if vert { [out[1], out[2], out[3], out[0]] } else { [out[1], out[0], out[3], out[2]] };
+            } else if vert {
+                out = [out[0], out[3], out[2], out[1]];
+            }
+            out
+        };
+        let mut out = LayerBuf::new(0, 0, self.ow as u32, self.oh as u32).ok_or_else(|| anyhow!("alloc"))?;
+        for (src, quad) in [(sa, qa), (sb, qb)] {
+            if let Some(src) = src {
+                if let Some(face) = warp::warp_to_quad(&src, place(quad), full) {
+                    src_over(out.pm.make_mut(), face.pm.get(), face.x, face.y, 1.0);
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+
     fn render_transition(&self, tr: &Transition, a: Option<&Item>, b: Option<&Item>, p: f64, t: f64) -> Result<Option<LayerBuf>> {
         let (cw, ch) = (self.comp.w as f32, self.comp.h as f32);
         let c = (cw / 2.0, ch / 2.0);
@@ -1150,30 +1196,6 @@ impl<'a> CompR<'a> {
                     eb.ry = -(1.0 - pe as f64) * 180.0;
                 }
             }
-            "cube" => {
-                // both clips are faces of a cube turning about its center, half a face behind the screen
-                let vert = matches!(dir.as_str(), "up" | "down");
-                let half = if vert { ch as f64 / 2.0 } else { cw as f64 / 2.0 };
-                let deg = 90.0 * pe as f64;
-                let (ta, tb) = match dir.as_str() {
-                    "right" | "up" => (-deg, 90.0 - deg),
-                    _ => (deg, deg - 90.0),
-                };
-                let face = |e: &mut Extra, th: f64| {
-                    let (sn, cs) = th.to_radians().sin_cos();
-                    if vert {
-                        e.rx = th;
-                        e.off = (0.0, half * sn, half - half * cs);
-                    } else {
-                        e.ry = th;
-                        e.off = (-half * sn, 0.0, half - half * cs);
-                    }
-                };
-                face(&mut ea, ta);
-                face(&mut eb, tb);
-                over_order_b_first = ta.abs() < tb.abs();
-                combine_lerp = false;
-            }
             _ => {}
         }
         let (show_a, show_b) = match kind {
@@ -1181,6 +1203,9 @@ impl<'a> CompR<'a> {
             "pixelate" | "glitch" => (true, true),
             _ => (true, true),
         };
+        if kind == "cube" {
+            return self.render_cube(a, b, pe as f64, &dir, t);
+        }
         let la = if show_a { self.render_side(a, t, ea)? } else { None };
         let lb = if show_b { self.render_side(b, t, eb)? } else { None };
         if la.is_none() && lb.is_none() && !matches!(kind, "dip" | "fadeblack" | "fadewhite" | "flash") {

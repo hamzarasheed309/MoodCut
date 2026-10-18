@@ -159,7 +159,7 @@ pub fn apply(name: &str, ev: &Ev, p: &Props, lb: &mut LayerBuf, cx: &FxCtx) -> b
                 let (px, py) = (cu * c - cv * sn, cu * sn + cv * c);
                 let r = cs * 0.5 * 1.42 * val(px, py).clamp(0.0, 1.0).sqrt();
                 let d = ((u - cu).powi(2) + (v - cv).powi(2)).sqrt();
-                smoothstep(r + 0.75, r - 0.75, d)
+                1.0 - smoothstep(r - 0.75, r + 0.75, d)
             };
             pm.data_mut().par_chunks_mut(wu * 4).enumerate().for_each(|(y, row)| {
                 for x in 0..wu {
@@ -308,7 +308,7 @@ pub fn apply(name: &str, ev: &Ev, p: &Props, lb: &mut LayerBuf, cx: &FxCtx) -> b
                     m.min(sp - m)
                 };
                 let e = d(gx - off.0 as f32 * s).min(d(gy - off.1 as f32 * s));
-                let k = smoothstep(lw / 2.0 + 0.6, lw / 2.0 - 0.6, e);
+                let k = 1.0 - smoothstep(lw / 2.0 - 0.6, lw / 2.0 + 0.6, e);
                 (k > 0.0).then_some((c, k))
             });
         }
@@ -378,7 +378,7 @@ pub fn apply(name: &str, ev: &Ev, p: &Props, lb: &mut LayerBuf, cx: &FxCtx) -> b
                     i += streak * 0.5 * (-(dy.abs() / diag) / 0.0035).exp() * (-(dx.abs() / diag) / (0.35 * streak.max(0.05))).exp();
                     for &(gxx, gyy, r, k) in &gh {
                         let dd = ((gx - gxx).powi(2) + (gy - gyy).powi(2)).sqrt();
-                        i += k * smoothstep(r, r * 0.6, dd);
+                        i += k * (1.0 - smoothstep(r * 0.6, r, dd));
                     }
                     let i = i * br;
                     if i <= 0.002 {

@@ -175,3 +175,22 @@ fn layer_geometry_matches_the_render() {
     assert_eq!(b, (400.0, 200.0, 600.0, 300.0));
     assert!(layer_geom(&p, c, p.item("n").unwrap(), 0.5).is_none(), "nulls have no picture");
 }
+
+#[test]
+fn cube_spin_faces_fill_the_frame() {
+    for (dir, a_first) in [("left", true), ("right", false), ("up", true), ("down", false)] {
+        let p = project(&format!("solid #c03050 at=0 dur=2\nsolid #2070c0 V1 at=2 dur=2\ntr o1 o2 cube 1 dir={dir}"));
+        let pm = frame(&p, 2.0);
+        let vert = matches!(dir, "up" | "down");
+        let (w, h) = (pm.width(), pm.height());
+        let at = |f: f32| if vert { px(&pm, w / 2, (h as f32 * f) as u32) } else { px(&pm, (w as f32 * f) as u32, h / 2) };
+        let (near, far) = (at(0.2), at(0.8));
+        let red = |c: [u8; 4]| c[0] > 150 && c[2] < 120;
+        let blue = |c: [u8; 4]| c[2] > 150 && c[0] < 100;
+        if a_first {
+            assert!(red(near) && blue(far), "{dir}: {near:?} {far:?}");
+        } else {
+            assert!(blue(near) && red(far), "{dir}: {near:?} {far:?}");
+        }
+    }
+}
