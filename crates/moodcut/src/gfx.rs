@@ -772,7 +772,9 @@ impl crate::engine::Engine {
         let tmp = dir.join(format!(".{slug}-{:08x}.tmp.{ext}", key as u32));
         let media: BTreeMap<String, PathBuf> = p.media.iter().map(|m| (m.id.clone(), PathBuf::from(&m.path))).collect();
         let n_prev = r.preview.min(12);
-        let keep: Vec<f64> = if dur <= 0.0 || n_prev == 0 { vec![0.0] } else { (0..n_prev).map(|i| (i as f64 + 0.5) * dur / n_prev as f64).collect() };
+        // frames kept for the checks (and the sheet): spread over the animation
+        let n_keep = if n_prev == 0 { 6 } else { n_prev };
+        let keep: Vec<f64> = if dur <= 0.0 { vec![0.0] } else { (0..n_keep).map(|i| (i as f64 + 0.5) * dur / n_keep as f64).collect() };
         let page_dir = html_path.parent().map(|d| d.to_path_buf()).unwrap_or(dir.clone());
         let spec = RenderSpec { html: &page, dir: &page_dir, media, w, h, fps, dur, alpha, vars: &vars, keep, still_at: r.at.unwrap_or(0.0) };
         let ro = render(Some(&self.ff), &spec, &tmp, None)?;

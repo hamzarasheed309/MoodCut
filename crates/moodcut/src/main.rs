@@ -274,21 +274,24 @@ fn real_main() -> Result<()> {
             let job = eng.start_render(opts)?;
             let mut last = String::new();
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(250));
                 let st = job.status();
-                let line = format!("\r{} {}% {} eta {}s   ", st["state"].as_str().unwrap_or(""), st["pct"], st["frames"].as_str().unwrap_or(""), st["eta_s"]);
-                if line != last {
-                    eprint!("{line}");
-                    last = line;
-                }
-                if st["state"] != "running" {
-                    eprintln!();
-                    if st["state"] == "error" {
-                        bail!("{}", st["error"].as_str().unwrap_or("render failed"));
+                if st["state"] == "running" {
+                    let line = format!("\r{} {}% {} eta {}s   ", st["state"].as_str().unwrap_or(""), st["pct"], st["frames"].as_str().unwrap_or(""), st["eta_s"]);
+                    if line != last {
+                        eprint!("{line}");
+                        last = line;
                     }
-                    println!("{}", serde_json::to_string_pretty(&st)?);
-                    break;
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    continue;
                 }
+                if !last.is_empty() {
+                    eprintln!();
+                }
+                if st["state"] == "error" {
+                    bail!("{}", st["error"].as_str().unwrap_or("render failed"));
+                }
+                println!("{}", serde_json::to_string_pretty(&st)?);
+                break;
             }
             Ok(())
         }
@@ -343,7 +346,7 @@ fn real_main() -> Result<()> {
                     let out = PathBuf::from(out.unwrap_or_else(|| format!("{}.{}", html.trim_end_matches(".html"), if dur > 0.0 { "mov" } else { "png" })));
                     let page = gfx::prepare_html(&src, &vars);
                     let dir = std::path::Path::new(&html).parent().map(|d| d.to_path_buf()).filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| PathBuf::from("."));
-                    let spec = gfx::RenderSpec { html: &page, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &vars, keep: vec![dur / 2.0], still_at: at.unwrap_or(0.0) };
+                    let spec = gfx::RenderSpec { html: &page, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &vars, keep: (0..6).map(|i| (i as f64 + 0.5) * dur / 6.0).collect(), still_at: at.unwrap_or(0.0) };
                     let r = gfx::render(ff.as_ref(), &spec, &out, None)?;
                     println!("wrote {} ({} frames in {:.1}s)", out.display(), r.frames, r.secs);
                     if r.empty {

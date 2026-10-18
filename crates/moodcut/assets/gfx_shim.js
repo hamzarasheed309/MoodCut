@@ -160,15 +160,54 @@
       syncAnimations();
       return now;
     },
-    // bounding box of everything visible (for the "fit" check)
+    // bounding box of what actually paints (for the title-safe / clipping
+    // checks): text, images, media, canvas, filled/stroked SVG shapes, and
+    // boxes with a background, border, shadow or outline. Layout wrappers
+    // (a full-frame flex container, say) don't count.
     bounds() {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (const el of document.body.querySelectorAll('*')) {
-        const r = el.getBoundingClientRect();
-        if (r.width < 1 || r.height < 1) continue;
-        const cs = getComputedStyle(el);
-        if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+      const add = (r) => {
+        if (r.width < 1 || r.height < 1) return;
         x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top); x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom);
+      };
+      const clear = (c) => !c || c === 'transparent' || /rgba\([^)]*,\s*0(\.0+)?\)$/.test(c);
+      const seen = new Map();
+      // visible = displayed, not visibility:hidden and not faded out along its ancestors
+      const visible = (el) => {
+        if (seen.has(el)) return seen.get(el);
+        let v = true;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.02) v = false;
+        else if (el.parentElement && el.parentElement !== document.documentElement) v = visible(el.parentElement);
+        seen.set(el, v);
+        return v;
+      };
+      const SHAPES = /^(path|rect|circle|ellipse|line|polyline|polygon|text|image|use)$/i;
+      for (const el of document.body.querySelectorAll('*')) {
+        if (!visible(el)) continue;
+        const cs = getComputedStyle(el);
+        const tag = el.tagName;
+        if (el instanceof SVGElement) {
+          if (SHAPES.test(tag) && !(cs.fill === 'none' && cs.stroke === 'none')) add(el.getBoundingClientRect());
+          continue;
+        }
+        if (/^(IMG|CANVAS|VIDEO|IFRAME|OBJECT|EMBED)$/.test(tag)) {
+          add(el.getBoundingClientRect());
+          continue;
+        }
+        const border = ['Top', 'Right', 'Bottom', 'Left'].some((k) => parseFloat(cs['border' + k + 'Width']) > 0 && !clear(cs['border' + k + 'Color']) && cs['border' + k + 'Style'] !== 'none');
+        if (cs.backgroundImage !== 'none' || !clear(cs.backgroundColor) || border || cs.boxShadow !== 'none' || (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0)) add(el.getBoundingClientRect());
+      }
+      // text: the glyph boxes of non-blank text nodes
+      const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+        if (!n.textContent.trim() || !n.parentElement || !visible(n.parentElement)) continue;
+        if (n.parentElement.closest('script,style,noscript,template')) continue;
+        if (n.parentElement instanceof SVGElement) continue;
+        if (clear(getComputedStyle(n.parentElement).color) && getComputedStyle(n.parentElement).webkitTextStrokeWidth === '0px') continue;
+        range.selectNodeContents(n);
+        for (const r of range.getClientRects()) add(r);
       }
       return isFinite(x0) ? [x0, y0, x1, y1] : null;
     },

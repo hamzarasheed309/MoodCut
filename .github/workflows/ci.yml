@@ -52,6 +52,14 @@ jobs:
           test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 smoke.mp4 | cut -d. -f1)" -ge 2
       - name: Quality check passes on the example
         run: target/release/moodcut check smoke.mcut --strict
+      - name: Interchange and caption exports
+        run: |
+          mc=target/release/moodcut
+          $mc run smoke.mcut "marker add 0 'Intro'"
+          $mc render smoke.mcut -p xml -o smoke.xml
+          python3 -c "import xml.dom.minidom; xml.dom.minidom.parse('smoke.xml')"
+          $mc render smoke.mcut -p edl -o smoke.edl && head -3 smoke.edl
+          $mc render smoke.mcut -p chapters -o chapters.txt && grep -q "0:00 Intro" chapters.txt
       - name: HTML motion graphic renders (headless Chrome)
         run: |
           target/release/moodcut graphic examples/graphics/kinetic-title.html -o title.mov --dur 2 --size 1280x720 --var title="CI TEST" --var sub=ok

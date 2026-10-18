@@ -20,22 +20,29 @@ The design aims for three things:
 | Text | **rustybuzz** shaping + bundled Inter + system fonts | Correct kerning/ligatures/RTL, per-glyph layout for text animators. |
 | Server | **tokio + axum**: MCP Streamable HTTP, REST, WebSocket | One async server feeds the GUI, MCP clients and tunnels. |
 | GUI | **Preact + signals**, Vite, TypeScript, canvas timeline; embedded with rust-embed | 26 KB gzipped. It opens as an Edge/Chrome `--app` window, so there's no WebView runtime to ship. |
-| Protocol | **MCP 2025-06-18** over stdio and Streamable HTTP | Works with Claude Desktop, Claude Code, ChatGPT connectors and other MCP clients. |
+| Protocol | **MCP 2025-06-18** over stdio and Streamable HTTP | Works with Claude Desktop, Claude Code, claude.ai and ChatGPT connectors and other MCP clients. |
+| HTML graphics | **Headless Edge/Chrome** over the DevTools protocol (a small synchronous WebSocket client) | The best layout and animation engine there is, already installed on every Windows PC. No Node, Puppeteer or bundled Chromium. |
+| Web access | **cloudflared** quick tunnel, downloaded on first use | A public HTTPS URL for web AI clients without an account, port forwarding or certificates. |
 
 ## Process layout
 
 ```
-             Claude Desktop / Claude Code            ChatGPT (via HTTPS tunnel)      Cursor, VS Code, …
-                       │ stdio                                │ HTTP + token               │ HTTP
-                       ▼                                      ▼                            ▼
-              moodcut mcp ──(proxies to a running editor if present)──►  moodcut gui / serve  :7878
-                                                                         ├─ /mcp        JSON-RPC (8 tools)
-   Editor window (Edge/Chrome --app) ◄── /api, /api/ws (live events) ────┤
-                                                                         ├─ Engine  (project, undo, autosave, log)
-                                                                         │   ├─ ops: MoodCut Script → edits
-                                                                         │   ├─ render: compositor + audio graph
-                                                                         │   └─ analyze: silence/scenes/beats/STT (cached)
-                                                                         └─ ffmpeg / ffprobe child processes
+   Claude Desktop / Claude Code        claude.ai / ChatGPT (cloud)                 Cursor, VS Code, …
+             │ stdio                              │ https://<tunnel>/mcp/<secret>          │ HTTP
+             ▼                                    ▼                                        │
+   moodcut mcp ──(proxies to a running     cloudflared ──► 127.0.0.1:7878 ◄────────────────┘
+   editor if present)──────────────────────────────────►  moodcut gui / serve / connect
+                                                          ├─ guard: local origin, or the secret for remote
+                                                          ├─ /mcp        JSON-RPC (10 tools, 5 prompts)
+   Editor window (Edge/Chrome --app) ◄── /api, /api/ws ───┤
+                                                          ├─ Engine  (project, undo, autosave, log)
+                                                          │   ├─ ops: MoodCut Script → edits
+                                                          │   ├─ library: parallel cached probing, sheets, search
+                                                          │   ├─ render: compositor + audio graph; export: SRT/VTT/chapters/XML/EDL
+                                                          │   ├─ analyze: silence/scenes/beats/STT (cached)
+                                                          │   ├─ check: measured QA of the edit + fixes
+                                                          │   └─ gfx: HTML → headless Edge/Chrome → PNG frames
+                                                          └─ ffmpeg / ffprobe / browser child processes
 ```
 
 The **Engine** owns the open project. Every change, whether from the GUI, MCP or the CLI, is a MoodCut Script
@@ -108,7 +115,10 @@ layers). LUTs use a fixed-point 3D table, and vignette masks and fonts are cache
 
 Audio is rendered as a single FFmpeg filtergraph per export: clip trims, speed, gain automation (as volume
 expressions), pans, crossfades, sidechain ducking, per-clip/track/master effects, loudness normalization and a
-limiter. Export pipes raw frames into FFmpeg's encoder (x264/x265/SVT-AV1/ProRes/VP9 or NVENC/QSV/AMF).
+limiter. For a loudness target the pre-master mix is measured once (EBU R128, cached per mix) and given the exact
+gain, followed by a peak limiter; single-pass `loudnorm` can't settle on short programs and lands several LU low.
+Export pipes raw frames into FFmpeg's encoder (x264/x265/SVT-AV1/ProRes/VP9 or NVENC/QSV/AMF). Captions, chapters
+and interchange timelines (FCP7 XML for Premiere Pro and Resolve, CMX3600 EDL) are written straight from the model.
 
 Preview frames and contact sheets use the same renderer at reduced scale, so what the AI checks with `preview` is
 what gets exported.
@@ -117,13 +127,56 @@ what gets exported.
 `medium` and about 51 fps with the draft preset. The talking-head example composites at 39–107 fps, and a
 blurred-background 9:16 reframe of a beat montage at about 12 fps (2.8 fps before the reduced-resolution blur).
 
+## Media library (`src/library.rs`)
+
+Real projects start from a drive of footage, so importing and finding media has to scale. Folders are walked
+recursively (skipping hidden and MoodCut's own asset folders), files are probed in parallel, and probe results
+are cached in memory and on disk by path, size and modification time, so re-importing a known card is instant.
+Unreadable files are skipped and reported in one line. Media carry tags and notes the AI writes as it looks
+(`note m3 'drone over beach at sunset'`), and every media argument takes selectors (`m1..m40`, `tag:broll`,
+`kind:video`, `q:drone`, `all`). `media list` filters and pages; `preview media=…` returns poster-frame sheets
+(48 clips per image, a third of the way in so fades and slates are skipped) or a filmstrip of one clip; `analyze` runs over many
+media at once; `view what=search` searches transcripts and notes across the library.
+
+## HTML motion graphics (`src/gfx.rs`, `assets/gfx_shim.js`)
+
+The `graphic` tool lets the AI design the way it designs web pages. MoodCut finds Edge or Chrome, launches it
+headless with a throwaway profile, and talks to it over the DevTools protocol:
+
+1. The page is loaded from a throwaway localhost server that serves the graphic's folder (so relative assets
+   work), the bundled fonts and library media (`src="mc://m3"`). `{{name|default}}` variables are filled first.
+2. A shim injected before any page script replaces the clocks: `performance.now`, `Date`, `requestAnimationFrame`,
+   timers and `document.timeline` all read a virtual time. Before each frame MoodCut seeks it: due timers run in
+   order, rAF callbacks fire, CSS animations and transitions and Web Animations are paused at the exact time, SVG
+   animations and `<video>` elements are seeked, and GSAP's ticker is stepped. Renders are deterministic and
+   independent of machine speed.
+3. Each frame is captured as a PNG with a transparent background and piped to FFmpeg as PNG-in-MOV (RGBA), or
+   saved as a PNG still. The file is named by a hash of its inputs, so unchanged graphics never re-render.
+4. The reply measures what was drawn: the box of painted content (text, images, shapes, backgrounds; not layout
+   wrappers) checked against title-safe and the frame edge, blank renders, JavaScript errors and unset variables,
+   plus a sheet of frames cropped to the content for small graphics.
+
+The source is kept with the media, so `id=` re-renders a graphic in place after a fix and `from=` makes variants.
+
+## Checking edits (`src/check.rs`)
+
+An AI can't watch its edit, so `check` measures it instead. It walks the timeline for structural problems
+(black gaps, 1–2 frame gaps and flash frames, layers fully covered by opaque clips, offline media, transitions
+without enough source handles), renders isolated frames of each text and graphic layer to measure its painted
+box and its contrast against what is behind it (WCAG ratio), compares media resolution and frame rate with the
+comp, measures caption reading speed, finds music that isn't ducked under speech, measures integrated loudness
+and true peak of the real mix, and compares the result with what was asked (`expect` duration, size, aspect, fps,
+loudness, captions, music, shot lengths). Issues come as one line each (repeats grouped), most with a script line
+that fixes them; `fix=true` applies those as one undoable edit and re-measures where needed (title-safe moves are
+computed from the measured box). A sheet shows the problem frames with title-safe guides.
+
 ## Built for AI use
 
 These choices keep a typical edit to a few calls and a few thousand tokens:
 
 | Choice | Effect |
 | --- | --- |
-| **8 coarse tools** (~5 KB of definitions) | Small fixed cost per conversation; the `edit` description carries a cheat sheet so most edits need no `help` call. |
+| **10 coarse tools** (~8.7 KB, ~2,200 tokens of definitions) | Small fixed cost per conversation; the `edit` description carries a cheat sheet so most edits need no `help` call. |
 | **Batch script instead of one tool per operation** | 20 edits in one call instead of 20 round trips. |
 | **Atomic scripts with line-numbered errors and suggestions** | No half-applied state to inspect; the fix is usually one corrected line. |
 | **Diff replies** (`+t4 …`, `~c1..c3.f1 …`) | The AI learns the new ids and effects without re-reading the project. Repeated changes collapse into id ranges, which also work as targets (`fx c2..c9 blur`). |
@@ -132,13 +185,29 @@ These choices keep a typical edit to a few calls and a few thousand tokens:
 | **`help(topic)` on demand, generated from the schema** | The full reference (~30 KB) is never sent up front, and it is always accurate. |
 | **Macros backed by cached analysis** | `autocut silence c1` replaces dozens of manual cuts; analysis runs once per file. |
 | **Contact-sheet previews as small JPEGs** | The model checks 6–16 moments in one image instead of one call per frame. |
+| **Poster sheets and filmstrips of the library** | 48 clips per image: the AI surveys a shoot in a few calls and writes notes so it never looks twice. |
+| **Graphics as HTML** | Models already write excellent HTML/CSS; the reply shows the frames and flags layout errors. |
+| **Measured `check` with fix lines** | The AI verifies its own edit against what was asked and repairs it without guessing. |
+| **`help('workflow')` and MCP prompts** | A step-by-step playbook from library to delivery, so one request becomes a finished edit. |
 | **Live shared state** | The person can correct things in the GUI mid-conversation and the AI sees it in the next `view`. |
 
-## Security
+A full one-request edit, driven through MCP like a client would (import a 157-file library and an interview, read
+the transcript, cut the story with b-roll, a beat-cut montage, color, captions, music ducking and loudness, two HTML
+graphics, check with expectations and fix, render the MP4 plus SRT, VTT, chapters, XML and EDL), takes 28 tool
+calls and about 11,000 characters of tool output plus six small JPEG sheets, in under a minute on a 4-core VM
+including the renders.
 
-The server binds to `127.0.0.1` by default and rejects cross-origin browser requests, so websites can't drive it.
-`--public` binds to all interfaces and requires a random token (as a bearer header, or in the URL path for
-ChatGPT connectors). `--allow DIR` restricts which folders the API and AI can read or write.
+## Security and remote access
+
+The server binds to `127.0.0.1` by default. Browser requests must come from the editor's own origin, so other
+websites can't drive it. A request counts as remote when it arrives through a proxy or tunnel (forwarding headers,
+or a `Host` that isn't local); remote requests need the secret token, either as a bearer header or in the URL
+path (`/mcp/<token>`, which is how web connectors carry it), and without a configured token remote access is off.
+`moodcut connect` keeps a random 32-character token in the data folder so connector URLs survive restarts
+(`--new-token` rotates it), starts a Cloudflare quick tunnel to the local port, and prints the connector URL; the
+editor's **Create web link** does the same and is only available from the local machine. OAuth discovery paths
+answer 404 so clients fall back to the token URL. `--public` binds to all interfaces with a token, and
+`--allow DIR` restricts which folders the API and AI can read or write.
 
 ## Source map
 
@@ -146,12 +215,18 @@ ChatGPT connectors). `--allow DIR` restricts which folders the API and AI can re
 crates/moodcut/src/
   main.rs          CLI (clap)
   engine.rs        project state, transactions, undo, autosave, event log, renders
-  server.rs        axum: MCP HTTP, REST API, WebSocket, static GUI, file dialogs
-  mcp/             MCP protocol, tool definitions, help docs, stdio transport
+  library.rs       import at scale, probe cache, selectors, poster sheets, filmstrips, search
+  gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture
+  check.rs         measured quality check, expectations, fixes
+  export.rs        SRT / WebVTT / YouTube chapters / FCP7 XML / CMX3600 EDL
+  tunnel.rs        remote token, cloudflared quick tunnel, connector instructions
+  server.rs        axum: MCP HTTP, REST API, WebSocket, static GUI, file dialogs, access guard
+  mcp/             MCP protocol, tool definitions, prompts, help docs, stdio transport
   model/           project, values, anim/easing, expressions, schema, time parsing
   ops/             MoodCut Script: lexer, executor, presets, templates, macros, outline
   render/          ffmpeg, decode, compositor, text, shapes, masks, effects, LUT, warp, audio, encode
   analyze.rs       silence, scenes, loudness, beats, black frames, transcription
   setup.rs         doctor / setup / install-claude
-gui/src/           Preact app: Timeline (canvas), Monitor, Inspector, LeftPanel, Console, Modals
+assets/gfx_shim.js virtual clock injected into HTML graphics
+gui/src/           Preact app: Timeline (canvas), Monitor, Inspector, LeftPanel, Console, Modals, GraphicEditor, CheckPanel
 ```
