@@ -57,7 +57,71 @@ pub fn run(p: &mut Project, env: &dyn Env, comp: &str, script: &str) -> std::res
     for c in &cmds {
         ex.cmd(c).map_err(|e| ExecError { line: c.line, cmd: c.text.clone(), msg: format!("{e:#}") })?;
     }
-    Ok(ExecOut { log: ex.log, comp: ex.comp, ops: cmds.len() })
+    Ok(ExecOut { log: compact_log(ex.log), comp: ex.comp, ops: cmds.len() })
+}
+
+/// `c12` -> ("c", 12)
+fn split_id(id: &str) -> Option<(&str, u32)> {
+    let d = id.find(|c: char| c.is_ascii_digit())?;
+    if d == 0 || !id[..d].chars().all(|c| c.is_ascii_lowercase()) {
+        return None;
+    }
+    Some((&id[..d], id[d..].parse().ok()?))
+}
+
+/// `c2..c31` -> ("c", 2, 31)
+fn parse_id_range(s: &str) -> Option<(&str, u32, u32)> {
+    let (a, b) = s.split_once("..")?;
+    let ((pa, na), (pb, nb)) = (split_id(a)?, split_id(b)?);
+    (pa == pb && na <= nb).then_some((pa, na, nb))
+}
+
+/// Merges consecutive log lines that differ only by item id
+/// (`~c2.f1 sat=110` x30 -> `~c2..c31.f1 sat=110`) to keep replies small.
+fn compact_log(log: Vec<String>) -> Vec<String> {
+    // (sign, id prefix, id number, rest of line)
+    fn parts(l: &str) -> Option<(char, &str, u32, &str)> {
+        let sign = l.chars().next().filter(|c| "+~-".contains(*c))?;
+        let body = &l[1..];
+        let end = body.find(|c: char| c == '.' || c == ' ').unwrap_or(body.len());
+        let (pre, n) = split_id(&body[..end])?;
+        Some((sign, pre, n, &body[end..]))
+    }
+    let mut out: Vec<String> = Vec::with_capacity(log.len());
+    let mut i = 0;
+    while i < log.len() {
+        let Some((sign, pre, n0, rest)) = parts(&log[i]) else {
+            out.push(log[i].clone());
+            i += 1;
+            continue;
+        };
+        let mut nums = vec![n0];
+        let mut j = i + 1;
+        while let Some((s2, p2, n2, r2)) = log.get(j).and_then(|l| parts(l)) {
+            if s2 != sign || p2 != pre || r2 != rest {
+                break;
+            }
+            nums.push(n2);
+            j += 1;
+        }
+        if nums.len() < 3 {
+            out.extend(log[i..j].iter().cloned());
+        } else {
+            let mut runs: Vec<String> = vec![];
+            let mut k = 0;
+            while k < nums.len() {
+                let mut e = k;
+                while e + 1 < nums.len() && nums[e + 1] == nums[e] + 1 {
+                    e += 1;
+                }
+                runs.push(if e > k { format!("{pre}{}..{pre}{}", nums[k], nums[e]) } else { format!("{pre}{}", nums[k]) });
+                k = e + 1;
+            }
+            out.push(format!("{sign}{}{rest}", runs.join(",")));
+        }
+        i = j;
+    }
+    out
 }
 
 /// Argument accessor that tracks which key=values were consumed.
@@ -261,6 +325,13 @@ impl<'a> Exec<'a> {
         for part in spec.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             if part.eq_ignore_ascii_case("all") || part == "*" {
                 out.extend(self.comp().items().map(|i| i.id.clone()));
+            } else if let Some((pre, a, b)) = parse_id_range(part) {
+                // c2..c31, the range notation used in compacted logs
+                let before = out.len();
+                out.extend(self.comp().items().filter(|i| split_id(&i.id).is_some_and(|(p, n)| p == pre && (a..=b).contains(&n))).map(|i| i.id.clone()));
+                if out.len() == before {
+                    bail!("no items in range '{part}'");
+                }
             } else if parse_track_spec(part).is_some() && self.comp().track(part).is_some() && self.p.locate(part).is_none() {
                 out.extend(self.comp().track(part).unwrap().items.iter().map(|i| i.id.clone()));
             } else {

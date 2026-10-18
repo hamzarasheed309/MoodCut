@@ -657,6 +657,7 @@ impl<'a> CompR<'a> {
         let out_t = self.out_t();
         let fxm = self.fx_margin(it, &ev, scale);
         let clip = self.out_rect().pad(fxm.max(0) + 2);
+        let mut pre_blurred = false;
         let mut lb = if let Some(cp) = Self::cornerpin(it) {
             let pev = ev.with_lists(&[schema::effect("cornerpin").unwrap().params]);
             let q: Vec<(f64, f64)> = ["tl", "tr", "br", "bl"]
@@ -695,7 +696,7 @@ impl<'a> CompR<'a> {
             }
         } else {
             let m_out = out_t.pre_concat(ex.mat).pre_concat(w.m);
-            self.render_2d(it, &ev, &x, tl, b, m_out, clip, scale)?
+            self.render_2d(it, &ev, &x, tl, b, m_out, clip, scale, &mut pre_blurred)?
         };
         let Some(lbuf) = lb.as_mut() else { return Ok(None) };
         // masks & crop (mask paths live in layer px, transformed like the content)
@@ -706,7 +707,8 @@ impl<'a> CompR<'a> {
         // native effects
         if it.fx.iter().any(|e| e.on) {
             let fcx = FxCtx { ev: &ev, scale, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps).round() as i64, seed: x.seed };
-            for e in it.fx.iter().filter(|e| e.on && e.kind != "crop" && e.kind != "cornerpin") {
+            // a leading blur may already have been applied at source resolution
+            for e in it.fx.iter().filter(|e| e.on).skip(pre_blurred as usize).filter(|e| e.kind != "crop" && e.kind != "cornerpin") {
                 effects::apply(e, lbuf, &fcx);
             }
         }
@@ -737,14 +739,28 @@ impl<'a> CompR<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_2d(&self, it: &Item, ev: &Ev, x: &ExprCtx, tl: f64, b: LBounds, m_out: Transform, clip: IRect, scale: f32) -> Result<Option<LayerBuf>> {
+    #[allow(clippy::too_many_arguments)]
+    fn render_2d(&self, it: &Item, ev: &Ev, x: &ExprCtx, tl: f64, b: LBounds, m_out: Transform, clip: IRect, scale: f32, pre_blurred: &mut bool) -> Result<Option<LayerBuf>> {
         let fxm = self.fx_margin(it, ev, scale);
         if Self::is_raster(it) {
-            let need = Self::max_scale(&m_out);
-            let Some(src) = self.raster(it, tl, ev, need, self.zooming(it))? else { return Ok(None) };
+            let reduce = effects::blur_source_scale(&it.fx, ev, scale);
+            let need = Self::max_scale(&m_out) * reduce;
+            let Some(mut src) = self.raster(it, tl, ev, need, self.zooming(it))? else { return Ok(None) };
             let (dw, dh) = (src.width() as f32, src.height() as f32);
             // decoded px -> output px
             let m = m_out.pre_scale(b.w / dw, b.h / dh);
+            if reduce < 1.0 {
+                // Strong leading blur (e.g. blurred background fill): blur the small
+                // source instead of the full-size layer, then upscale bilinearly.
+                // Edge-clamped, so fills don't darken toward the frame edges.
+                let e = it.fx.iter().find(|e| e.on).expect("blur_source_scale saw a blur");
+                let pev = ev.with_lists(&[schema::effect("blur").unwrap().params]);
+                let sigma = pev.f(&e.props, "radius") * scale / 2.0 / Self::max_scale(&m).max(1e-3);
+                let mut pm = (*src).clone();
+                pixel::blur_pixmap(&mut pm, sigma, 0);
+                src = std::sync::Arc::new(pm);
+                *pre_blurred = true;
+            }
             let mut pts = [Point::from_xy(0.0, 0.0), Point::from_xy(dw, 0.0), Point::from_xy(dw, dh), Point::from_xy(0.0, dh)];
             m.map_points(&mut pts);
             let r = IRect::bound(&pts.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>());
@@ -768,7 +784,7 @@ impl<'a> CompR<'a> {
             let mut lb = LayerBuf::new(r.x, r.y, r.w as u32, r.h as u32).ok_or_else(|| anyhow!("alloc"))?;
             let pm = lb.pm.make_mut();
             let up = Self::max_scale(&m) > 1.3;
-            pixel::draw_affine(pm, &src, Transform::from_translate(-r.x as f32, -r.y as f32).pre_concat(m), up && !self.rc.draft);
+            pixel::draw_affine(pm, &src, Transform::from_translate(-r.x as f32, -r.y as f32).pre_concat(m), up && !self.rc.draft && !*pre_blurred);
             return Ok(Some(lb));
         }
         // vector content

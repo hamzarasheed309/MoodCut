@@ -239,3 +239,50 @@ fn parent_and_precomp() {
     assert_eq!(p.comps.len(), 2);
     assert!(p.main_comp().unwrap().items().any(|i| i.kind == ItemKind::Comp));
 }
+
+#[test]
+fn overlay_templates_sit_on_top_of_the_current_comp() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-5] /v/b.mp4[0-5]\ntext 'Hi' at=0 dur=5");
+    let log = ok(&mut p, "title lightleak at=2 dur=3 as=leak\nset $ opacity=50%\ntitle vignette");
+    assert!(log.iter().any(|l| l.contains("lightleak V3 2-5")), "{log:?}");
+    assert_eq!(p.comps.len(), 1, "overlays must not create precomps");
+    let c = p.main_comp().unwrap();
+    let leak = &c.track("V3").unwrap().items[0];
+    assert_eq!((leak.kind, leak.name.as_deref()), (ItemKind::Solid, Some("leak")));
+    assert!(leak.props.contains_key("opacity"), "$ should refer to the overlay layer");
+    let vig = &c.track("V4").unwrap().items[0];
+    assert_eq!((vig.kind, vig.start, vig.dur), (ItemKind::Adjust, 0.0, 10.0));
+}
+
+#[test]
+fn timed_anim_on_a_track_hits_the_clip_under_the_time() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-5] /v/a.mp4[5-10] /v/a.mp4[10-15]");
+    let log = ok(&mut p, "anim V1 punch at=7");
+    assert_eq!(log.iter().filter(|l| l.contains("anim punch")).count(), 1, "{log:?}");
+    assert!(log.iter().any(|l| l.starts_with("~c2 anim")), "{log:?}");
+    let e = err(&mut p, "anim V1 punch at=20");
+    assert!(e.contains("nothing in V1"), "{e}");
+}
+
+#[test]
+fn quote_round_trips_through_the_lexer() {
+    for s in [r"C:\Users\me\new\talk.mp4", r"\\nas\clips\a.mov", r"clips\take1.mov", "it's \"quoted\"", "two\nlines", r"back\slash text", r"\note"] {
+        let script = format!("text {}", super::lex::quote(s));
+        let c = super::lex::parse_script(&script).unwrap();
+        assert_eq!(c[0].pos(), vec![s], "{script}");
+    }
+}
+
+#[test]
+fn repeated_log_lines_are_compacted_and_ranges_resolve() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-2] /v/a.mp4[2-4] /v/a.mp4[4-6] /v/a.mp4[6-8] /v/a.mp4[8-10]");
+    let log = ok(&mut p, "color V1 bw");
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(log[0].starts_with("~c1..c5.f1 "), "{log:?}");
+    let log = ok(&mut p, "fx c2..c4 blur");
+    assert!(log[0].starts_with("+c2..c4.f2 blur"), "{log:?}");
+    assert!(err(&mut p, "fx c7..c9 blur").contains("no items in range"));
+}

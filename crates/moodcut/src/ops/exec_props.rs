@@ -1,7 +1,7 @@
 //! Property-level commands: set, kf, expr, anim, fx/afx, tr, fade, mask, matte,
 //! parent, color, lut.
 
-use super::exec::{parse_speed, parse_track_spec, Exec, Mode, A};
+use super::exec::{parse_speed, parse_track_spec, Exec, Mode, A, EPS};
 use super::presets::{self, AnimOpts};
 use crate::model::anim::{Anim, Ease, Key, LoopMode};
 use crate::model::project::*;
@@ -416,7 +416,22 @@ impl<'a> Exec<'a> {
         o.freq = a.take(&["freq", "speed", "hz"]).map(|s| s.parse::<f64>()).transpose()?;
         o.dist = a.take(&["dist", "distance"]).map(|s| s.trim_end_matches("px").parse::<f64>()).transpose()?;
         let at_abs = a.take(&["at", "t"]).map(|s| self.time(&s)).transpose()?;
-        for id in self.targets(&spec)? {
+        let mut targets = self.targets(&spec)?;
+        if let Some(t) = at_abs {
+            // `anim V1 punch at=12` hits the clip under 12s, not every clip on V1.
+            let mut hit = Vec::new();
+            for id in targets {
+                let it = self.item_at(self.relocate(&id)?);
+                if it.start - EPS <= t && t < it.end() - EPS {
+                    hit.push(id);
+                }
+            }
+            if hit.is_empty() {
+                bail!("nothing in {spec} at {}", fmt_t(t));
+            }
+            targets = hit;
+        }
+        for id in targets {
             let l = self.relocate(&id)?;
             let it = self.item_at(l).clone();
             let mut oo = o.clone();

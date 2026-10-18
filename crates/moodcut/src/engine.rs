@@ -406,7 +406,7 @@ impl Engine {
         if files.is_empty() {
             bail!("no media files found");
         }
-        let script = format!("import {}", files.iter().map(|f| format!("'{}'", f.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'"))).collect::<Vec<_>>().join(" "));
+        let script = format!("import {}", files.iter().map(|f| crate::ops::lex::quote(&f.to_string_lossy())).collect::<Vec<_>>().join(" "));
         self.edit(&script, source)
     }
 

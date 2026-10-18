@@ -24,6 +24,24 @@ fn params_ev<'a>(cx: &FxCtx<'a>, def: &'static schema::EffectDef) -> Ev<'a> {
     cx.ev.with_lists(&[def.params])
 }
 
+/// Fraction of the needed resolution a layer's source can be rasterized at
+/// when its first effect is a strong, constant blur (e.g. a blurred background
+/// fill): the blur hides the lost detail. Powers of two keep decode sizes stable.
+pub fn blur_source_scale(fx: &[Effect], ev: &Ev, scale: f32) -> f32 {
+    let Some(e) = fx.iter().find(|e| e.on) else { return 1.0 };
+    if e.kind != "blur" || e.props.get("radius").is_some_and(|a| a.is_animated()) || e.props.get("dir").is_some_and(|d| d.v.str() != "both") {
+        return 1.0;
+    }
+    let Some(def) = schema::effect("blur") else { return 1.0 };
+    let r = ev.with_lists(&[def.params]).f(&e.props, "radius") * scale;
+    match r {
+        r if r >= 64.0 => 0.125,
+        r if r >= 32.0 => 0.25,
+        r if r >= 16.0 => 0.5,
+        _ => 1.0,
+    }
+}
+
 /// Extra pixels (output space) the effect may draw outside the layer's content.
 pub fn margin(e: &Effect, ev: &Ev, scale: f32) -> f32 {
     let Some(def) = schema::effect(&e.kind) else { return 0.0 };

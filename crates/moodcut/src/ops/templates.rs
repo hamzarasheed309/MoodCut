@@ -1,6 +1,8 @@
 //! Motion graphics templates (`title <template> ...`). Each template is built
 //! as a transparent precomp from ordinary MoodCut Script, so the result stays
-//! fully editable (every inner layer has an id) and nests cleanly.
+//! fully editable (every inner layer has an id) and nests cleanly. Overlay
+//! templates (light leak, letterbox, vignette, grain) are single layers placed
+//! directly in the current comp instead.
 
 use super::exec::{Exec, Mode, A};
 use crate::model::project::*;
@@ -28,7 +30,7 @@ pub const TEMPLATES: &[(&str, &str, &str)] = &[
 ];
 
 fn q(s: &str) -> String {
-    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+    super::lex::quote(s)
 }
 
 struct Ctx {
@@ -36,7 +38,13 @@ struct Ctx {
     ch: f64,
     s: f64,
     dur: f64,
+    /// Placement for overlay templates (`V5 at=8`), which go straight into
+    /// the current comp: blend modes and adjustment layers need the layers
+    /// below them, which a precomp would hide.
+    place: String,
 }
+
+const OVERLAYS: &[&str] = &["lightleak", "letterbox", "vignette", "grain"];
 
 impl Ctx {
     fn n(&self, v: f64) -> String {
@@ -97,10 +105,30 @@ impl<'a> Exec<'a> {
             p.insert("text".into(), pos_main.join(" "));
         }
         let (cw, ch, fps) = (self.comp().w as f64, self.comp().h as f64, self.comp().fps);
-        let cx = Ctx { cw, ch, s: ch.min(cw) / 1080.0, dur };
+        let overlay = OVERLAYS.contains(&canon);
+        let overlay_track = match (&track, overlay) {
+            (Some(t), true) => t.clone(),
+            (None, true) => self.pick_track_above(TrackKind::Video, at, at + dur),
+            _ => String::new(),
+        };
+        let place = if overlay {
+            format!("{overlay_track} at={}{}", fmt_num(at), alias.as_ref().map(|a| format!(" as={}", q(a))).unwrap_or_default())
+        } else {
+            "at=0".into()
+        };
+        let cx = Ctx { cw, ch, s: ch.min(cw) / 1080.0, dur, place };
         let script = build(canon, &mut p, &cx)?;
         if !p.is_empty() {
             bail!("unknown parameter(s) for {canon}: {} (help templates)", p.keys().cloned().collect::<Vec<_>>().join(", "));
+        }
+        if overlay {
+            let cur = self.comp.clone();
+            let ids = self.run_sub(&cur, &script, true).map_err(|e| anyhow!("template {canon}: {e}"))?;
+            let iid = ids.first().cloned().unwrap_or_default();
+            self.note(format!("+{iid} {canon} {overlay_track} {}-{}", fmt_t(at), fmt_t(at + dur)));
+            self.created.retain(|c| c != &iid);
+            self.created.push(iid);
+            return Ok(());
         }
         // precomp
         let cid = self.p.next_comp_id();
@@ -385,22 +413,22 @@ fn build(t: &str, p: &mut BTreeMap<String, String>, c: &Ctx) -> Result<String> {
         "lightleak" => {
             let color = take(p, &["color"], "#ff7a18");
             let amount = take(p, &["amount"], "0.7");
-            line(format!("solid #000000 at=0 dur={} blend=screen as=leak", c.n(d)));
+            line(format!("solid #000000 {} dur={} blend=screen", c.place, c.n(d)));
             line(format!("fx $ lightleak color={color} amount={amount}"));
         }
         "letterbox" => {
             let ratio = take(p, &["ratio"], "2.39");
-            line(format!("adjust at=0 dur={} as=bars", c.n(d)));
+            line(format!("adjust {} dur={}", c.place, c.n(d)));
             line(format!("fx $ letterbox ratio={ratio}"));
         }
         "vignette" => {
             let amount = take(p, &["amount"], "0.5");
-            line(format!("adjust at=0 dur={} as=vignette", c.n(d)));
+            line(format!("adjust {} dur={}", c.place, c.n(d)));
             line(format!("fx $ vignette amount={amount}"));
         }
         "grain" => {
             let amount = take(p, &["amount"], "0.1");
-            line(format!("adjust at=0 dur={} as=grain", c.n(d)));
+            line(format!("adjust {} dur={}", c.place, c.n(d)));
             line(format!("fx $ noise amount={amount}"));
         }
         _ => bail!("template {t} not implemented"),

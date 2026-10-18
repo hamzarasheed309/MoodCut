@@ -216,6 +216,7 @@ export function FileBrowser() {
 
 export function ConnectAI({ onClose }: { onClose: () => void }) {
   const url = `${location.origin}/mcp`;
+  const port = location.port || "7878";
   const copy = (s: string) => navigator.clipboard?.writeText(s).then(() => toast("Copied"));
   return (
     <div class="modal-bg" onClick={onClose}>
@@ -245,7 +246,7 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
           </div>
           <div>
             <b>ChatGPT</b> (Settings → Connectors → Developer mode → Add MCP server) needs an HTTPS URL. Start
-            <pre class="kbd" style={{ display: "block", padding: "8px", whiteSpace: "pre-wrap" }}>moodcut serve --public{"\n"}cloudflared tunnel --url http://localhost:7878</pre>
+            <pre class="kbd" style={{ display: "block", padding: "8px", whiteSpace: "pre-wrap" }}>{`moodcut serve --public${port === "7878" ? "" : ` --port ${port}`}\ncloudflared tunnel --url http://localhost:${port}`}</pre>
             then use <code>https://&lt;tunnel&gt;/mcp/&lt;token&gt;</code> (the token is printed by <code>serve --public</code>).
           </div>
           <div style={{ color: "var(--muted)" }}>Edits made by the assistant appear here live, and everything you do here is visible to it.</div>

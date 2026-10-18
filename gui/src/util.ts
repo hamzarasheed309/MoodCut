@@ -43,8 +43,15 @@ export function fmtShort(t: number): string {
   return m > 0 ? `${m}:${s.toFixed(1).padStart(4, "0")}` : `${s.toFixed(1)}s`;
 }
 
+/** Mirrors the lexer: Windows-looking paths are read with literal backslashes. */
+function looksLikePath(s: string): boolean {
+  if (/^[A-Za-z]:\\/.test(s) || /^\\\\[A-Za-z0-9].*\\/.test(s)) return true;
+  return s.includes("\\") && !/\s/.test(s) && /\.[A-Za-z0-9]{2,5}$/.test(s);
+}
+
 /** Quotes a string for MoodCut Script. */
 export function q(s: string): string {
+  if (!s.includes("'") && looksLikePath(s)) return `'${s}'`;
   return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n") + "'";
 }
 

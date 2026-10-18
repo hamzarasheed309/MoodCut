@@ -155,19 +155,51 @@ pub fn parse_script(src: &str) -> Result<Vec<Cmd>> {
     Ok(cmds)
 }
 
+/// Windows paths ('C:\new\clip.mp4', '\\nas\share', 'clips\take1.mp4') keep
+/// their backslashes; elsewhere \n is a newline and \\ \' \" escape.
+pub(crate) fn looks_like_path(body: &[char]) -> bool {
+    let drive = body.len() > 2 && body[0].is_ascii_alphabetic() && body[1] == ':' && body[2] == '\\';
+    let unc = body.len() > 3 && body[0] == '\\' && body[1] == '\\' && body[2].is_alphanumeric() && body[3..].contains(&'\\');
+    if drive || unc {
+        return true;
+    }
+    if !body.contains(&'\\') || body.iter().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    let s: String = body.iter().collect();
+    s.rsplit_once('.').is_some_and(|(_, ext)| (2..=5).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Quotes a string so `read_quoted` gives it back unchanged.
+pub fn quote(s: &str) -> String {
+    if !s.contains('\'') && looks_like_path(&s.chars().collect::<Vec<_>>()) {
+        return format!("'{s}'");
+    }
+    format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n"))
+}
+
 fn read_quoted(chars: &[char], start: usize, line: usize) -> Result<(String, usize)> {
     let q = chars[start];
+    let end = chars[start + 1..].iter().position(|&c| c == q).map(|p| start + 1 + p);
+    if let Some(end) = end {
+        if looks_like_path(&chars[start + 1..end]) {
+            return Ok((chars[start + 1..end].iter().collect(), end + 1));
+        }
+    }
     let mut i = start + 1;
     let mut s = String::new();
     while i < chars.len() {
         let c = chars[i];
         if c == '\\' && i + 1 < chars.len() {
-            let n = chars[i + 1];
-            s.push(match n {
-                'n' => '\n',
-                't' => '\t',
-                other => other,
-            });
+            match chars[i + 1] {
+                'n' => s.push('\n'),
+                '\\' => s.push('\\'),
+                '\'' | '"' => s.push(chars[i + 1]),
+                other => {
+                    s.push('\\');
+                    s.push(other);
+                }
+            }
             i += 2;
             continue;
         }
@@ -204,6 +236,16 @@ mod tests {
         assert_eq!(c[0].kv()[0].1, "it's \"fine\"");
         let c = parse_script("solid #000 at=0").unwrap();
         assert_eq!(c[0].pos(), vec!["#000"]);
+    }
+
+    #[test]
+    fn windows_paths_keep_backslashes() {
+        let c = parse_script(r"import 'C:\Users\me\new\talk.mp4' src='\\nas\clips\a.srt' 'footage\take1.mov'").unwrap();
+        assert_eq!(c[0].pos(), vec![r"C:\Users\me\new\talk.mp4", r"footage\take1.mov"]);
+        assert_eq!(c[0].kv()[0].1, r"\\nas\clips\a.srt");
+        let c = parse_script(r"text 'Line one\nLine two' at=0; text 'a\qb'").unwrap();
+        assert_eq!(c[0].pos(), vec!["Line one\nLine two"]);
+        assert_eq!(c[1].pos(), vec![r"a\qb"]);
     }
 
     #[test]
