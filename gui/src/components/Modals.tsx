@@ -102,10 +102,10 @@ export function RenderPanel() {
                   <b>{j.id}</b>
                   <span>{j.preset}</span>
                   <span style={{ color: j.state === "error" ? "var(--danger)" : j.state === "done" ? "var(--ok)" : "var(--warn)" }}>{j.state}</span>
-                  <span style={{ marginLeft: "auto" }}>{j.state === "running" ? `${j.pct}% · ${j.frames} · eta ${j.eta_s}s` : j.state === "done" ? `${fmtNum((j.bytes || 0) / 1e6, 1)} MB · ${j.secs}s · ${j.render_fps} fps` : ""}</span>
+                  <span style={{ marginLeft: "auto" }}>{j.state === "running" ? `${j.pct}% · ${j.frames} · eta ${j.eta_s}s` : j.state === "done" ? (j.note ? j.note : `${fmtNum((j.bytes || 0) / 1e6, 1)} MB · ${j.secs}s · ${j.render_fps} fps`) : ""}</span>
                 </div>
                 <div class="progress">
-                  <div style={{ width: `${j.pct}%` }} />
+                  <div style={{ width: `${j.pct ?? 100}%` }} />
                 </div>
                 <div style={{ fontSize: "11px", color: "var(--faint)", wordBreak: "break-all", userSelect: "text" }}>{j.error || j.out}</div>
               </div>

@@ -250,7 +250,7 @@ impl<'a> CompR<'a> {
         let (cw, ch) = (self.comp.w as f64, self.comp.h as f64);
         let (w, h) = (b.w as f64, b.h as f64);
         match fit.as_str() {
-            "fit" => {
+            "fit" | "blur" => {
                 let s = (cw / w).min(ch / h);
                 (s, s)
             }
@@ -738,7 +738,37 @@ impl<'a> CompR<'a> {
         Ok(Some(pm))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// `fit=blur`: the frame fitted over a blurred, dimmed copy of itself that
+    /// fills the comp (portrait footage in landscape and vice versa).
+    fn blur_fill(&self, src: &Pixmap, m: Transform, clip: IRect) -> Option<LayerBuf> {
+        let r = self.out_rect().intersect(&clip);
+        if r.is_empty() {
+            return None;
+        }
+        let (ow, oh) = (self.ow.max(1) as f32, self.oh.max(1) as f32);
+        let (dw, dh) = (src.width() as f32, src.height() as f32);
+        // background: fill-scaled into a small buffer, blurred there, dimmed
+        let sw = 192u32;
+        let sh = ((sw as f32 * oh / ow).round() as u32).max(1);
+        let mut small = pixel::new_pixmap(sw, sh);
+        let k = (sw as f32 / dw).max(sh as f32 / dh);
+        pixel::draw_affine(&mut small, src, Transform::from_translate(sw as f32 / 2.0, sh as f32 / 2.0).pre_scale(k, k).pre_translate(-dw / 2.0, -dh / 2.0), false);
+        pixel::blur_pixmap(&mut small, sw as f32 / 48.0, 0);
+        for px in small.data_mut().chunks_exact_mut(4) {
+            for c in &mut px[..3] {
+                *c = (*c as u16 * 150 / 256) as u8;
+            }
+        }
+        let mut lb = LayerBuf::new(r.x, r.y, r.w as u32, r.h as u32)?;
+        let to_lb = Transform::from_translate(-r.x as f32, -r.y as f32);
+        let pm = lb.pm.make_mut();
+        pixel::draw_affine(pm, &small, to_lb.pre_scale(ow / sw as f32, oh / sh as f32), false);
+        let mut fg = pixel::new_pixmap(r.w as u32, r.h as u32);
+        pixel::draw_affine(&mut fg, src, to_lb.pre_concat(m), Self::max_scale(&m) > 1.3 && !self.rc.draft);
+        pm.draw_pixmap(0, 0, fg.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        Some(lb)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_2d(&self, it: &Item, ev: &Ev, x: &ExprCtx, tl: f64, b: LBounds, m_out: Transform, clip: IRect, scale: f32, pre_blurred: &mut bool) -> Result<Option<LayerBuf>> {
         let fxm = self.fx_margin(it, ev, scale);
@@ -760,6 +790,9 @@ impl<'a> CompR<'a> {
                 pixel::blur_pixmap(&mut pm, sigma, 0);
                 src = std::sync::Arc::new(pm);
                 *pre_blurred = true;
+            }
+            if it.kind == ItemKind::Clip && ev.str(&it.props, "fit") == "blur" {
+                return Ok(self.blur_fill(&src, m, clip));
             }
             let mut pts = [Point::from_xy(0.0, 0.0), Point::from_xy(dw, 0.0), Point::from_xy(dw, dh), Point::from_xy(0.0, dh)];
             m.map_points(&mut pts);

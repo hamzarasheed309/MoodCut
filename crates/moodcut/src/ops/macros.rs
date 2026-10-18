@@ -398,19 +398,35 @@ impl<'a> Exec<'a> {
         let tr = a.take(&["tr", "transition"]);
         let limit = a.take(&["dur", "duration"]).map(|s| self.time(&s)).transpose()?;
         // place music if it's a media id
-        let music_item = if self.item_id(&music).is_ok() {
+        let at = a.take(&["at"]);
+        let placed_music = self.item_id(&music).is_err();
+        let music_item = if !placed_music {
             music.clone()
         } else {
-            let at = a.take(&["at"]).unwrap_or_else(|| "0".into());
-            let ids = self.run_sub(&self.comp.clone(), &format!("add {music} A1 at={at}"), false)?;
+            let ids = self.run_sub(&self.comp.clone(), &format!("add {music} A1 at={}", at.as_deref().unwrap_or("0")), false)?;
             ids[0].clone()
         };
-        let (beats, bpm, _, ms, me) = self.beat_times(&music_item, every)?;
-        let mut cuts: Vec<f64> = beats.into_iter().filter(|b| *b >= ms - EPS).collect();
-        if cuts.first().map(|c| *c > ms + 0.05).unwrap_or(true) {
-            cuts.insert(0, ms);
+        let (beats, bpm, _, mstart, me) = self.beat_times(&music_item, every)?;
+        // with an existing music clip, at= starts the montage partway into it
+        let ms = match at.as_deref().filter(|_| !placed_music) {
+            Some(t) => self.time(t)?.max(mstart),
+            None => mstart,
+        };
+        if ms >= me - 0.1 {
+            bail!("montage starts at {}s but the music ends at {}s", fmt_num(ms), fmt_num(me));
         }
-        let end = limit.map(|d| ms + d).unwrap_or(me);
+        let mut cuts: Vec<f64> = beats.into_iter().filter(|b| *b >= ms - EPS).collect();
+        // the first shot starts with the music, not on its first detected beat
+        match cuts.first().copied() {
+            Some(c) if c <= ms + 0.25 => cuts[0] = ms,
+            _ => cuts.insert(0, ms),
+        }
+        let end = limit.map(|d| ms + d).unwrap_or(me).min(me);
+        if placed_music && end < me - 0.05 {
+            // music we added ends with the montage, faded out
+            let fade = (end - ms).min(1.0) * 0.999;
+            self.run_sub(&self.comp.clone(), &format!("trim {music_item} end={}\nset {music_item} fadeOut={}", fmt_num(end), fmt_num(fade)), true)?;
+        }
         cuts.retain(|c| *c < end - 0.05);
         cuts.push(end);
         let srcs: Vec<String> = list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
@@ -456,7 +472,8 @@ impl<'a> Exec<'a> {
         if let Some(t) = tr {
             self.run_sub(&self.comp.clone(), &format!("tr {tid} {t} 0.3"), true)?;
         }
-        self.note(format!("+montage {placed} clip(s) on {tid} cut every {every} beat(s) @{} BPM", fmt_num(bpm.round())));
+        let trimmed = if placed_music && end < me - 0.05 { format!(", {music_item} trimmed to end at {} with a fade", fmt_num(end)) } else { String::new() };
+        self.note(format!("+montage {placed} clip(s) on {tid} cut every {every} beat(s) @{} BPM{trimmed}", fmt_num(bpm.round())));
         Ok(())
     }
 

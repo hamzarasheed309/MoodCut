@@ -144,13 +144,15 @@ export interface LogEntry {
 export interface Job {
   id: string;
   state: "running" | "done" | "error";
-  pct: number;
-  frames: string;
-  eta_s: number;
+  pct?: number;
+  frames?: string;
+  eta_s?: number;
   preset: string;
   out: string;
   error?: string;
   bytes?: number;
   secs?: number;
   render_fps?: number;
+  /** set on caption / chapter / XML / EDL exports */
+  note?: string;
 }

@@ -70,6 +70,12 @@ impl Job {
         };
         let pct = (done as f64 / total as f64 * 100.0).min(100.0);
         let eta = if done > 0 && state == "running" { el / done as f64 * (total - done.min(total)) as f64 } else { 0.0 };
+        if let Some(Ok(r)) = &*res {
+            if r.frames == 0 {
+                // a sidecar export (captions, chapters, XML, EDL): no frames
+                return json!({"id": self.id, "state": state, "preset": self.opts.preset, "out": r.out, "bytes": r.bytes, "note": *self.prog.stage.lock()});
+            }
+        }
         let mut v = json!({"id": self.id, "state": state, "pct": (pct * 10.0).round() / 10.0, "frames": format!("{done}/{total}"), "eta_s": eta.round(), "preset": self.opts.preset, "out": self.opts.out.to_string_lossy()});
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
             for (k, x) in e {
@@ -499,6 +505,9 @@ impl Engine {
         if comp.duration() <= 0.0 {
             bail!("the timeline is empty; add media before rendering");
         }
+        if let Some((kind, ext)) = crate::export::sidecar(&opts.preset) {
+            return self.export_sidecar(&p, opts, path.as_deref(), kind, ext);
+        }
         if opts.out.as_os_str().is_empty() {
             let pr = encode::resolve_preset(&opts.preset, &self.ff, &opts.hw)?;
             opts.out = encode::default_out(path.as_deref(), &p.name, pr.ext);
@@ -521,6 +530,30 @@ impl Engine {
             eng.emit("job", rev, "render", txt);
         });
         self.emit("job", self.st.read().rev, "render", format!("render {id} started"));
+        Ok(job)
+    }
+
+    /// Caption files, chapters and interchange timelines: written at once, no encode.
+    fn export_sidecar(&self, p: &Project, mut opts: RenderOpts, path: Option<&Path>, kind: &str, ext: &str) -> Result<Arc<Job>> {
+        if opts.out.as_os_str().is_empty() {
+            opts.out = encode::default_out(path, &p.name, ext);
+        } else {
+            self.check_path(&opts.out.to_string_lossy())?;
+        }
+        let t0 = Instant::now();
+        let summary = crate::export::write(p, &opts.comp, kind, &opts.out)?;
+        let c = p.comp(&opts.comp).unwrap();
+        let out = opts.out.to_string_lossy().to_string();
+        let bytes = std::fs::metadata(&opts.out).map(|m| m.len()).unwrap_or(0);
+        let id = format!("r{}", self.jobs.lock().len() + 1);
+        let r = RenderResult { out: out.clone(), frames: 0, secs: t0.elapsed().as_secs_f64(), bytes, fps: 0.0, w: c.w, h: c.h };
+        let prog = Progress::default();
+        prog.done.store(1, Ordering::Relaxed);
+        prog.total.store(1, Ordering::Relaxed);
+        *prog.stage.lock() = summary;
+        let job = Arc::new(Job { id: id.clone(), opts, prog, started: t0, result: Mutex::new(Some(Ok(r))) });
+        self.jobs.lock().push(job.clone());
+        self.emit("job", self.st.read().rev, "render", format!("export {id} done: {out}"));
         Ok(job)
     }
 

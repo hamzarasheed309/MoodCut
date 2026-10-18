@@ -93,6 +93,10 @@ pub fn find_browser() -> Option<PathBuf> {
                 cands.push(PathBuf::from(&b).join("Chromium\\Application\\chrome.exe"));
             }
         }
+        // AI clients may start MoodCut with a minimal environment
+        cands.push(PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
+        cands.push(PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"));
+        cands.push(PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"));
     } else if cfg!(target_os = "macos") {
         for app in ["Google Chrome", "Microsoft Edge", "Chromium", "Brave Browser"] {
             cands.push(PathBuf::from(format!("/Applications/{app}.app/Contents/MacOS/{app}")));
@@ -103,8 +107,12 @@ pub fn find_browser() -> Option<PathBuf> {
                 cands.push(p);
             }
         }
+        // AI clients may start MoodCut with a minimal environment (no PATH extras)
+        for p in ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium", "/opt/google/chrome/chrome", "/opt/microsoft/msedge/msedge"] {
+            cands.push(PathBuf::from(p));
+        }
         // Playwright's bundled Chromium
-        let mut roots = vec![];
+        let mut roots = vec![PathBuf::from("/ms-playwright"), PathBuf::from("/opt/pw-browsers")];
         if let Ok(p) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
             roots.push(PathBuf::from(p));
         }

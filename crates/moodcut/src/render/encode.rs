@@ -47,6 +47,11 @@ pub const PRESETS: &[(&str, &str)] = &[
     ("wav", "audio only WAV (PCM 16-bit)"),
     ("m4a", "audio only AAC"),
     ("flac", "audio only FLAC"),
+    ("srt", "SubRip captions from the caption track (no video)"),
+    ("vtt", "WebVTT captions from the caption track"),
+    ("chapters", "YouTube chapter list from markers (.txt)"),
+    ("xml", "FCP7 XML timeline for Premiere Pro / DaVinci Resolve / Final Cut 7 (original media)"),
+    ("edl", "CMX3600 EDL of the V1 cut"),
 ];
 
 fn sv(v: &[&str]) -> Vec<String> {
@@ -314,7 +319,7 @@ pub fn preview_stream(ff: Arc<Ff>, p: Project, frames: Arc<FrameServer>, comp: S
     }
     let fps = c0.fps;
     let (w, h) = out_size(c0, scale);
-    let ap = audio::plan(&p, &ff, &comp, t0, t1, 1);
+    let ap = audio::plan_preview(&p, &ff, &comp, t0, t1, 1);
     let mut c = ff.cmd();
     c.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{w}x{h}"), "-r", &format!("{fps}"), "-i", "pipe:0"]);
     c.args(audio::input_args(&ap));

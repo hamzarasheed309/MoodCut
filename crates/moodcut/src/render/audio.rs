@@ -280,8 +280,67 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// How the master loudness target is met.
+#[derive(Clone, Copy, PartialEq)]
+enum Loud {
+    /// measure the whole mix first if it isn't cached (renders, checks)
+    Measure,
+    /// use a cached measurement, else adaptive loudnorm (live preview)
+    Cached,
+    /// pre-master mix for measuring: no loudness stage, no limiter
+    Off,
+}
+
 /// Builds the audio plan for comp `comp_id` over [t0, t1). Inputs are numbered from `first_input`.
 pub fn plan(p: &Project, ff: &Ff, comp_id: &str, t0: f64, t1: f64, first_input: usize) -> AudioPlan {
+    plan_with(p, ff, comp_id, t0, t1, first_input, Loud::Measure)
+}
+
+/// Like [`plan`] but never blocks on a loudness measurement.
+pub fn plan_preview(p: &Project, ff: &Ff, comp_id: &str, t0: f64, t1: f64, first_input: usize) -> AudioPlan {
+    plan_with(p, ff, comp_id, t0, t1, first_input, Loud::Cached)
+}
+
+static LOUDNESS: std::sync::Mutex<BTreeMap<u64, f64>> = std::sync::Mutex::new(BTreeMap::new());
+
+fn mix_key(pl: &AudioPlan) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    pl.graph.hash(&mut h);
+    for i in &pl.inputs {
+        i.path.hash(&mut h);
+        i.ss.to_bits().hash(&mut h);
+        i.t.to_bits().hash(&mut h);
+        std::fs::metadata(&i.path).and_then(|m| m.modified()).ok().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Integrated loudness (LUFS) of the whole comp mix before the master
+/// loudness stage. Cached per mix, so range renders and re-renders reuse it.
+fn premaster_lufs(p: &Project, ff: &Ff, comp: &Comp, measure: bool) -> Option<f64> {
+    let pre = plan_with(p, ff, &comp.id, 0.0, comp.duration(), 0, Loud::Off);
+    if pre.empty {
+        return None;
+    }
+    let key = mix_key(&pre);
+    if let Some(v) = LOUDNESS.lock().ok()?.get(&key) {
+        return Some(*v);
+    }
+    if !measure {
+        return None;
+    }
+    let mut args = input_args(&pre);
+    args.extend(["-filter_complex".into(), format!("{};[{}]loudnorm=print_format=json[mc_m]", pre.graph, pre.label), "-map".into(), "[mc_m]".into(), "-f".into(), "null".into(), "-".into()]);
+    let (_, err) = ff.run_capture(&args).ok()?;
+    let j = err.rfind('{').and_then(|i| err[i..].find('}').map(|k| &err[i..=i + k]))?;
+    let v: serde_json::Value = serde_json::from_str(j).ok()?;
+    let i = v["input_i"].as_str()?.parse::<f64>().ok().filter(|i| i.is_finite() && *i > -69.0)?;
+    LOUDNESS.lock().ok()?.insert(key, i);
+    Some(i)
+}
+
+fn plan_with(p: &Project, ff: &Ff, comp_id: &str, t0: f64, t1: f64, first_input: usize, loud: Loud) -> AudioPlan {
     let Some(comp) = p.comp(comp_id) else { return AudioPlan { empty: true, ..Default::default() } };
     let dur = (t1 - t0).max(0.001);
     let mut cx = Ctx { p, ff, segs: vec![], depth: 0 };
@@ -389,11 +448,23 @@ pub fn plan(p: &Project, ff: &Ff, comp_id: &str, t0: f64, t1: f64, first_input: 
         chain.push(format!("volume={}dB", n(m.vol)));
     }
     chain.extend(m.afx.iter().filter_map(|e| afx_filter(e, ff)));
-    if let Some(l) = m.lufs {
-        chain.push(format!("loudnorm=I={}:TP=-1.5:LRA=11", n(l.clamp(-70.0, -5.0))));
-        chain.push("aresample=48000".into());
+    if let Some(l) = m.lufs.filter(|_| loud != Loud::Off) {
+        // Single-pass loudnorm can't settle on short programs and lands several
+        // LU low, so the whole mix is measured and given the exact gain, then a
+        // limiter holds peaks under -1.5 dBFS.
+        let target = l.clamp(-70.0, -5.0);
+        match premaster_lufs(p, ff, comp, loud == Loud::Measure) {
+            Some(i) => {
+                chain.push(format!("volume={}dB", n(((target - i) * 100.0).round() / 100.0)));
+                chain.push("alimiter=limit=0.841:attack=2:release=60:level=disabled".into());
+            }
+            None => {
+                chain.push(format!("loudnorm=I={}:TP=-1.5:LRA=11", n(target)));
+                chain.push("aresample=48000".into());
+            }
+        }
     }
-    if m.limiter {
+    if m.limiter && loud != Loud::Off {
         chain.push("alimiter=limit=0.944:level=disabled".into());
     }
     chain.push(format!("apad=whole_dur={}", n(dur)));

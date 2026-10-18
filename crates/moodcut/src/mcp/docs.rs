@@ -37,11 +37,11 @@ pub const WORKFLOW: &str = "Turning one request into a finished, professional ed
 1 GATHER  media find path=<folder> (what is there) -> media import paths=[<folder>] tag=<shoot>. Large library: media list (filters/paging) + preview media=m1..m48 (poster frames, 48 per sheet). Write down what you see so you never look twice: note m3 'wide drone, sunset' | tag m10..m18 interview.
 2 UNDERSTAND  speech: analyze target=tag:interview kind=transcript, then view what=search q=<words> to find quotes (times are source seconds). Shots: analyze target=all kind=scenes / stats (exposure). Music: analyze <m> kind=beats. Filmstrips (preview media=m7 n=8) to pick in/out points.
 3 PLAN  length, format (comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 3 s -> body -> payoff / call to action), music, look, graphics. Build only what was asked.
-4 ASSEMBLE  story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence for talking heads; keep m4 12-30,45-61 for rough cuts; b-roll on V2 over speech (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences. Typical shots 1.5-4 s; vary framing; cut on action; no repeated shots.
+4 ASSEMBLE  story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence for talking heads; keep m4 12-30,45-61 for rough cuts; b-roll on V2 over speech (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences. Typical shots 1.5-4 s; vary framing; cut on action; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
 5 POLISH  color <ids|V1> natural|cinematic then fine-tune; tr V1 dissolve 0.3 only where it helps; titles and lower thirds: the graphic tool (HTML/CSS, best looking) or title templates; captions <clip> for speech-led videos; anim kenburns on stills.
 6 SOUND  music on A2 under speech: duck A2 by=A1 amount=-12 (by=V1 when speech is camera audio); fade music in/out; master lufs=-14 limiter=1 (web) | -16 (podcast) | -23 (broadcast).
 7 VERIFY  check expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; preview n=8 for the overall flow; fix what remains and check again until clean.
-8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.";
+8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.";
 
 const GRAPHICS: &str = "graphic tool: html -> rendered video with alpha (or a still, dur=0) in the library. The page is the frame: 100% width/height = comp size (or size=). Transparent unless you paint a background (alpha=false keeps an opaque page).
 Timing runs on a virtual clock, so animate any way you like and every frame is exact:
@@ -269,6 +269,7 @@ pub fn help(topic: &str) -> String {
             for (n, d) in PRESETS {
                 s.push_str(&format!(" {n}: {d}\n"));
             }
+            s.push_str("srt/vtt/chapters/xml/edl are written instantly (no encode). xml keeps cuts, tracks, source in/out and markers with links to the original media; HTML graphics come along as media files; text, shapes, solids and precomps don't translate, so also render those as a prores4444 overlay (hide V1 first). A finished delivery for a client: the video + srt + chapters (+ xml if they finish in Premiere/Resolve).\n");
             s
         }
         "analyze" | "analysis" => {

@@ -104,7 +104,7 @@ pub static LAYER: &[P] = &[
 pub static CLIP: &[P] = &[
     ps!("speed", Num, N(1.0), "Playback speed (2 = 2x faster, 50% = half). Changes duration via the speed command", ["spd"]),
     ps!("reverse", Bool, B(false), "Play backwards", ["rev"]),
-    ps!("fit", Enum(&["fit", "fill", "stretch", "none"]), S("fit"), "How media is fitted into the comp"),
+    ps!("fit", Enum(&["fit", "fill", "blur", "stretch", "none"]), S("fit"), "How media is fitted into the comp (blur: fitted over a blurred fill of itself)"),
     ps!("hold", Bool, B(false), "Freeze frame (shows the in-point frame)", ["freeze"]),
     p!("remap", Num, N(-1.0), -1.0, INF, U::Sec, "Time remap: keyframes map item time -> source seconds (-1 = off)"),
     ps!("interp", Enum(&["none", "blend", "flow"]), S("none"), "Slow-motion frame interpolation"),

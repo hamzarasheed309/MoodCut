@@ -82,6 +82,37 @@ impl Issues {
     }
 }
 
+/// c5,c6,c7,c9 -> c5..c7,c9 (the edit tools accept both)
+fn compact_ids(ids: &[String]) -> String {
+    let split = |id: &str| {
+        let k = id.find(|ch: char| ch.is_ascii_digit())?;
+        Some((id[..k].to_string(), id[k..].parse::<u64>().ok()?))
+    };
+    let mut out: Vec<String> = vec![];
+    let mut run: Option<(String, u64, u64)> = None;
+    let flush = |r: &Option<(String, u64, u64)>, out: &mut Vec<String>| {
+        if let Some((p, a, b)) = r {
+            out.push(if b > a { format!("{p}{a}..{p}{b}") } else { format!("{p}{a}") });
+        }
+    };
+    for id in ids {
+        match (split(id), &mut run) {
+            (Some((p, n)), Some((rp, _, b))) if *rp == p && n == *b + 1 => *b = n,
+            (Some((p, n)), _) => {
+                flush(&run, &mut out);
+                run = Some((p, n, n));
+            }
+            (None, _) => {
+                flush(&run, &mut out);
+                run = None;
+                out.push(id.clone());
+            }
+        }
+    }
+    flush(&run, &mut out);
+    out.join(",")
+}
+
 fn t2(t: f64) -> String {
     fmt_t((t * 100.0).round() / 100.0)
 }
@@ -409,6 +440,7 @@ impl Engine {
         // ---------------- media
         let mut fps_warned = HashSet::new();
         let mut soft: BTreeMap<String, (f64, Vec<String>, f64)> = BTreeMap::new(); // media -> (factor, clips, first time)
+        let mut bars: BTreeMap<(bool, bool), Vec<(String, String, f64)>> = BTreeMap::new(); // (media portrait, comp portrait) -> (clip, label, time)
         for t in c.tracks.iter() {
             for i in t.items.iter().filter(|i| i.kind == ItemKind::Clip && !i.off) {
                 let Some(m) = i.src.as_deref().and_then(|s| p.media(s)) else { continue };
@@ -434,7 +466,7 @@ impl Engine {
                     if mp != cp && fit == "fit" && (m.w as f64 / m.h as f64 - cw / ch).abs() > 0.2 {
                         let below = vis.iter().any(|(ti, o)| *ti < t.index() && o.start < i.end() && o.end() > i.start);
                         if !below {
-                            is.add(Sev::Info, Some(i.start + i.dur / 2.0), format!("{} is {} in a {} comp: black bars on the sides", label(i, &p), if mp { "portrait" } else { "landscape" }, if cp { "portrait" } else { "landscape" }), Some(format!("set {} fit=fill", i.id)), true);
+                            bars.entry((mp, cp)).or_default().push((i.id.clone(), label(i, &p), i.start + i.dur / 2.0));
                         }
                     }
                     if m.kind == MediaKind::Video && m.fps > 0.0 && (i.speed() - 1.0).abs() < 1e-6 && static_str(i, "interp").is_none_or(|x| x == "none") && fps_warned.insert(m.id.clone()) {
@@ -448,6 +480,13 @@ impl Engine {
             }
         }
 
+        for ((mp, cp), v) in &bars {
+            let (o, co) = (if *mp { "portrait" } else { "landscape" }, if *cp { "portrait" } else { "landscape" });
+            let ids: Vec<String> = v.iter().map(|x| x.0.clone()).collect();
+            let who = if v.len() == 1 { v[0].1.clone() } else if v.len() > 4 { format!("{} clips ({}…) are", v.len(), ids[..4].join(",")) } else { format!("{} are", ids.join(",")) };
+            let verb = if v.len() == 1 { " is" } else { "" };
+            is.add(Sev::Info, Some(v[0].2), format!("{who}{verb} {o} in a {co} comp: black bars on the sides"), Some(format!("set {} fit=blur", compact_ids(&ids))), true);
+        }
         for (res, (eff, ids, t)) in &soft {
             let who = if ids.len() > 4 { format!("{} clips ({}…)", ids.len(), ids[..4].join(",")) } else { ids.join(",") };
             is.add(Sev::Warn, Some(*t), format!("{who} from {res} sources shown at up to {}x their resolution: soft/pixelated (use higher-res media, smaller scale, or a smaller comp)", fmt_num((eff * 10.0).round() / 10.0)), None, true);
@@ -681,7 +720,14 @@ impl Engine {
                 Ok(Some((i, tp, lra))) => {
                     loud = Some((i, tp, lra));
                     if i > -69.0 && (i - want_lufs).abs() > tol {
-                        is.add(Sev::Warn, None, format!("mix loudness {} LUFS; target {} ({target}) ±{}", fmt_num((i * 10.0).round() / 10.0), fmt_num(want_lufs), fmt_num(tol)), Some(format!("master lufs={} limiter=1", fmt_num(want_lufs))), false);
+                        let set = c.master.lufs.is_some_and(|l| (l - want_lufs).abs() < 0.05);
+                        let msg = format!("mix loudness {} LUFS; target {} ({target}) ±{}", fmt_num((i * 10.0).round() / 10.0), fmt_num(want_lufs), fmt_num(tol));
+                        if set {
+                            // already normalized: the limiter is eating the gain (very peaky mix)
+                            is.add(Sev::Warn, None, format!("{msg}: peaks limit the gain; lower the loudest track or compress it (afx A1 compress)"), None, false);
+                        } else {
+                            is.add(Sev::Warn, None, msg, Some(format!("master lufs={} limiter=1", fmt_num(want_lufs))), false);
+                        }
                     }
                     if tp > -1.0 {
                         is.add(Sev::Warn, None, format!("true peak {} dBTP (> -1): may clip after encoding", fmt_num((tp * 10.0).round() / 10.0)), Some("master limiter=1".into()), false);
@@ -889,5 +935,14 @@ fn draw_safe(pm: &mut Pixmap, margin: f32) {
         let mut paint = Paint { anti_alias: true, ..Default::default() };
         paint.set_color_rgba8(255, 214, 10, 200);
         pm.stroke_path(&path, &paint, &Stroke { width: 1.0, ..Default::default() }, Transform::identity(), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn compacts_id_lists() {
+        let ids: Vec<String> = ["c5", "c6", "c7", "c9", "t2", "t3", "x"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(super::compact_ids(&ids), "c5..c7,c9,t2..t3,x");
     }
 }
