@@ -48,6 +48,8 @@ struct AppState {
     port: u16,
     cache: Mutex<HashMap<String, (Vec<u8>, &'static str)>>,
     thumb_slots: tokio::sync::Semaphore,
+    /// FFmpeg install from the editor: (running, last status line, error)
+    ff_setup: Arc<Mutex<(bool, String, Option<String>)>>,
 }
 
 type St = Arc<AppState>;
@@ -69,6 +71,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         port: o.port,
         cache: Mutex::new(HashMap::new()),
         thumb_slots: tokio::sync::Semaphore::new(4),
+        ff_setup: Arc::new(Mutex::new((false, String::new(), None))),
     });
     let app = Router::new()
         .route("/api/ping", get(|| async { Json(json!({"app": "moodcut", "version": crate::VERSION})) }))
@@ -93,6 +96,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/graphic", get(api_graphic_get).post(api_graphic))
         .route("/api/check", post(api_check))
         .route("/api/tunnel", post(api_tunnel))
+        .route("/api/setup/ffmpeg", post(api_setup_ffmpeg))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
@@ -238,7 +242,7 @@ async fn api_state(State(st): State<St>) -> Response {
     let redo = st.eng.st.read().redo.len();
     Json(json!({
         "project": p, "rev": rev, "active": active, "path": path, "dirty": dirty,
-        "undo": undo, "redo": redo, "ffmpeg": st.eng.ff.version, "version": crate::VERSION
+        "undo": undo, "redo": redo, "ffmpeg": st.eng.ff.version(), "version": crate::VERSION
     }))
     .into_response()
 }
@@ -613,6 +617,37 @@ async fn api_graphic(State(st): State<St>, Json(a): Json<Value>) -> Response {
 }
 
 /// Starts/stops/reports the public web link (local requests only).
+/// One-click FFmpeg install from the editor (portable build into the data
+/// folder); the engine switches to it as soon as it's unpacked.
+async fn api_setup_ffmpeg(State(st): State<St>, headers: HeaderMap, Json(a): Json<Value>) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "FFmpeg can only be installed from this computer");
+    }
+    if a["action"].as_str() == Some("start") && !st.eng.ff.available() {
+        let mut g = st.ff_setup.lock();
+        if !g.0 {
+            *g = (true, "starting".into(), None);
+            let (state, eng, st2) = (st.ff_setup.clone(), st.eng.clone(), st.clone());
+            std::thread::spawn(move || {
+                let r = crate::setup::install_ffmpeg(&|m: String| state.lock().1 = m);
+                let mut g = state.lock();
+                g.0 = false;
+                match r {
+                    Ok(_) if eng.ff.reload() => {
+                        g.1 = format!("FFmpeg {} ready", eng.ff.version());
+                        st2.cache.lock().clear();
+                        eng.emit("setup", eng.st.read().rev, "setup", g.1.clone());
+                    }
+                    Ok(_) => g.2 = Some("FFmpeg was installed but couldn't be started".into()),
+                    Err(e) => g.2 = Some(format!("{e:#}")),
+                }
+            });
+        }
+    }
+    let g = st.ff_setup.lock();
+    Json(json!({"ok": true, "installed": st.eng.ff.available(), "version": st.eng.ff.version(), "running": g.0, "status": g.1, "error": g.2})).into_response()
+}
+
 async fn api_tunnel(State(st): State<St>, headers: HeaderMap, Json(a): Json<Value>) -> Response {
     if is_remote(&headers) {
         return err(StatusCode::FORBIDDEN, "the web link can only be managed from this computer");

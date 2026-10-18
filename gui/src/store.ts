@@ -134,10 +134,19 @@ export async function loadCatalog() {
   catalog.value = await j<Catalog>("/api/catalog");
 }
 
+let wsOpened = false;
+
 export function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/api/ws`);
   ws.onopen = () => {
+    // after a reconnect (MoodCut restarted, laptop woke up) reload everything
+    if (wsOpened) {
+      refresh();
+      refreshLogs();
+      refreshJobs();
+    }
+    wsOpened = true;
     connected.value = true;
   };
   ws.onmessage = (ev) => {
@@ -147,6 +156,8 @@ export function connectWS() {
         refresh();
         refreshLogs();
         if (e.source === "mcp") aiPulse.value++;
+      } else if (e.kind === "setup") {
+        refresh();
       } else if (e.kind === "job") {
         refreshJobs();
         if (e.text?.includes("done") || e.text?.includes("failed")) toast(e.text, e.text.includes("failed"));

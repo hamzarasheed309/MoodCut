@@ -15,7 +15,7 @@ The design aims for three things:
 | Layer | Choice | Why |
 | --- | --- | --- |
 | Core | **Rust**, single binary (~10 MB) | Native speed for per-pixel work, safe threading, no runtime to install, easy Windows distribution. |
-| Media I/O | **FFmpeg** as a child process (raw RGBA / PCM over pipes) | Decodes and encodes everything, has hardware encoders (NVENC/QSV/AMF), its scaler is SIMD-optimised, and it can be upgraded independently. Pipes avoid fragile FFI and licensing coupling. |
+| Media I/O | **FFmpeg** as a child process (raw RGBA / PCM over pipes) | Decodes and encodes everything, has hardware encoders (NVENC/QSV/AMF), its scaler is SIMD-optimised, and it can be upgraded independently. Pipes avoid fragile FFI and licensing coupling. A portable build is downloaded on first run if none is found (into the data folder, no admin rights), and the engine switches to it without a restart. |
 | Compositor | **tiny-skia** (vector raster, via resvg) + custom SIMD-friendly pixel loops + **rayon** | Predictable CPU rendering that matches the preview exactly, with no GPU driver issues. The hot paths (affine warps, blends, blurs, LUTs) are parallel and allocation-free. |
 | Text | **rustybuzz** shaping + bundled Inter + system fonts | Correct kerning/ligatures/RTL, per-glyph layout for text animators. |
 | Server | **tokio + axum**: MCP Streamable HTTP, REST, WebSocket | One async server feeds the GUI, MCP clients and tunnels. |

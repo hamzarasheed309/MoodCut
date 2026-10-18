@@ -97,6 +97,26 @@ jobs:
         run: |
           .\target\release\moodcut.exe graphic examples\graphics\lower-third.html -o lt.png --dur 0 --size 1280x720 --at 2 --var name=CI --var role=Windows
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path lt.png)) { exit 1 }
+      - name: Exe has its icon and version info
+        shell: pwsh
+        run: |
+          $v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo("$PWD\target\release\moodcut.exe")
+          $v | Format-List ProductName, FileDescription, ProductVersion, FileVersion
+          if ($v.ProductName -ne "MoodCut") { exit 1 }
+      - name: First run on a clean PC - portable FFmpeg, then a full render
+        shell: pwsh
+        env:
+          MOODCUT_HOME: ${{ runner.temp }}\moodcut-home
+        run: |
+          $mc = ".\target\release\moodcut.exe"
+          & $mc setup
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $mc render smoke.mcut --preset draft --range 0-3 --scale 0.5 -o smoke.mp4
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path smoke.mp4)) { exit 1 }
+          & $mc check smoke.mcut --strict
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & $mc render smoke.mcut -p xml -o smoke.xml
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: moodcut-windows-x64

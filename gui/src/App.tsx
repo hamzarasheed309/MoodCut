@@ -3,6 +3,7 @@ import { Console } from "./components/Console";
 import { Inspector } from "./components/Inspector";
 import { LeftPanel } from "./components/LeftPanel";
 import { CheckPanel } from "./components/CheckPanel";
+import { FfmpegBanner } from "./components/FfmpegBanner";
 import { GraphicEditor } from "./components/GraphicEditor";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
 import { Monitor } from "./components/Monitor";
@@ -221,6 +222,7 @@ export function App() {
       onPointerUp={() => (resizing.current = false)}
     >
       <TopBar onConnect={() => setConnect(true)} />
+      <FfmpegBanner />
       <LeftPanel />
       <Monitor />
       <div class="panel right">

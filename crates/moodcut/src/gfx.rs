@@ -574,7 +574,7 @@ pub fn render(ff: Option<&Ff>, spec: &RenderSpec, out: &Path, cancel: Option<&At
         None
     } else {
         let ff = ff.filter(|f| f.available()).ok_or_else(|| anyhow!("animated graphics need FFmpeg (moodcut setup); a still (dur 0) doesn't"))?;
-        let mut c = command(&ff.ffmpeg);
+        let mut c = command(&ff.ffmpeg_path());
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "image2pipe", "-framerate"]).arg(format!("{}", spec.fps)).args(["-c:v", "png", "-i", "-", "-c:v", "png", "-pix_fmt"]).arg(if spec.alpha { "rgba" } else { "rgb24" }).arg(out);
         Some(c.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().context("starting ffmpeg")?)
     };

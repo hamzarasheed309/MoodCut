@@ -12,4 +12,23 @@ fn main() {
         );
     }
     println!("cargo:rerun-if-changed=../../gui/dist");
+    #[cfg(windows)]
+    windows_resources();
+}
+
+/// Icon, product name and version shown by Explorer, the taskbar and Task Manager.
+#[cfg(windows)]
+fn windows_resources() {
+    println!("cargo:rerun-if-changed=assets/moodcut.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let mut r = winresource::WindowsResource::new();
+    r.set_icon("assets/moodcut.ico");
+    r.set("ProductName", "MoodCut");
+    r.set("FileDescription", "MoodCut video editor");
+    r.set("LegalCopyright", "MIT License");
+    if let Err(e) = r.compile() {
+        println!("cargo:warning=couldn't embed the Windows icon/version info: {e}");
+    }
 }

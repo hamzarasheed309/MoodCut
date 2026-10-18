@@ -143,7 +143,7 @@ impl Engine {
         })
     }
 
-    fn emit(&self, kind: &str, rev: u64, source: &str, text: String) {
+    pub(crate) fn emit(&self, kind: &str, rev: u64, source: &str, text: String) {
         let _ = self.events.send(Event { kind: kind.into(), rev, source: source.into(), text });
     }
 

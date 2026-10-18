@@ -189,8 +189,12 @@ enum Cmd {
     /// Print the MoodCut Script reference as Markdown.
     #[command(hide = true)]
     Docs,
-    /// Install FFmpeg (Windows: winget) and optional extras.
-    Setup,
+    /// Install a portable FFmpeg (no admin rights needed) and check the setup.
+    Setup {
+        /// Download the portable FFmpeg even if one is already installed (to update it)
+        #[arg(long)]
+        force: bool,
+    },
     /// Register MoodCut in Claude Desktop's MCP config.
     InstallClaude,
 }
@@ -408,7 +412,7 @@ fn real_main() -> Result<()> {
             println!("{n} frames in {el:.2}s = {:.1} fps (worst {:.0} ms at t={:.2})", n as f64 / el, worst.0, worst.1);
             Ok(())
         }
-        Cmd::Setup => setup::setup(),
+        Cmd::Setup { force } => setup::setup(force),
         Cmd::InstallClaude => setup::install_claude(),
     }
 }

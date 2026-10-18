@@ -2,18 +2,25 @@
 
 use crate::model::project::{Media, MediaKind};
 use anyhow::{anyhow, bail, Context, Result};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
+use std::sync::Arc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// The FFmpeg installation in use. Swappable at runtime ([`Ff::reload`]) so an
+/// install made from the editor works without restarting MoodCut.
 pub struct Ff {
-    pub ffmpeg: PathBuf,
-    pub ffprobe: PathBuf,
-    pub version: String,
-    pub encoders: HashSet<String>,
-    pub filters: HashSet<String>,
+    tools: RwLock<Arc<Tools>>,
     hw_cache: Mutex<Option<Vec<String>>>,
+}
+
+struct Tools {
+    ffmpeg: PathBuf,
+    ffprobe: PathBuf,
+    version: String,
+    encoders: HashSet<String>,
+    filters: HashSet<String>,
 }
 
 /// Creates a Command that never pops up a console window on Windows.
@@ -97,19 +104,44 @@ fn candidates() -> Vec<PathBuf> {
     v
 }
 
-pub const MISSING: &str = "FFmpeg not found. Install it (Windows: `winget install Gyan.FFmpeg`, or run `moodcut setup`), \
-or set MOODCUT_FFMPEG to the folder containing ffmpeg and ffprobe.";
+pub const MISSING: &str = "FFmpeg isn't installed. Click 'Install FFmpeg' in the MoodCut window or run `moodcut setup` \
+(downloads a portable build, no admin rights needed), or set MOODCUT_FFMPEG to the folder containing ffmpeg and ffprobe.";
 
 impl Ff {
     /// A placeholder when FFmpeg isn't installed: graphics-only work (scripts,
     /// text, shapes, HTML stills, frames) still runs; media operations report
     /// how to install it.
     pub fn missing() -> Ff {
-        Ff { ffmpeg: PathBuf::new(), ffprobe: PathBuf::new(), version: "not installed".into(), encoders: HashSet::new(), filters: HashSet::new(), hw_cache: Mutex::new(None) }
+        let t = Tools { ffmpeg: PathBuf::new(), ffprobe: PathBuf::new(), version: "not installed".into(), encoders: HashSet::new(), filters: HashSet::new() };
+        Ff { tools: RwLock::new(Arc::new(t)), hw_cache: Mutex::new(None) }
+    }
+
+    fn tools(&self) -> Arc<Tools> {
+        self.tools.read().clone()
     }
 
     pub fn available(&self) -> bool {
-        !self.ffmpeg.as_os_str().is_empty()
+        !self.tools().ffmpeg.as_os_str().is_empty()
+    }
+
+    pub fn ffmpeg_path(&self) -> PathBuf {
+        self.tools().ffmpeg.clone()
+    }
+
+    pub fn version(&self) -> String {
+        self.tools().version.clone()
+    }
+
+    /// Looks for FFmpeg again (after an install) and switches to it if found.
+    pub fn reload(&self) -> bool {
+        match Ff::detect() {
+            Ok(f) => {
+                *self.tools.write() = f.tools();
+                *self.hw_cache.lock() = None;
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Errors with install instructions when FFmpeg is missing.
@@ -125,15 +157,21 @@ impl Ff {
         if std::env::var("MOODCUT_FFMPEG").is_ok_and(|v| v.eq_ignore_ascii_case("none")) {
             bail!("{MISSING}"); // lets you run (and test) without FFmpeg
         }
+        Self::detect()
+    }
+
+    /// Searches the usual places, ignoring `MOODCUT_FFMPEG=none` (used after
+    /// an install, which should take effect even in a session started without).
+    pub fn detect() -> Result<Ff> {
         for dir in candidates() {
             let ff = dir.join(exe_name("ffmpeg"));
             let fp = dir.join(exe_name("ffprobe"));
             if ff.is_file() && fp.is_file() {
                 if let Ok(ver) = Self::version_of(&ff) {
-                    let mut f = Ff { ffmpeg: ff, ffprobe: fp, version: ver, encoders: HashSet::new(), filters: HashSet::new(), hw_cache: Mutex::new(None) };
-                    f.encoders = f.list("-encoders");
-                    f.filters = f.list("-filters");
-                    return Ok(f);
+                    let encoders = Self::list(&ff, "-encoders");
+                    let filters = Self::list(&ff, "-filters");
+                    let t = Tools { ffmpeg: ff, ffprobe: fp, version: ver, encoders, filters };
+                    return Ok(Ff { tools: RwLock::new(Arc::new(t)), hw_cache: Mutex::new(None) });
                 }
             }
         }
@@ -150,30 +188,21 @@ impl Ff {
         Ok(line.split_whitespace().nth(2).unwrap_or("?").to_string())
     }
 
-    fn list(&self, flag: &str) -> HashSet<String> {
-        let out = command(&self.ffmpeg).args(["-hide_banner", flag]).stdout(Stdio::piped()).stderr(Stdio::null()).output();
-        let mut set = HashSet::new();
-        if let Ok(o) = out {
-            for l in String::from_utf8_lossy(&o.stdout).lines() {
-                let parts: Vec<&str> = l.split_whitespace().collect();
-                if parts.len() >= 2 && parts[0].len() >= 3 && !parts[0].contains('=') {
-                    set.insert(parts[1].to_string());
-                }
-            }
-        }
-        set
+    fn list(ffmpeg: &Path, flag: &str) -> HashSet<String> {
+        let out = command(ffmpeg).args(["-hide_banner", flag]).stdout(Stdio::piped()).stderr(Stdio::null()).output();
+        out.map(|o| parse_list(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
     }
 
     pub fn has_encoder(&self, e: &str) -> bool {
-        self.encoders.contains(e)
+        self.tools().encoders.contains(e)
     }
 
     pub fn has_filter(&self, f: &str) -> bool {
-        self.filters.contains(f)
+        self.tools().filters.contains(f)
     }
 
     pub fn cmd(&self) -> Command {
-        let mut c = command(&self.ffmpeg);
+        let mut c = command(&self.ffmpeg_path());
         c.args(["-hide_banner", "-nostdin", "-loglevel", "error"]);
         c
     }
@@ -244,7 +273,7 @@ impl Ff {
             });
         }
         self.need()?;
-        let out = command(&self.ffprobe)
+        let out = command(&self.tools().ffprobe)
             .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -335,7 +364,7 @@ impl Ff {
     /// Runs ffmpeg with args, capturing stderr. Returns (stdout, stderr).
     pub fn run_capture(&self, args: &[String]) -> Result<(Vec<u8>, String)> {
         self.need()?;
-        let out = command(&self.ffmpeg).args(["-hide_banner", "-nostdin"]).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
+        let out = command(&self.ffmpeg_path()).args(["-hide_banner", "-nostdin"]).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         if !out.status.success() {
             let tail: Vec<&str> = err.lines().rev().take(6).collect();
@@ -343,6 +372,20 @@ impl Ff {
         }
         Ok((out.stdout, err))
     }
+}
+
+/// Names from `ffmpeg -encoders` / `-filters`: lines whose first column is the
+/// flag column (`...`, `TS`, `V....D`; its width varies by FFmpeg version),
+/// skipping the legend (`T.. = Timeline support`).
+fn parse_list(out: &str) -> HashSet<String> {
+    out.lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let (flags, name) = (it.next()?, it.next()?);
+            let is_flags = (2..=6).contains(&flags.len()) && flags.chars().all(|c| c == '.' || c == '|' || c.is_ascii_uppercase());
+            (is_flags && name != "=").then(|| name.to_string())
+        })
+        .collect()
 }
 
 pub fn parse_rate(s: &str) -> Option<f64> {
@@ -375,4 +418,19 @@ pub fn esc_filter(s: &str) -> String {
         }
     }
     o
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parses_filter_lists_of_ffmpeg_6_and_8() {
+        let v6 = "Filters:\n  T.. = Timeline support\n  ..C = Command support\n  | = Source or sink filter\n ... abench            A->A       Benchmark.\n ..C acompressor       A->A       Audio compressor.\n";
+        let v8 = "Filters:\n  T.. = Timeline support\n  .S. = Slice threading\n  ------\n TS aap               AA->A      Apply.\n .. loudnorm          A->A       EBU R128.\n .. sidechaincompress AA->A      Sidechain compressor.\n";
+        let enc = "Encoders:\n V..... = Video\n ------\n V....D libx264              libx264 H.264\n A....D aac                  AAC\n";
+        assert!(super::parse_list(v8).contains("sidechaincompress") && super::parse_list(v8).contains("aap"));
+        assert!(!super::parse_list(v8).contains("="));
+        assert!(super::parse_list(enc).contains("libx264") && super::parse_list(enc).contains("aac"));
+        let l6 = super::parse_list(v6);
+        assert!(l6.contains("abench") && l6.contains("acompressor") && l6.len() == 2, "{l6:?}");
+    }
 }

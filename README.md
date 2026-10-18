@@ -62,11 +62,16 @@ Resolve open with the original media, and a CMX3600 EDL.
 
 ## Quick start (Windows)
 
-1. Download `moodcut.exe` from the [latest build](../../actions/workflows/ci.yml) (artifact `moodcut-windows-x64`)
-   or a [release](../../releases), and put it somewhere on your `PATH`.
-2. Install FFmpeg if you don't have it: `moodcut setup` (uses `winget`), then check everything with `moodcut doctor`.
-   HTML graphics use the Microsoft Edge that comes with Windows; nothing to install.
-3. Run `moodcut`. The editor opens in its own window (Edge/Chrome app mode), with no browser chrome.
+1. Get [`release/windows-x64/moodcut.exe`](release/windows-x64/) from this repository (or the `moodcut-windows-x64`
+   artifact of the [latest CI build](../../actions/workflows/ci.yml)). It's a single 64-bit exe with nothing to install;
+   put it wherever you like, ideally in a folder on your `PATH` so AI clients and terminals can start it.
+2. Double-click it. The editor opens in its own window (Edge app mode, no browser chrome).
+3. The first time, MoodCut offers to **Install FFmpeg**: one click downloads a portable build (about 100 MB) into
+   `%APPDATA%\MoodCut\ffmpeg`, with no admin rights or PATH changes, and it's used right away. From a terminal, `moodcut setup`
+   does the same. An FFmpeg you already have (on `PATH`, winget, Chocolatey, Scoop, or next to the exe) is found automatically.
+   HTML graphics use the Microsoft Edge that comes with Windows.
+
+Check everything with `moodcut doctor`, then connect your AI (below).
 
 Projects are plain JSON (`.mcut`) and autosave. Rendered graphics go next to the project in
 `<project> assets/graphics`. Optional: install [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
@@ -223,7 +228,7 @@ moodcut render explainer.mcut
 | `moodcut frame <project> -t 3.5 -o frame.png` | render one frame |
 | `moodcut graphic <file.html> -o out.mov [--dur 5] [--size 1920x1080] [--var k=v]… [--project p --place "V3 at=2"]` | render an HTML motion graphic (`--dur 0 --at 2` for a still) |
 | `moodcut check <project> [--fix] [--dur 30] [--size 1080x1920] [--strict]` | quality-check an edit; `--strict` fails on errors (CI) |
-| `moodcut doctor` / `moodcut setup` | check / install FFmpeg and optional tools |
+| `moodcut doctor` / `moodcut setup [--force]` | check the setup / install (or update) the portable FFmpeg |
 | `moodcut install-claude` | register with Claude Desktop |
 
 Environment: `MOODCUT_FFMPEG` (folder with ffmpeg/ffprobe, or `none` to run without), `MOODCUT_HOME` (data
@@ -231,7 +236,7 @@ folder, default `%APPDATA%\MoodCut`), `MOODCUT_BROWSER` (Edge/Chrome for HTML gr
 `MOODCUT_WHISPER_BIN`, `MOODCUT_WHISPER_MODEL`.
 
 Without FFmpeg, MoodCut still opens, edits projects and renders HTML graphics as PNG stills; anything that needs
-to decode or encode media explains how to install it.
+to decode or encode media explains how to install it, and the editor shows the one-click install.
 
 ## Building from source
 
