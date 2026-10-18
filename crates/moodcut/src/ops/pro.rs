@@ -158,9 +158,11 @@ impl<'a> Exec<'a> {
     /// (ramping in and out), the rest at its own speed. Uses time remapping, so the clip keeps its place
     /// and length and fast sections use more of the source.
     pub fn c_speedramp(&mut self, a: &mut A) -> Result<()> {
-        let usage = "speedramp <clip> at=T [to=4x|30%] [dur=0.6] [ramp=0.2]";
-        let id = self.item_id(&a.shift().ok_or_else(|| anyhow!(usage))?)?;
+        let usage = "speedramp <clip|V1> at=T [to=4x|30%] [dur=0.6] [ramp=0.2]";
+        let spec = a.shift().ok_or_else(|| anyhow!(usage))?;
         let at = self.time(&a.take(&["at", "t", "from"]).ok_or_else(|| anyhow!(usage))?)?;
+        // a track or selector means: the clip playing there at `at`
+        let id = self.one_at(&spec, at)?;
         let mut to = super::tools::parse_factor(&a.take(&["to", "speed"]).unwrap_or_else(|| "4x".into()))?.clamp(0.05, 20.0);
         let sec = a.take(&["dur", "for"]).map(|s| self.time(&s)).transpose()?.unwrap_or(0.6);
         let l = self.relocate(&id)?;
@@ -273,6 +275,17 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 
+    /// The single item `spec` names, or among several (a track, a selector) the one under time `t`.
+    fn one_at(&self, spec: &str, t: f64) -> Result<String> {
+        let ids = self.targets(spec)?;
+        if ids.len() == 1 {
+            return Ok(ids[0].clone());
+        }
+        ids.into_iter()
+            .find(|id| self.relocate(id).is_ok_and(|l| { let i = self.item_at(l); i.start <= t + EPS && t < i.end() - EPS }))
+            .ok_or_else(|| anyhow!("nothing in {spec} at {}", fmt_t(t)))
+    }
+
     // ------------------------------------------------------------ punch-ins
 
     /// `punchin <clips|V1> [scale=1.12] [every=2] [focus=x,y]`: alternating punch-ins hide jump cuts
@@ -337,7 +350,10 @@ impl<'a> Exec<'a> {
     /// (its audio runs past the cut). The clip's audio is detached first if needed.
     pub fn c_splitedit(&mut self, a: &mut A, j: bool) -> Result<()> {
         let verb = if j { "jcut" } else { "lcut" };
-        let id = self.item_id(&a.shift().ok_or_else(|| anyhow!("{verb} <clip> [by=0.5]"))?)?;
+        let spec = a.shift().ok_or_else(|| anyhow!("{verb} <clip> [by=0.5]"))?;
+        let ids = self.targets(&spec)?;
+        let [id] = ids.as_slice() else { bail!("{verb}: {spec} is {} clips; name one", ids.len()) };
+        let id = id.clone();
         let by = a.take(&["by", "dur", "amount"]).or_else(|| a.shift()).map(|s| self.time(&s)).transpose()?.unwrap_or(0.5);
         if by <= 0.0 {
             bail!("{verb}: by= must be positive");

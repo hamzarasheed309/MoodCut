@@ -62,6 +62,8 @@ enum Sev {
     Error,
     Warn,
     Info,
+    /// Taste, not correctness: what a senior editor would change. Suggested commands are never auto-applied.
+    Craft,
 }
 
 #[derive(Clone)]
@@ -360,6 +362,16 @@ impl Engine {
         let margin = o.safe.unwrap_or(0.05).clamp(0.0, 0.2);
         let target = o.target.clone().unwrap_or_else(|| "web".into()).to_ascii_lowercase();
         let (cw, ch) = (c.w as f64, c.h as f64);
+        // vertical short-form: the app's UI covers the top, the bottom and the right-side buttons
+        let social = matches!(target.as_str(), "reels" | "reel" | "instagram" | "tiktok" | "shorts" | "youtube-shorts") || (target == "social" && ch > cw);
+        let youtube = matches!(target.as_str(), "youtube" | "yt");
+        let platform = match target.as_str() {
+            "tiktok" => "TikTok",
+            "shorts" | "youtube-shorts" => "YouTube Shorts",
+            "reels" | "reel" | "instagram" => "Reels",
+            _ => "short-form apps",
+        };
+        let ui_zones = social.then_some((0.12, 0.78, 0.85, 0.45));
 
         // ---------------- structure
         let vis = visual_items(&c, &p);
@@ -539,6 +551,7 @@ impl Engine {
             .collect();
         let (sx0, sy0, sx1, sy1) = (cw * margin, ch * margin, cw * (1.0 - margin), ch * (1.0 - margin));
         let mut boxes: Vec<(&Item, [f64; 4])> = vec![];
+        let mut caption_zone_seen = false;
         for (i, s) in &shots {
             let Some(b) = s.bbox else {
                 if !cap_ids.contains(i.id.as_str()) {
@@ -611,6 +624,31 @@ impl Engine {
                     fix,
                     true,
                 );
+            }
+            if let Some((top, bottom, right, right_y)) = ui_zones {
+                let mut hits = vec![];
+                if b[1] < ch * top - 1.0 {
+                    hits.push("top bar");
+                }
+                if b[3] > ch * bottom + 1.0 {
+                    hits.push("caption and buttons area");
+                }
+                if b[2] > cw * right + 1.0 && b[3] > ch * right_y {
+                    hits.push("side buttons");
+                }
+                let is_cap = cap_ids.contains(i.id.as_str());
+                if !hits.is_empty() && !(is_cap && caption_zone_seen) {
+                    caption_zone_seen |= is_cap;
+                    let fits = b[3] - b[1] < ch * (bottom - top) - 8.0;
+                    let fix = (fits && !animated(i, "pos") && i.parent.is_none()).then(|| {
+                        let (px, py) = static_vec(i, "pos", (cw / 2.0, ch / 2.0));
+                        let dy = if b[3] > ch * bottom { ch * bottom - b[3] - 6.0 } else if b[1] < ch * top { ch * top - b[1] + 6.0 } else { 0.0 };
+                        let dx = if b[2] > cw * right && b[3] > ch * right_y { cw * right - b[2] - 6.0 } else { 0.0 };
+                        let ids = if is_cap { compact_ids(&captions.iter().map(|c| c.id.clone()).collect::<Vec<_>>()) } else { i.id.clone() };
+                        format!("set {ids} pos={},{}", fmt_num((px + dx).round()), fmt_num((py + dy).round()))
+                    });
+                    is.add(Sev::Warn, Some(s.t), format!("{}{} sits under the {} on {platform} (keep text in x 6-85%, y 14-72%)", label(i, &p), if is_cap { " (captions)" } else { "" }, hits.join(" and ")), fix, true);
+                }
             }
             if i.kind == ItemKind::Text {
                 let size = static_num(i, "size", 96.0) * max_scale(i);
@@ -809,10 +847,13 @@ impl Engine {
             }
         }
 
+        // ---------------- craft: what a senior editor would still change
+        craft_notes(&mut is, &p, &c, &overlays, &captions, !speech.is_empty(), social, youtube, platform);
+
         // ---------------- report
         is.0.sort_by(|a, b| a.sev.cmp(&b.sev).then(a.t.unwrap_or(f64::MAX).partial_cmp(&b.t.unwrap_or(f64::MAX)).unwrap_or(std::cmp::Ordering::Equal)));
         let count = |s: Sev| is.0.iter().filter(|i| i.sev == s).count();
-        let (ne, nw, ni) = (count(Sev::Error), count(Sev::Warn), count(Sev::Info));
+        let (ne, nw, ni, nc) = (count(Sev::Error), count(Sev::Warn), count(Sev::Info), count(Sev::Craft));
         let mut out = format!(
             "check {} '{}' {}x{}@{} {}s: {}",
             c.id,
@@ -821,7 +862,11 @@ impl Engine {
             c.h,
             fmt_num(c.fps),
             t2(dur),
-            if ne + nw + ni == 0 { "no problems found".to_string() } else { format!("{ne} error(s), {nw} warning(s), {ni} note(s)") }
+            if ne + nw + ni + nc == 0 {
+                "no problems found".to_string()
+            } else {
+                format!("{ne} error(s), {nw} warning(s), {ni} note(s){}", if nc > 0 { format!(", {nc} craft note(s)") } else { String::new() })
+            }
         );
         let n_text = overlays.iter().filter(|i| i.kind == ItemKind::Text).count() - captions.len();
         let n_gfx = overlays.len() - overlays.iter().filter(|i| i.kind == ItemKind::Text).count();
@@ -845,7 +890,7 @@ impl Engine {
         if !summary.is_empty() {
             let _ = write!(out, "\n{}", summary.join(" · "));
         }
-        let (mut ce, mut cwn, mut ci) = (0, 0, 0);
+        let (mut ce, mut cwn, mut ci, mut cc) = (0, 0, 0, 0);
         let mut codes = vec![];
         for x in &is.0 {
             let code = match x.sev {
@@ -861,17 +906,22 @@ impl Engine {
                     ci += 1;
                     format!("N{ci}")
                 }
+                Sev::Craft => {
+                    cc += 1;
+                    format!("C{cc}")
+                }
             };
             let _ = write!(out, "\n{code} {}{}", x.t.map(|t| format!("@{}s ", t2(t))).unwrap_or_default(), x.msg);
             if let Some(f) = &x.fix {
-                let _ = write!(out, "\n   fix: {}", f.replace('\n', " ; "));
+                let _ = write!(out, "\n   {}: {}", if x.sev == Sev::Craft { "try" } else { "fix" }, f.replace('\n', " ; "));
             }
             codes.push(code);
         }
         if !exp.is_empty() {
             let _ = write!(out, "\nexpected: {}", exp.join(" · "));
         }
-        let fixes: Vec<String> = is.0.iter().filter_map(|x| x.fix.clone()).collect();
+        // craft suggestions are creative choices: shown, never applied by fix=true
+        let fixes: Vec<String> = is.0.iter().filter(|x| x.sev != Sev::Craft).filter_map(|x| x.fix.clone()).collect();
         if o.fix && !fixes.is_empty() {
             match self.edit(&fixes.join("\n"), source) {
                 Ok(r) => {
@@ -908,6 +958,9 @@ impl Engine {
                     .filter_map(|(code, t)| {
                         let mut pm = render_frame(&rc, &c.id, *t, scale).ok()?;
                         draw_safe(&mut pm, margin as f32);
+                        if let Some(z) = ui_zones {
+                            draw_zones(&mut pm, z);
+                        }
                         Some(Tile { label: format!("{code} {}s", t2(*t)), img: pm })
                     })
                     .collect();
@@ -921,6 +974,170 @@ impl Engine {
             }
         }
         Ok(CheckOut { text: out, sheet })
+    }
+}
+
+/// The app UI areas of vertical short-form platforms, shaded red.
+fn draw_zones(pm: &mut Pixmap, (top, bottom, right, right_y): (f64, f64, f64, f64)) {
+    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    let mut paint = Paint { anti_alias: false, ..Default::default() };
+    paint.set_color_rgba8(255, 60, 60, 60);
+    for r in [
+        resvg::tiny_skia::Rect::from_ltrb(0.0, 0.0, w, h * top as f32),
+        resvg::tiny_skia::Rect::from_ltrb(0.0, h * bottom as f32, w, h),
+        resvg::tiny_skia::Rect::from_ltrb(w * right as f32, h * right_y as f32, w, h * bottom as f32),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        pm.fill_rect(r, &paint, Transform::identity(), None);
+    }
+}
+
+/// Craft notes: hook, pacing, static shots, easing, transition variety, sound design, typography,
+/// captions and length. Each names the commands that would fix it.
+#[allow(clippy::too_many_arguments)]
+fn craft_notes(is: &mut Issues, p: &Project, c: &Comp, overlays: &[Item], captions: &[&Item], speech: bool, social: bool, youtube: bool, platform: &str) {
+    let dur = c.duration();
+    let fd = c.frame_dur();
+    let cap: HashSet<&str> = captions.iter().map(|i| i.id.as_str()).collect();
+    let moves = |i: &Item| ["pos", "scale", "rot", "rx", "ry", "z", "remap"].iter().any(|k| i.props.get(*k).is_some_and(|a| a.is_animated()));
+    let base = c.vtracks().find(|t| !t.hidden && t.items.iter().any(|i| matches!(i.kind, ItemKind::Clip | ItemKind::Comp)));
+    let shots: Vec<&Item> = base.map(|t| t.items.iter().filter(|i| !i.off).collect()).unwrap_or_default();
+    // graphics and titles: overlays that aren't captions or the main picture itself
+    let on_base: HashSet<&str> = base.map(|t| t.items.iter().map(|i| i.id.as_str()).collect()).unwrap_or_default();
+    let titles: Vec<&Item> = overlays.iter().filter(|i| !cap.contains(i.id.as_str()) && !on_base.contains(i.id.as_str())).collect();
+    let is_sfx = |i: &Item| i.src.as_deref().and_then(|s| p.media(s)).is_some_and(|m| m.tags.iter().any(|t| t == "sfx"));
+    let has_sfx = c.tracks.iter().any(|t| t.items.iter().any(|i| is_sfx(i) && !i.off));
+
+    // hook
+    if (social || youtube) && dur > 3.0 {
+        let w = if social { 2.0 } else { 5.0 };
+        let early_text = titles.iter().any(|i| i.start < w * 0.75);
+        let early_cut = shots.iter().any(|i| i.start > fd && i.start < w);
+        let early_motion = c.items().any(|i| i.start < w && moves(i));
+        if !(early_text || early_cut || early_motion || captions.iter().any(|i| i.start < w * 0.5)) {
+            is.add(
+                Sev::Craft,
+                Some(0.5),
+                format!("weak hook: nothing new in the first {}s (no hook text, no cut, no motion) — open on the strongest moment", fmt_num(w)),
+                Some("text '<the hook in 3-6 words>' at=0.1 dur=1.8 enter=slamIn\nsfx hit at=0.1".into()),
+                true,
+            );
+        }
+        if social {
+            if let Some(first) = shots.first().filter(|i| i.start < fd) {
+                let fades = first.tin.is_some() || first.props.get("opacity").is_some_and(|a| a.k.first().is_some_and(|k| k.t < 0.05 && k.v.num() < 0.1));
+                if fades {
+                    is.add(Sev::Craft, Some(0.0), format!("{} fades in from black: on {platform} start on a full frame", first.id), Some(format!("tr {} in none", first.id)), false);
+                }
+            }
+        }
+    }
+    // pacing and static shots
+    if !shots.is_empty() && (social || youtube) {
+        let avg = shots.iter().map(|i| i.dur).sum::<f64>() / shots.len() as f64;
+        let slow = if social { 3.0 } else { 8.0 };
+        if avg > slow && dur > 8.0 {
+            is.add(
+                Sev::Craft,
+                None,
+                format!("pacing: average shot {}s is slow for {} (aim {})", t2(avg), if social { platform } else { "YouTube" }, if social { "0.8-2 s" } else { "3-6 s with b-roll every 4-8 s" }),
+                Some(if social { "autocut silence V1\npunchin V1" } else { "punchin V1 every=3" }.into()),
+                false,
+            );
+        }
+        let hold = if social { 4.0 } else { 10.0 };
+        let covered = |s: &Item| -> f64 {
+            let iv: Vec<(f64, f64)> = c
+                .vtracks()
+                .filter(|t| Some(t.id.as_str()) != base.map(|b| b.id.as_str()))
+                .flat_map(|t| t.items.iter())
+                .filter(|i| !i.off && !cap.contains(i.id.as_str()))
+                .map(|i| (i.start.max(s.start), i.end().min(s.end())))
+                .filter(|(a, b)| b > a)
+                .collect();
+            merge(iv).iter().map(|(a, b)| b - a).sum::<f64>()
+        };
+        let still: Vec<&&Item> = shots.iter().filter(|i| i.dur > hold && !moves(i) && covered(i) < i.dur * 0.3).collect();
+        if !still.is_empty() {
+            let ids: Vec<String> = still.iter().map(|i| i.id.clone()).collect();
+            is.add(
+                Sev::Craft,
+                Some(still[0].start + still[0].dur / 2.0),
+                format!("{} hold{} over {}s with no movement or cutaway", compact_ids(&ids), if ids.len() == 1 { "s" } else { "" }, fmt_num(hold)),
+                Some(format!("anim {} kenburns amount=0.06 | or cut in b-roll: add <media>[in-out] V2 at=<t>", compact_ids(&ids))),
+                true,
+            );
+        }
+    }
+    // linear keyframes on graphics
+    let mut linear: Vec<String> = vec![];
+    for i in &titles {
+        let lin = ["pos", "scale", "rot", "opacity", "rx", "ry"].iter().any(|k| {
+            i.props.get(*k).is_some_and(|a| a.x.is_none() && a.k.len() >= 2 && a.k[..a.k.len() - 1].iter().all(|kf| kf.e == crate::model::anim::Ease::Linear) && a.k.windows(2).any(|w| w[0].v != w[1].v))
+        });
+        if lin {
+            linear.push(i.id.clone());
+        }
+    }
+    if !linear.is_empty() {
+        let ids = compact_ids(&linear);
+        is.add(Sev::Craft, None, format!("{ids}: linear keyframes look mechanical (ease what starts and stops)"), Some(format!("ease {ids} all easy")), false);
+    }
+    // transitions
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    for i in c.vtracks().flat_map(|t| t.items.iter()) {
+        for t in [&i.tin, &i.tout].into_iter().flatten() {
+            *kinds.entry(t.kind.clone()).or_default() += 1;
+        }
+    }
+    if kinds.len() > 2 {
+        let top = kinds.iter().max_by_key(|x| x.1).map(|x| x.0.clone()).unwrap_or_default();
+        is.add(
+            Sev::Craft,
+            None,
+            format!("{} transition types ({}): pick one or two and reuse them", kinds.len(), kinds.keys().cloned().collect::<Vec<_>>().join(", ")),
+            Some(format!("tr V1 {top}  (or cuts: tr <a> <b> none)")),
+            false,
+        );
+    }
+    let gimmick: Vec<&String> = kinds.keys().filter(|k| matches!(k.as_str(), "cube" | "spin" | "blinds" | "checker" | "diamond" | "clock" | "barn" | "blocks" | "iriscross" | "irisbox")).collect();
+    if !gimmick.is_empty() {
+        is.add(Sev::Craft, None, format!("{} transitions read as template-like unless the brief is playful", gimmick.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")), Some("tr V1 whip 0.3  (with sfx whoosh on=transitions) or plain cuts".into()), false);
+    }
+    // sound design
+    let n_tr: usize = kinds.values().sum();
+    let animated_titles = titles.iter().filter(|i| !i.anims.is_empty() || moves(i) || i.props.get("opacity").is_some_and(|a| a.is_animated()) || !i.fx.is_empty()).count();
+    if (social || youtube) && !has_sfx && n_tr + animated_titles >= 2 {
+        let mut tries = vec![];
+        if n_tr > 0 {
+            tries.push("sfx whoosh on=transitions");
+        }
+        if animated_titles > 0 {
+            tries.push("sfx swish on=titles vol=-16dB");
+        }
+        is.add(Sev::Craft, None, "no sound design: transitions and animated titles are silent (help sfx)", Some(tries.join("\n")), false);
+    }
+    // typography and brand
+    let texts: Vec<&&Item> = titles.iter().filter(|i| i.kind == ItemKind::Text).collect();
+    let fonts: HashSet<String> = texts.iter().map(|i| static_str(i, "font").unwrap_or_else(|| "Inter".into()).to_ascii_lowercase()).collect();
+    if fonts.len() > 2 {
+        is.add(Sev::Craft, None, format!("{} font families ({}): use one family, two weights", fonts.len(), fonts.iter().cloned().collect::<Vec<_>>().join(", ")), Some("brand font=<family>  then set <text ids> font=<family>".into()), false);
+    }
+    let colors: HashSet<String> = texts.iter().filter_map(|i| static_str(i, "color")).map(|c| c.to_ascii_lowercase()).collect();
+    if colors.len() > 3 {
+        is.add(Sev::Craft, None, format!("{} text colors: the brand's text color plus one accent reads as designed", colors.len()), Some("brand accent=<color> text=<color>".into()), false);
+    }
+    if p.brand.is_empty() && titles.len() >= 3 && (social || youtube) {
+        is.add(Sev::Craft, None, "no brand kit: titles and graphics use generic defaults (help brand)", Some("brand <clean|bold|luxury|tech|playful|warm|mono> or brand font=... accent=...".into()), false);
+    }
+    // captions and length on short-form
+    if social && speech && captions.is_empty() {
+        is.add(Sev::Craft, None, format!("speech without captions: most {platform} viewers start muted"), Some("captions V1 style=punch words=2".into()), false);
+    }
+    if social && dur > 60.0 {
+        is.add(Sev::Craft, None, format!("{}s is long for {platform}: most perform best at 9-35 s", t2(dur)), Some("cut to the strongest 30 s (extract the weak middle)".into()), false);
     }
 }
 
@@ -940,6 +1157,38 @@ fn draw_safe(pm: &mut Pixmap, margin: f32) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::render::ffmpeg::Ff;
+
+    #[test]
+    fn reels_target_flags_ui_zones_and_craft() {
+        let eng = crate::engine::Engine::new(Ff::missing());
+        eng.edit(
+            "comp new 'Shot' 1080x1920 30\nsolid #446688 at=0 dur=10\ncomp new 'Reel' 1080x1920 30\nadd s2 V1 at=0 dur=8\n\
+             text 'LOW TEXT' at=1 dur=1 pos=540,1780 size=80 as=low\nkf low opacity 0:0@linear 0.4:1\n\
+             text 'Second' at=5 dur=1 size=80 as=two\nanim two fadeIn",
+            "test",
+        )
+        .unwrap();
+        let rev = eng.snapshot().1;
+        let o = CheckOpts { target: Some("reels".into()), fix: true, ..Default::default() };
+        let out = eng.check(&o, "test").unwrap().text;
+        assert!(out.contains("sits under the caption and buttons area on Reels"), "{out}");
+        assert!(out.contains("over 4s with no movement or cutaway"), "{out}");
+        assert!(out.contains("linear keyframes look mechanical"), "{out}");
+        assert!(out.contains("no sound design"), "{out}");
+        assert!(out.contains("craft note(s)") && out.contains("\n   try: "), "{out}");
+        // fix=true moved the text out of the UI zone but applied no craft suggestion
+        let (p, rev2, ..) = eng.snapshot();
+        assert_eq!(rev2, rev + 1);
+        let low = p.comps.iter().flat_map(|c| c.items()).find(|i| i.name.as_deref() == Some("low")).unwrap();
+        assert!(low.props["pos"].v.vec().1 < 1780.0);
+        assert!(p.comps.iter().flat_map(|c| c.items()).all(|i| i.props.get("opacity").is_none_or(|a| a.k.first().is_none_or(|k| k.e == crate::model::anim::Ease::Linear) || i.name.as_deref() != Some("low"))));
+        // without a platform target there is no UI-zone warning
+        let out = eng.check(&CheckOpts::default(), "test").unwrap().text;
+        assert!(!out.contains("sits under"), "{out}");
+    }
+
     #[test]
     fn compacts_id_lists() {
         let ids: Vec<String> = ["c5", "c6", "c7", "c9", "t2", "t3", "x"].iter().map(|s| s.to_string()).collect();

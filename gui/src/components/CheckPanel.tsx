@@ -35,7 +35,11 @@ export function CheckPanel() {
         <div class="modal-h">
           Check edit
           <select value={target} onChange={(e) => setTarget((e.target as HTMLSelectElement).value)} style={{ marginLeft: "12px" }}>
-            <option value="web">Web / YouTube (−14 LUFS)</option>
+            <option value="web">Web (−14 LUFS)</option>
+            <option value="youtube">YouTube (−14 LUFS, pacing)</option>
+            <option value="reels">Instagram Reels (UI zones, hook)</option>
+            <option value="tiktok">TikTok (UI zones, hook)</option>
+            <option value="shorts">YouTube Shorts (UI zones, hook)</option>
             <option value="podcast">Podcast (−16 LUFS)</option>
             <option value="broadcast">Broadcast EBU R128 (−23 LUFS)</option>
           </select>

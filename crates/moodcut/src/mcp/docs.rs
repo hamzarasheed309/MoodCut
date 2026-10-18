@@ -8,6 +8,11 @@ use crate::render::encode::PRESETS;
 
 pub const TOPICS: &[(&str, &str)] = &[
     ("workflow", "a complete edit from one request, step by step"),
+    ("style", "pro editing + motion design rules (hook, pacing, sound, type, easing) as commands"),
+    ("recipes", "complete scripts for Reels, YouTube, montage, promo, podcast, documentary, tutorial"),
+    ("platforms", "Reels/TikTok/Shorts/YouTube/feed/ads specs and UI safe zones"),
+    ("sfx", "sound design: whoosh, riser, hit, pop... placed on cuts, titles and beats"),
+    ("brand", "brand kit: font + colors every title, caption and graphic uses"),
     ("edit", "every MoodCut Script command"),
     ("tools", "Premiere Pro / After Effects tools and panels as commands"),
     ("time", "time & reference syntax"),
@@ -39,11 +44,11 @@ Scripts are atomic: if any line fails nothing changes and the error names the li
 pub const WORKFLOW: &str = "Turning one request into a finished, professional edit. Do every step yourself; send many script lines per edit call; ask the person only if something essential is missing.
 1 GATHER  media find path=<folder> (what is there) -> media import paths=[<folder>] tag=<shoot>. Large library: media list (filters/paging) + preview media=m1..m48 (poster frames, 48 per sheet). Write down what you see so you never look twice: note m3 'wide drone, sunset' | tag m10..m18 interview.
 2 UNDERSTAND  speech: analyze target=tag:interview kind=transcript, then view what=search q=<words> to find quotes (times are source seconds). Shots: analyze target=all kind=scenes / stats (exposure). Music: analyze <m> kind=beats. Filmstrips (preview media=m7 n=8) to pick in/out points.
-3 PLAN  length, format (comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 3 s -> body -> payoff / call to action), music, look, graphics. Build only what was asked.
-4 ASSEMBLE  story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence for talking heads; keep m4 12-30,45-61 for rough cuts; b-roll on V2 over speech (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences. Typical shots 1.5-4 s; vary framing; cut on action; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
-5 POLISH  color <ids|V1> natural|cinematic then fine-tune; tr V1 dissolve 0.3 only where it helps; titles and lower thirds: the graphic tool (HTML/CSS, best looking) or title templates; captions <clip> for speech-led videos; anim kenburns on stills.
+3 PLAN  like a senior editor (help style): platform and length (help platforms; comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 1-2 s -> body -> payoff / call to action or loop), the closest help('recipes') to start from, brand (brand <preset> or the client's font and colors), ONE look, 2-3 reusable motion moves, music and where its drop lands, a sound palette. Build only what was asked, but finish it to a professional standard.
+4 ASSEMBLE  bottom-up: story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence V1 + punchin V1 for talking heads; keep m4 12-30,45-61 for rough cuts; jcut/lcut between interview answers; b-roll on V2 over speech starting on the word it shows (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences; speedramp into action and drops. Shot lengths per platform (help style); vary framing; cut on action and on the beat; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
+5 POLISH  color <ids|V1> <one look> then fine-tune by scopes; one or two motivated transition types (whip between places, cuts elsewhere); titles and lower thirds in the brand (graphic tool for bespoke designs, else title templates) with the same entrance everywhere; captions V1 last (they go on top) for speech-led videos; anim kenburns amount=0.06 on stills; then sound design: sfx whoosh on=transitions, hit on title slams, riser into reveals (help sfx).
 6 SOUND  music on A2 under speech: duck A2 by=A1 amount=-12 (by=V1 when speech is camera audio); fade music in/out; master lufs=-14 limiter=1 (web) | -16 (podcast) | -23 (broadcast).
-7 VERIFY  check expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; preview n=8 for the overall flow; fix what remains and check again until clean.
+7 VERIFY  check target=<platform> expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; fix its craft notes too (hook, pacing, safe zones, easing, music ending, sound design); preview n=12 and judge it as a viewer (would you stop scrolling at frame 1? does something change every 3-5 s?); fix and check again until clean.
 8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.";
 
 const GRAPHICS: &str = "graphic tool: html -> rendered video with alpha (or a still, dur=0) in the library. The page is the frame: 100% width/height = comp size (or size=). Transparent unless you paint a background (alpha=false keeps an opaque page).
@@ -340,7 +345,12 @@ pub fn help(topic: &str) -> String {
             }
             s
         }
-        "examples" | "example" | "recipes" => EXAMPLES.to_string(),
+        "examples" | "example" => EXAMPLES.to_string(),
+        "style" | "craft" | "professional" | "creative" | "rules" => super::craft::STYLE.to_string(),
+        "recipes" | "formats" | "reels" | "youtube" | "templates-edit" => super::craft::RECIPES.to_string(),
+        "platforms" | "platform" | "specs" | "social" | "safezones" => super::craft::PLATFORMS.to_string(),
+        "sfx" | "sounddesign" | "sound-design" | "whoosh" => super::craft::sound_help(),
+        "brand" | "brandkit" | "branding" => super::craft::brand_help(),
         "graphics" | "graphic" | "html" | "gfx" | "design" => GRAPHICS.to_string(),
         "workflow" | "pipeline" | "recipe" | "start" => WORKFLOW.to_string(),
         "fonts" => {

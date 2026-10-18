@@ -146,6 +146,7 @@ fn compact_log(log: Vec<String>) -> Vec<String> {
 }
 
 /// Argument accessor that tracks which key=values were consumed.
+#[derive(Clone)]
 pub struct A {
     pub pos: Vec<String>,
     kv: Vec<(String, String, bool)>,
