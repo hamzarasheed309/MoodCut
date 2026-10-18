@@ -44,6 +44,7 @@ impl Env for Mock {
         Ok(match kind {
             "silence" => serde_json::json!({"silences": [[2.0, 4.0], [10.0, 10.3], [20.0, 25.0]]}),
             "scenes" => serde_json::json!({"cuts": [5.0, 12.0]}),
+            "loudness" => serde_json::json!({"lufs": -18.0}),
             "beats" => serde_json::json!({"bpm": 120.0, "beats": (0..120).map(|i| i as f64 * 0.5).collect::<Vec<_>>()}),
             "transcript" => serde_json::json!({"segments": [
                 {"s": 0.5, "e": 3.0, "text": "Hello world this is MoodCut.", "words": [
@@ -338,4 +339,227 @@ fn library_formatting() {
     assert_eq!(fmt_dur(12.34), "12.3s");
     assert_eq!(fmt_dur(222.0), "3:42");
     assert_eq!(fmt_dur(3723.0), "1:02:03");
+}
+
+// ---------------------------------------------------------------- Premiere / AE tools
+
+/// The mock environment plus an open editor window (selection, playhead).
+struct WithUi(super::exec::Ui);
+
+impl Env for WithUi {
+    fn probe(&self, path: &str) -> Result<Media> {
+        Mock.probe(path)
+    }
+    fn analyze(&self, p: &Project, m: &str, kind: &str, o: &BTreeMap<String, String>) -> Result<serde_json::Value> {
+        Mock.analyze(p, m, kind, o)
+    }
+    fn ui(&self) -> super::exec::Ui {
+        self.0.clone()
+    }
+}
+
+fn v1(p: &Project) -> Vec<(String, f64, f64, f64)> {
+    p.main_comp().unwrap().track("V1").unwrap().items.iter().map(|i| (i.id.clone(), i.start, i.dur, i.src_in)).collect()
+}
+
+#[test]
+fn rolling_edit_moves_the_cut_between_two_clips() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-5] /v/b.mp4[10-15]");
+    ok(&mut p, "roll c1 +1");
+    assert_eq!(v1(&p), vec![("c1".into(), 0.0, 6.0, 0.0), ("c2".into(), 6.0, 4.0, 11.0)]);
+    ok(&mut p, "roll c1 to=3");
+    assert_eq!(v1(&p), vec![("c1".into(), 0.0, 3.0, 0.0), ("c2".into(), 3.0, 7.0, 8.0)]);
+    assert!(err(&mut p, "roll c1 -2.99").contains("less than a frame"));
+    assert!(err(&mut p, "roll c2 +1").contains("no clip right after"));
+    // the incoming clip needs media before its in-point to roll earlier
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-5] /v/b.mp4[0-5]");
+    assert!(err(&mut p, "roll c1 -1").contains("handle"));
+}
+
+#[test]
+fn lift_leaves_a_gap_and_extract_closes_it() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-10]\nadd /a/music.mp3 A1 at=0 dur=10");
+    ok(&mut p, "lift 2 4 tracks=V1");
+    let v = v1(&p);
+    assert_eq!(v.len(), 2);
+    assert_eq!((v[0].1, v[0].2), (0.0, 2.0));
+    assert_eq!((v[1].1, v[1].2, v[1].3), (4.0, 6.0, 4.0));
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-10]\nadd /a/music.mp3 A1 at=0 dur=10\nworkarea 2 4\nextract");
+    let v = v1(&p);
+    assert_eq!((v[1].1, v[1].2, v[1].3), (2.0, 6.0, 4.0));
+    let a1 = &p.main_comp().unwrap().track("A1").unwrap().items;
+    assert_eq!(a1.iter().map(|i| i.dur).sum::<f64>(), 8.0);
+    assert!(err(&mut proj(), "lift").contains("needs a range"));
+}
+
+#[test]
+fn swap_rearranges_adjacent_clips_and_trades_others() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-2] /v/b.mp4[0-5] /v/c.mp4[0-3]");
+    ok(&mut p, "tr c1 c2 dissolve 0.5");
+    ok(&mut p, "swap c1 c2");
+    let v = v1(&p);
+    assert_eq!(v.iter().map(|x| (x.0.as_str(), x.1)).collect::<Vec<_>>(), vec![("c2", 0.0), ("c1", 5.0), ("c3", 7.0)]);
+    assert_eq!(p.item("c2").unwrap().tout.as_ref().unwrap().kind, "dissolve");
+    let mut p = proj();
+    ok(&mut p, "add /v/a.mp4 dur=2\nadd /v/b.mp4 V2 at=4 dur=2");
+    ok(&mut p, "swap c1 c2");
+    let (_, t1, _) = p.locate("c1").unwrap();
+    assert_eq!((p.comps[0].tracks[t1].id.as_str(), p.item("c1").unwrap().start), ("V2", 4.0));
+}
+
+#[test]
+fn moving_a_parent_keeps_its_children() {
+    let mut p = proj();
+    ok(&mut p, "null at=0 dur=5 as=ctrl\ntext 'Hi' at=0 dur=5 as=hi\nparent hi ctrl\nmove ctrl at=1\nset ctrl start=2");
+    assert_eq!(p.item("hi").unwrap().parent.as_deref(), Some(p.item("ctrl").unwrap().id.as_str()));
+    assert_eq!(p.item("ctrl").unwrap().kind, ItemKind::Null);
+}
+
+#[test]
+fn paste_attributes_copies_looks_and_motion() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-2] /v/b.mp4[0-2] /v/c.mp4[0-2]");
+    ok(&mut p, "color c1 cinematic\nset c1 scale=1.2 opacity=80%\nfx c1 blur radius=4\nfx c2 blur radius=9");
+    let log = ok(&mut p, "paste c1 c2,c3");
+    assert!(log.iter().any(|l| l.starts_with("~c2 pasted transform,opacity,fx")), "{log:?}");
+    let c2 = p.item("c2").unwrap();
+    assert_eq!(c2.props["scale"].v.vec(), (1.2, 1.2));
+    assert_eq!(c2.fx.iter().filter(|e| e.kind == "blur").count(), 1, "same-kind effects are replaced");
+    assert!(c2.fx.iter().any(|e| e.kind == "lumetri"));
+    ok(&mut p, "paste c1 c3 color stack");
+    assert_eq!(p.item("c3").unwrap().fx.iter().filter(|e| e.kind == "lumetri").count(), 2);
+    assert!(err(&mut p, "paste c1 c2 wobble").contains("unknown attribute"));
+}
+
+#[test]
+fn stagger_and_sequence_layers() {
+    let mut p = proj();
+    ok(&mut p, "text 'A' at=0 dur=2 V2\ntext 'B' at=0 dur=2 V3\ntext 'C' at=0 dur=2 V4");
+    ok(&mut p, "stagger t1,t2,t3 by=0.25");
+    let starts: Vec<f64> = ["t1", "t2", "t3"].iter().map(|i| p.item(i).unwrap().start).collect();
+    assert_eq!(starts, vec![0.0, 0.25, 0.5]);
+    ok(&mut p, "stagger t1..t3 seq overlap=0.5 from=1");
+    let starts: Vec<f64> = ["t1", "t2", "t3"].iter().map(|i| p.item(i).unwrap().start).collect();
+    assert_eq!(starts, vec![1.0, 2.5, 4.0]);
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-2] /v/b.mp4[0-2]");
+    assert!(err(&mut p, "stagger c1,c2 by=1").contains("separate tracks"));
+}
+
+#[test]
+fn align_and_distribute_use_the_rendered_box() {
+    let mut p = proj();
+    ok(&mut p, "solid #f00 w=200 h=100 pos=500,500 at=0 dur=3 as=a\nsolid #0f0 w=200 h=100 pos=900,300 at=0 dur=3 as=b\nsolid #00f w=200 h=100 pos=1500,700 at=0 dur=3 as=c");
+    ok(&mut p, "align a left top");
+    assert_eq!(p.item("a").unwrap().props["pos"].v.vec(), (100.0, 50.0));
+    ok(&mut p, "align b right margin=40 to=comp");
+    assert_eq!(p.item("b").unwrap().props["pos"].v.vec().0, 1920.0 - 40.0 - 100.0);
+    ok(&mut p, "align a,b,c vcenter to=sel");
+    ok(&mut p, "distribute a,b,c h");
+    // sorted left to right a (100), c (1500), b (1780): c moves halfway
+    let xs: Vec<f64> = ["a", "b", "c"].iter().map(|i| p.item(i).unwrap().props["pos"].v.vec().0).collect();
+    assert_eq!(xs, vec![100.0, 1780.0, 940.0]);
+    let ys: Vec<f64> = ["a", "b", "c"].iter().map(|i| p.item(i).unwrap().props["pos"].v.vec().1).collect();
+    assert!(ys.iter().all(|y| (y - ys[0]).abs() < 1e-6), "{ys:?}");
+    // keyframed positions move as a whole (measured at the item start)
+    ok(&mut p, "kf c pos 0:100,500 1:300,500\nalign c right");
+    let k = &p.item("c").unwrap().props["pos"].k;
+    assert_eq!((k[0].v.vec().0, k[1].v.vec().0), (1820.0, 2020.0));
+}
+
+#[test]
+fn keyframe_assistant() {
+    let mut p = proj();
+    ok(&mut p, "add /v/a.mp4 dur=4\nkf c1 opacity 0:0 1:1@linear 3:0.5\nkf c1 scale 0:1 2:1.5");
+    ok(&mut p, "ease c1 opacity easy");
+    let o = &p.item("c1").unwrap().props["opacity"].k;
+    assert_eq!(o[0].e.name(), "ease");
+    assert_eq!(o[1].e.name(), "ease");
+    ok(&mut p, "ease c1 all outBack at=1");
+    assert_eq!(p.item("c1").unwrap().props["opacity"].k[1].e.name(), "outBack");
+    ok(&mut p, "kf c1 opacity reverse");
+    let o = &p.item("c1").unwrap().props["opacity"].k;
+    assert_eq!(o.iter().map(|k| (k.t, k.v.num())).collect::<Vec<_>>(), vec![(0.0, 0.5), (2.0, 1.0), (3.0, 0.0)]);
+    ok(&mut p, "kf c1 all shift=+0.5");
+    assert_eq!(p.item("c1").unwrap().props["scale"].k[0].t, 0.5);
+    ok(&mut p, "kf c1 scale stretch=2");
+    assert_eq!(p.item("c1").unwrap().props["scale"].k[1].t, 4.5);
+    ok(&mut p, "expr c1 rot 'time*90'\nkf c1 rot bake step=0.5");
+    let r = &p.item("c1").unwrap().props["rot"];
+    assert!(r.x.is_none() && r.k.len() == 9 && (r.k[2].v.num() - 90.0).abs() < 1e-6, "{:?}", r.k);
+    ok(&mut p, "kf c1 all clear");
+    assert!(!p.item("c1").unwrap().props.values().any(|a| !a.k.is_empty()));
+}
+
+#[test]
+fn null_and_camera_layers() {
+    let mut p = proj();
+    let log = ok(&mut p, "text 'A' at=0 dur=5 as=a\nnull children=a as=rig\ncamera move=pushin layers=a zoom=1800");
+    assert!(log.iter().any(|l| l.contains(" null V")), "{log:?}");
+    let rig = p.item("rig").unwrap().id.clone();
+    assert!(rig.starts_with('l'));
+    assert_eq!(p.item("a").unwrap().parent.as_deref(), Some(rig.as_str()));
+    assert!(p.item("a").unwrap().props["3d"].v.bool());
+    let cam = p.main_comp().unwrap().items().find(|i| i.kind == ItemKind::Camera).unwrap();
+    assert!(cam.id.starts_with('k'));
+    assert_eq!(cam.props["zoom"].v.num(), 1800.0);
+    assert_eq!(cam.props["z"].k.len(), 2);
+    ok(&mut p, "camera move=orbit amount=40");
+    assert!(err(&mut p, "camera move=wobble").contains("unknown camera move"));
+    assert!(err(&mut p, "set rig zoom=3").contains("unknown property"));
+}
+
+#[test]
+fn work_area_markers_and_ripple_trim() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-5] /v/b.mp4[0-5]\nworkarea 1 3\nmarker add 2 'Hook' color=#f00 dur=1 note='big moment'");
+    assert_eq!(p.main_comp().unwrap().work, Some((1.0, 3.0)));
+    ok(&mut p, "marker set Hook name=Drop t=2.5\ncomp set work=none");
+    let m = &p.main_comp().unwrap().markers[0];
+    assert_eq!((m.name.as_str(), m.t, m.dur, m.note.as_str()), ("Drop", 2.5, 1.0, "big moment"));
+    assert!(p.main_comp().unwrap().work.is_none());
+    // Premiere ripple trim: the head goes, the clip stays put, the rest follows
+    ok(&mut p, "trim c1 start=+1 ripple");
+    assert_eq!(v1(&p), vec![("c1".into(), 0.0, 4.0, 1.0), ("c2".into(), 4.0, 5.0, 0.0)]);
+}
+
+#[test]
+fn selectors_selection_and_playhead() {
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-5] /v/b.mp4[0-5] /v/c.mp4[0-5]\ntext 'Hi' at=6 dur=2");
+    let log = ok(&mut p, "fx after:5 blur");
+    assert!(log.iter().any(|l| l.starts_with("+c2.f1")) && log.iter().any(|l| l.starts_with("+t4.f1")), "{log:?}");
+    let log = ok(&mut p, "set V1:at:7 opacity=50%");
+    assert_eq!(log, vec!["~c2 opacity=50%"]);
+    let log = ok(&mut p, "fx kind:text glow");
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(err(&mut p, "fx kind:blob blur").contains("unknown kind"));
+    let ui = super::exec::Ui { selection: vec!["c3".into(), "c1".into()], playhead: Some(6.5), comp: None };
+    let o = run(&mut p, &WithUi(ui), "s1", "color sel bw\ntext 'Here' at=playhead dur=1 as=here").unwrap();
+    assert!(o.log.iter().any(|l| l.contains("c3")), "{:?}", o.log);
+    assert_eq!(p.item("here").unwrap().start, 6.5);
+    assert!(err(&mut p, "fx sel blur").contains("nothing is selected"));
+    assert!(err(&mut p, "text 'x' at=playhead").contains("editor"));
+}
+
+#[test]
+fn essential_sound_types() {
+    let mut p = proj();
+    ok(&mut p, "add /v/talk.mp4\nadd /a/music.mp3 A2 at=0");
+    let log = ok(&mut p, "sound c1 dialogue\nsound c2 music");
+    assert!(log.iter().any(|l| l.contains("vol=-2dB")), "{log:?}");
+    let c1 = p.item("c1").unwrap();
+    assert_eq!(c1.afx.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), vec!["voice", "deess"]);
+    let a2 = p.main_comp().unwrap().track("A2").unwrap();
+    assert_eq!(a2.duck.as_ref().unwrap().by, "V1");
+    assert_eq!(p.item("c2").unwrap().props["vol"].v.num(), -10.0);
+    ok(&mut p, "sound c1 dialogue amount=0.5");
+    assert_eq!(p.item("c1").unwrap().afx.len(), 2, "re-running replaces the chain");
+    ok(&mut p, "sound c1 clear");
+    assert!(p.item("c1").unwrap().afx.is_empty() && !p.item("c1").unwrap().props.contains_key("vol"));
 }

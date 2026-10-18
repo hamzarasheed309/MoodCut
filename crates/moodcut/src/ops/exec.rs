@@ -17,6 +17,23 @@ pub trait Env {
     fn probe(&self, path: &str) -> Result<Media>;
     /// Runs (or fetches cached) analysis for a media item.
     fn analyze(&self, project: &Project, media: &str, kind: &str, opts: &BTreeMap<String, String>) -> Result<serde_json::Value>;
+    /// What the person is doing in the editor window (selection, playhead), so
+    /// scripts can say `sel` and `playhead`.
+    fn ui(&self) -> Ui {
+        Ui::default()
+    }
+}
+
+/// Editor-window state shared with scripts (and shown to AI clients by `view`).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Ui {
+    #[serde(default)]
+    pub selection: Vec<String>,
+    #[serde(default)]
+    pub playhead: Option<f64>,
+    /// Comp shown in the editor.
+    #[serde(default)]
+    pub comp: Option<String>,
 }
 
 #[derive(Debug)]
@@ -299,12 +316,14 @@ impl<'a> Exec<'a> {
 
     pub fn time_in(&self, s: &str, pct_of: Option<f64>, end: Option<f64>) -> Result<f64> {
         let comp = self.comp();
+        let now = self.env.ui().playhead;
         let cx = TimeCtx {
             fps: comp.fps,
             comp_end: end.unwrap_or_else(|| comp.duration()),
             item: &|k| self.item_span(k),
             marker: &|m| comp.markers.iter().find(|mk| mk.name.eq_ignore_ascii_case(m)).map(|mk| mk.t),
             pct_of,
+            now,
         };
         parse_time(s, &cx)
     }
@@ -333,6 +352,8 @@ impl<'a> Exec<'a> {
                 }
             } else if parse_track_spec(part).is_some() && self.comp().track(part).is_some() && self.p.locate(part).is_none() {
                 out.extend(self.comp().track(part).unwrap().items.iter().map(|i| i.id.clone()));
+            } else if let Some(ids) = self.select(part)? {
+                out.extend(ids);
             } else {
                 out.push(self.item_id(part)?);
             }
@@ -743,6 +764,19 @@ impl<'a> Exec<'a> {
             "reframe" => self.c_reframe(&mut a),
             "title" | "template" | "mogrt" => self.c_title(&mut a),
             "keep" | "roughcut" => self.c_keep(&mut a),
+            "null" => self.c_null(&mut a, false),
+            "camera" | "cam" => self.c_null(&mut a, true),
+            "roll" | "rolling" => self.c_roll(&mut a),
+            "lift" => self.c_lift(&mut a, false),
+            "extract" => self.c_lift(&mut a, true),
+            "swap" | "rearrange" => self.c_swap(&mut a),
+            "paste" | "pasteattr" | "attributes" => self.c_paste(&mut a),
+            "stagger" => self.c_stagger(&mut a),
+            "align" => self.c_align(&mut a),
+            "distribute" => self.c_distribute(&mut a),
+            "ease" | "easyease" => self.c_ease(&mut a),
+            "workarea" | "inout" => self.c_workarea(&mut a),
+            "sound" | "essentialsound" => self.c_sound(&mut a),
             "undo" | "redo" => bail!("undo/redo must be sent on their own (or use the project tool)"),
             v => {
                 let verbs = VERBS.iter().copied();
@@ -868,6 +902,19 @@ impl<'a> Exec<'a> {
                         "name" => c.name = v.clone(),
                         "bg" => c.bg = crate::model::value::Color::parse(&v)?,
                         "shutter" => c.shutter = v.parse()?,
+                        "work" | "workarea" => {
+                            c.work = match v.to_ascii_lowercase().as_str() {
+                                "none" | "off" | "clear" => None,
+                                _ => {
+                                    let (x, y) = v.split_once('-').ok_or_else(|| anyhow!("work must look like 2-8 (seconds) or none"))?;
+                                    let (x, y): (f64, f64) = (x.trim().parse()?, y.trim().parse()?);
+                                    if y <= x || x < 0.0 {
+                                        bail!("work area needs 0 <= in < out");
+                                    }
+                                    Some((x, y))
+                                }
+                            }
+                        }
                         "dur" | "duration" => {
                             c.dur = if v == "auto" || v == "none" {
                                 None
@@ -879,7 +926,7 @@ impl<'a> Exec<'a> {
                                 })
                             }
                         }
-                        other => bail!("unknown comp setting '{other}' (w h size fps name bg dur shutter)"),
+                        other => bail!("unknown comp setting '{other}' (w h size fps name bg dur shutter work)"),
                     }
                     changes.push(key);
                 }
@@ -1167,7 +1214,7 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 
-    fn overlay_start_dur(&mut self, a: &mut A, def_dur: f64) -> Result<(f64, f64)> {
+    pub(crate) fn overlay_start_dur(&mut self, a: &mut A, def_dur: f64) -> Result<(f64, f64)> {
         let start = match (a.take(&["at", "start"]), a.take(&["after"])) {
             (Some(s), _) => self.time(&s)?,
             (None, Some(af)) => self.item_span(&af).ok_or_else(|| anyhow!("unknown item '{af}'"))?.1,
@@ -1186,7 +1233,7 @@ impl<'a> Exec<'a> {
         Ok((start, dur))
     }
 
-    fn place_overlay(&mut self, it: Item, track: Option<String>) -> Result<String> {
+    pub(crate) fn place_overlay(&mut self, it: Item, track: Option<String>) -> Result<String> {
         let tid = match track {
             Some(t) => t,
             None => self.pick_track_above(TrackKind::Video, it.start, it.end()),
@@ -1194,7 +1241,7 @@ impl<'a> Exec<'a> {
         self.place(it, &tid, Mode::Strict)
     }
 
-    fn take_track(&mut self, a: &mut A) -> Option<String> {
+    pub(crate) fn take_track(&mut self, a: &mut A) -> Option<String> {
         if let Some(t) = a.take(&["track", "t"]) {
             return Some(t);
         }
@@ -1462,7 +1509,7 @@ impl<'a> Exec<'a> {
             if ci != self.ci() {
                 bail!("{id} is in another comp (comp use {} first)", self.p.comps[ci].id);
             }
-            let it = self.remove_item(id)?;
+            let it = self.take_item(id)?;
             removed.push((tid, it));
         }
         for (tid, mut it) in removed {
@@ -1498,14 +1545,19 @@ impl<'a> Exec<'a> {
             let old_end = it.end();
             if let Some(s) = &start_s {
                 let ns = rel_or_abs(s, it.start, |x| self.time(x))?;
-                // check room on the left
-                if ns < it.start {
+                // check room on the left (a ripple trim keeps the clip's start where it is)
+                if ns < it.start && !ripple {
                     let t = &self.p.comps[l.0].tracks[l.1];
                     if !t.is_free(ns, it.start, Some(&id)) {
                         bail!("{id}: no room to extend left (item in the way)");
                     }
                 }
                 self.trim_start_to(&id, ns)?;
+                if ripple {
+                    // ripple trim: the head changes, the clip stays put and the rest of the track follows
+                    let l2 = self.relocate(&id)?;
+                    self.item_mut_at(l2).start = it.start;
+                }
             }
             if let Some(s) = &in_s {
                 let l = self.relocate(&id)?;
@@ -1935,13 +1987,25 @@ impl<'a> Exec<'a> {
                 self.p.comps[ci].markers.clear();
                 self.note("markers cleared");
             }
+            "set" | "edit" => {
+                let k = a.shift().ok_or_else(|| anyhow!("marker set <time|name> [name=] [t=] [color=] [dur=] [note=]"))?;
+                let i = self.find_marker(&k)?;
+                let mut m = self.p.comps[ci].markers[i].clone();
+                self.marker_fields(&mut m, a.rest())?;
+                let s = format!("~marker {} {}", fmt_t(m.t), m.name);
+                let ms = &mut self.p.comps[ci].markers;
+                ms[i] = m;
+                ms.sort_by(|x, y| x.t.partial_cmp(&y.t).unwrap());
+                self.note(s);
+            }
             other => {
                 let tstr = if other == "add" { a.take(&["at", "t"]).or_else(|| a.shift()).ok_or_else(|| anyhow!("marker add <time> [name]"))? } else { first.clone() };
                 let t = self.time(&tstr)?;
                 let name = a.take(&["name"]).or_else(|| a.shift()).unwrap_or_default();
-                let color = a.take(&["color"]);
+                let mut mk = Marker::new(t, name.clone());
+                self.marker_fields(&mut mk, a.rest())?;
                 let m = &mut self.p.comps[ci].markers;
-                m.push(Marker { t, name: name.clone(), color });
+                m.push(mk);
                 m.sort_by(|x, y| x.t.partial_cmp(&y.t).unwrap());
                 self.note(format!("+marker {} {}", fmt_t(t), name));
             }
@@ -1972,7 +2036,8 @@ impl<'a> Exec<'a> {
 pub const VERBS: &[&str] = &[
     "import", "comp", "track", "add", "append", "insert", "text", "shape", "solid", "adjust", "del", "move", "trim", "cut", "slip", "slide", "speed", "reverse",
     "freeze", "dup", "replace", "close", "gap", "detach", "fit", "set", "kf", "kf+", "kf-", "expr", "anim", "fx", "afx", "tr", "fade", "mask", "matte", "parent",
-    "color", "lut", "marker", "master", "name", "duck", "precomp", "autocut", "captions", "montage", "beats", "reframe", "title", "keep", "undo", "redo",
+    "color", "lut", "marker", "master", "name", "duck", "precomp", "autocut", "captions", "montage", "beats", "reframe", "title", "keep", "null", "camera", "roll",
+    "lift", "extract", "swap", "paste", "stagger", "align", "distribute", "ease", "workarea", "sound", "undo", "redo",
 ];
 
 pub fn same_path(a: &str, b: &str) -> bool {

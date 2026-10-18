@@ -17,6 +17,8 @@ pub struct TimeCtx<'a> {
     pub marker: &'a dyn Fn(&str) -> Option<f64>,
     /// Duration that `%` refers to.
     pub pct_of: Option<f64>,
+    /// The editor's playhead (`playhead` / `now`), when the editor is open.
+    pub now: Option<f64>,
 }
 
 pub fn parse_time(s: &str, cx: &TimeCtx) -> Result<f64> {
@@ -58,6 +60,9 @@ fn term(t: &str, cx: &TimeCtx) -> Result<f64> {
     }
     if l == "start" || l == "begin" || l == "0" {
         return Ok(0.0);
+    }
+    if l == "playhead" || l == "now" || l == "cti" {
+        return cx.now.ok_or_else(|| anyhow!("'{t}' needs the editor window open (it is the editor's playhead)"));
     }
     if let Some(name) = t.strip_prefix('@') {
         return (cx.marker)(name).ok_or_else(|| anyhow!("unknown marker '@{name}'"));
@@ -130,6 +135,7 @@ mod tests {
             item: &|k| if k == "c3" { Some((10.0, 20.0)) } else { None },
             marker: &|m| if m == "drop" { Some(32.0) } else { None },
             pct_of: Some(4.0),
+            now: Some(7.5),
         }
     }
 
@@ -148,6 +154,7 @@ mod tests {
         assert_eq!(parse_time("@drop", &c).unwrap(), 32.0);
         assert_eq!(parse_time("50%", &c).unwrap(), 2.0);
         assert_eq!(parse_time("-1", &c).unwrap(), -1.0);
+        assert_eq!(parse_time("playhead+1", &c).unwrap(), 8.5);
         assert!(parse_time("c9.end", &c).is_err());
     }
 

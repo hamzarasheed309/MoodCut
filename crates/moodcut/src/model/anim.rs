@@ -81,7 +81,7 @@ impl Ease {
         }
         // AE / CSS style names
         match l.as_str() {
-            "ease" | "easyease" | "smooth" => return Ok(Ease::Bezier(0.33, 0.0, 0.67, 1.0)),
+            "ease" | "easy" | "easyease" | "smooth" => return Ok(Ease::Bezier(0.33, 0.0, 0.67, 1.0)),
             "easein" | "easyeasein" => return Ok(Ease::Bezier(0.42, 0.0, 1.0, 1.0)),
             "easeout" | "easyeaseout" => return Ok(Ease::Bezier(0.0, 0.0, 0.58, 1.0)),
             "easeinout" => return Ok(Ease::Bezier(0.42, 0.0, 0.58, 1.0)),
@@ -128,6 +128,16 @@ impl Ease {
                     format!("bezier({},{},{},{})", fmt_num(*a), fmt_num(*b), fmt_num(*c), fmt_num(*d))
                 }
             }
+        }
+    }
+
+    /// The same curve played backwards (for time-reversed keyframes).
+    pub fn reversed(&self) -> Ease {
+        match *self {
+            Ease::In(c) => Ease::Out(c),
+            Ease::Out(c) => Ease::In(c),
+            Ease::Bezier(x1, y1, x2, y2) => Ease::Bezier(1.0 - x2, 1.0 - y2, 1.0 - x1, 1.0 - y1),
+            e => e,
         }
     }
 

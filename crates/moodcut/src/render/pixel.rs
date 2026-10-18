@@ -638,3 +638,119 @@ fn sample_bicubic(sd: &[u8], sw: i32, sh: i32, sx: f32, sy: f32) -> [u8; 4] {
     let a = acc[3].round().clamp(0.0, 255.0);
     [acc[0].round().clamp(0.0, a) as u8, acc[1].round().clamp(0.0, a) as u8, acc[2].round().clamp(0.0, a) as u8, a as u8]
 }
+
+/// Separable blend function on straight colors (W3C style), or None.
+fn blend_fn(mode: &str) -> Option<fn(f32, f32) -> f32> {
+    fn burn(b: f32, s: f32) -> f32 {
+        if s <= 0.0 {
+            0.0
+        } else {
+            1.0 - ((1.0 - b) / s).min(1.0)
+        }
+    }
+    fn dodge(b: f32, s: f32) -> f32 {
+        if s >= 1.0 {
+            1.0
+        } else {
+            (b / (1.0 - s)).min(1.0)
+        }
+    }
+    fn vivid(b: f32, s: f32) -> f32 {
+        if s < 0.5 {
+            burn(b, 2.0 * s)
+        } else {
+            dodge(b, 2.0 * (s - 0.5))
+        }
+    }
+    Some(match mode {
+        "subtract" => |b, s| (b - s).max(0.0),
+        "divide" => |b, s| if s <= 0.0 { 1.0 } else { (b / s).min(1.0) },
+        "linearburn" => |b, s| (b + s - 1.0).max(0.0),
+        "linearlight" => |b, s| (b + 2.0 * s - 1.0).clamp(0.0, 1.0),
+        "vividlight" => vivid,
+        "pinlight" => |b, s| if s < 0.5 { b.min(2.0 * s) } else { b.max(2.0 * s - 1.0) },
+        "hardmix" => |b, s| if vivid(b, s) < 0.5 { 0.0 } else { 1.0 },
+        _ => return None,
+    })
+}
+
+/// Blend modes tiny-skia doesn't have (Photoshop / After Effects): subtract,
+/// divide, linear burn/light, vivid/pin light, hard mix, darker/lighter color,
+/// dissolve, and the stencil / silhouette modes that cut the layers below.
+/// Returns false for modes handled elsewhere.
+pub fn blend_custom(dst: &mut Pixmap, src: &Pixmap, ox: i32, oy: i32, opacity: f32, mode: &str) -> bool {
+    let sep = blend_fn(mode);
+    let stencil = matches!(mode, "stencilalpha" | "stencilluma");
+    let cut = stencil || matches!(mode, "silhouettealpha" | "silhouetteluma");
+    if sep.is_none() && !cut && !matches!(mode, "darkercolor" | "lightercolor" | "dissolve") {
+        return false;
+    }
+    let (dw, dh) = (dst.width() as i32, dst.height() as i32);
+    let (sw, sh) = (src.width() as i32, src.height() as i32);
+    let op = opacity.clamp(0.0, 1.0);
+    let sd = src.data();
+    let lum = |p: [f32; 3]| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+    dst.data_mut().par_chunks_mut(dw as usize * 4).enumerate().for_each(|(y, row)| {
+        let y = y as i32;
+        let sy = y - oy;
+        for x in 0..dw {
+            let sx = x - ox;
+            let d = &mut row[x as usize * 4..x as usize * 4 + 4];
+            let inside = sy >= 0 && sy < sh && sx >= 0 && sx < sw && y < dh;
+            let s: [f32; 4] = if inside {
+                let i = ((sy * sw + sx) * 4) as usize;
+                [sd[i] as f32 / 255.0, sd[i + 1] as f32 / 255.0, sd[i + 2] as f32 / 255.0, sd[i + 3] as f32 / 255.0]
+            } else {
+                [0.0; 4]
+            };
+            if cut {
+                // matte modes scale what is already there
+                let k = if mode.ends_with("luma") { lum([s[0], s[1], s[2]]) * op } else { s[3] * op };
+                let k = if stencil { k } else { 1.0 - k };
+                if k < 1.0 {
+                    for c in d.iter_mut() {
+                        *c = (*c as f32 * k + 0.5) as u8;
+                    }
+                }
+                continue;
+            }
+            let sa = s[3] * op;
+            if sa <= 0.0 {
+                continue;
+            }
+            let da = d[3] as f32 / 255.0;
+            let cs = [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
+            if mode == "dissolve" {
+                // opacity is the chance a source pixel lands, at full strength
+                let h = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
+                let h = (h ^ (h >> 15)).wrapping_mul(0x2C1B_3C6D);
+                if ((h >> 8) & 0xffff) as f32 / 65535.0 < sa {
+                    for k in 0..3 {
+                        d[k] = (cs[k].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    }
+                    d[3] = 255;
+                }
+                continue;
+            }
+            let cd = if da > 0.0 { [d[0] as f32 / 255.0 / da, d[1] as f32 / 255.0 / da, d[2] as f32 / 255.0 / da] } else { [0.0; 3] };
+            let b: [f32; 3] = match sep {
+                Some(f) => [f(cd[0], cs[0]), f(cd[1], cs[1]), f(cd[2], cs[2])],
+                None => {
+                    let darker = mode == "darkercolor";
+                    if (lum(cs) < lum(cd)) == darker {
+                        cs
+                    } else {
+                        cd
+                    }
+                }
+            };
+            let ao = sa + da * (1.0 - sa);
+            for k in 0..3 {
+                let co = cs[k] * sa * (1.0 - da) + cd[k] * da * (1.0 - sa) + sa * da * b[k];
+                d[k] = (co.clamp(0.0, ao) * 255.0 + 0.5) as u8;
+            }
+            d[3] = (ao * 255.0 + 0.5) as u8;
+        }
+    });
+    true
+}

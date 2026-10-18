@@ -382,7 +382,7 @@ impl<'a> Exec<'a> {
         let (beats, bpm, _, _, _) = self.beat_times(&key, every)?;
         let ci = self.ci();
         for (i, b) in beats.iter().enumerate() {
-            self.p.comps[ci].markers.push(Marker { t: *b, name: format!("b{}", i + 1), color: None });
+            self.p.comps[ci].markers.push(Marker::new(*b, format!("b{}", i + 1)));
         }
         self.p.comps[ci].markers.sort_by(|x, y| x.t.partial_cmp(&y.t).unwrap());
         self.note(format!("+{} beat marker(s) @{} BPM (named b1, b2 ...; use @b4 as a time)", beats.len(), fmt_num(bpm.round())));
