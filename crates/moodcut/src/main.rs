@@ -112,6 +112,9 @@ enum Cmd {
         #[arg(long, default_value_t = 1.0)]
         scale: f32,
     },
+    /// Print the MoodCut Script reference as Markdown.
+    #[command(hide = true)]
+    Docs,
     /// Install FFmpeg (Windows: winget) and optional extras.
     Setup,
     /// Register MoodCut in Claude Desktop's MCP config.
@@ -156,7 +159,7 @@ fn real_main() -> Result<()> {
                 eng.open(&p)?;
             }
             if !allow.is_empty() {
-                let roots: Vec<PathBuf> = allow.iter().map(|a| std::fs::canonicalize(a).unwrap_or_else(|_| PathBuf::from(a))).collect();
+                let roots: Vec<PathBuf> = allow.iter().map(|a| engine::resolve_path(std::path::Path::new(a))).collect();
                 *eng.roots.write() = Some(roots);
             }
             let (host, token) = if public { ("0.0.0.0".to_string(), Some(token.unwrap_or_else(server::random_token))) } else { (host, token) };
@@ -225,6 +228,10 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Cmd::Doctor => setup::doctor(),
+        Cmd::Docs => {
+            print!("{}", mcp::docs::reference_markdown());
+            Ok(())
+        }
         Cmd::Bench { project, range, scale } => {
             let eng = load_engine()?;
             eng.open(&project)?;

@@ -69,13 +69,14 @@ export function compDuration(c: Comp): number {
   return e;
 }
 
-export function itemLabel(it: Item, mediaName?: string): string {
+/** `srcName` is the media name for clips and the comp name for nested comps. */
+export function itemLabel(it: Item, srcName?: string): string {
   if (it.name) return it.name;
   switch (it.kind) {
     case "text":
       return (it.text || "").replace(/\n/g, " ");
     case "clip":
-      return mediaName || it.src || it.id;
+      return srcName || it.src || it.id;
     case "shape":
       return (it.shapes || []).map((s) => s.kind).join(" + ") || "shape";
     case "solid":
@@ -83,7 +84,7 @@ export function itemLabel(it: Item, mediaName?: string): string {
     case "adjust":
       return "Adjustment";
     case "comp":
-      return `Comp ${it.src}`;
+      return srcName || `Comp ${it.src}`;
   }
 }
 

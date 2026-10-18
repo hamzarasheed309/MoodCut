@@ -322,7 +322,7 @@ export function Timeline() {
     g.fillRect(x, y, w, 14);
     g.fillStyle = "#fff";
     g.font = "600 10.5px Inter, system-ui";
-    const label = `${itemLabel(it, m?.name)}`;
+    const label = itemLabel(it, it.kind === "comp" ? project.value?.comps.find((c) => c.id === it.src)?.name : m?.name);
     const sp = speedOf(it);
     const extra = (sp !== 1 ? ` ${sp}x` : "") + (it.props?.reverse ? " ⟲" : "") + ((it.fx || []).length ? " ƒ" : "");
     g.fillText(label + extra, x + 5, y + 10.5, Math.max(10, w - 8));

@@ -667,13 +667,23 @@ pub fn item_prop(kind: ItemKind, name: &str) -> Option<&'static P> {
 pub fn suggest<'a>(cands: impl Iterator<Item = &'a str>, name: &str) -> Option<String> {
     let l = name.to_ascii_lowercase();
     let mut best: Option<(usize, &str)> = None;
+    // fallback for abbreviations ('type' -> typeOut/typewriter, 'punchin' -> zoomPunchIn)
+    let mut part: Vec<&str> = vec![];
     for c in cands {
-        let d = levenshtein(&l, &c.to_ascii_lowercase());
+        let cl = c.to_ascii_lowercase();
+        let d = levenshtein(&l, &cl);
         if d <= 2.max(l.len() / 3) && best.map(|(bd, _)| d < bd).unwrap_or(true) {
             best = Some((d, c));
         }
+        if l.len() >= 3 && (cl.starts_with(&l) || (l.len() >= 5 && cl.contains(&l))) && !part.contains(&c) {
+            part.push(c);
+        }
     }
-    best.map(|(_, c)| c.to_string())
+    part.sort_by_key(|c| c.len());
+    let mut out: Vec<&str> = best.map(|(_, c)| c).into_iter().collect();
+    out.extend(part.into_iter().filter(|c| Some(*c) != best.map(|(_, b)| b)));
+    // callers wrap the result as "Did you mean '{h}'?"
+    (!out.is_empty()).then(|| out.into_iter().take(3).collect::<Vec<_>>().join("' or '"))
 }
 
 pub fn levenshtein(a: &str, b: &str) -> usize {

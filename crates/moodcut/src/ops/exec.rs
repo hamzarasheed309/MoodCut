@@ -76,8 +76,8 @@ fn parse_id_range(s: &str) -> Option<(&str, u32, u32)> {
     (pa == pb && na <= nb).then_some((pa, na, nb))
 }
 
-/// Merges consecutive log lines that differ only by item id
-/// (`~c2.f1 sat=110` x30 -> `~c2..c31.f1 sat=110`) to keep replies small.
+/// Merges log lines that differ only by item id (`~c2.f1 sat=110` x30 ->
+/// `~c2..c31.f1 sat=110`), at the position of the first one, to keep replies small.
 fn compact_log(log: Vec<String>) -> Vec<String> {
     // (sign, id prefix, id number, rest of line)
     fn parts(l: &str) -> Option<(char, &str, u32, &str)> {
@@ -87,39 +87,38 @@ fn compact_log(log: Vec<String>) -> Vec<String> {
         let (pre, n) = split_id(&body[..end])?;
         Some((sign, pre, n, &body[end..]))
     }
+    let mut groups: std::collections::HashMap<(char, &str, &str), Vec<u32>> = std::collections::HashMap::new();
+    for l in &log {
+        if let Some((sign, pre, n, rest)) = parts(l) {
+            groups.entry((sign, pre, rest)).or_default().push(n);
+        }
+    }
     let mut out: Vec<String> = Vec::with_capacity(log.len());
-    let mut i = 0;
-    while i < log.len() {
-        let Some((sign, pre, n0, rest)) = parts(&log[i]) else {
-            out.push(log[i].clone());
-            i += 1;
+    for l in &log {
+        let Some((sign, pre, _, rest)) = parts(l) else {
+            out.push(l.clone());
             continue;
         };
-        let mut nums = vec![n0];
-        let mut j = i + 1;
-        while let Some((s2, p2, n2, r2)) = log.get(j).and_then(|l| parts(l)) {
-            if s2 != sign || p2 != pre || r2 != rest {
-                break;
-            }
-            nums.push(n2);
-            j += 1;
-        }
+        let Some(nums) = groups.get(&(sign, pre, rest)) else { continue }; // already merged
         if nums.len() < 3 {
-            out.extend(log[i..j].iter().cloned());
-        } else {
-            let mut runs: Vec<String> = vec![];
-            let mut k = 0;
-            while k < nums.len() {
-                let mut e = k;
-                while e + 1 < nums.len() && nums[e + 1] == nums[e] + 1 {
-                    e += 1;
-                }
-                runs.push(if e > k { format!("{pre}{}..{pre}{}", nums[k], nums[e]) } else { format!("{pre}{}", nums[k]) });
-                k = e + 1;
-            }
-            out.push(format!("{sign}{}{rest}", runs.join(",")));
+            out.push(l.clone());
+            continue;
         }
-        i = j;
+        let mut nums = nums.clone();
+        nums.sort_unstable();
+        nums.dedup();
+        let mut runs: Vec<String> = vec![];
+        let mut k = 0;
+        while k < nums.len() {
+            let mut e = k;
+            while e + 1 < nums.len() && nums[e + 1] == nums[e] + 1 {
+                e += 1;
+            }
+            runs.push(if e > k { format!("{pre}{}..{pre}{}", nums[k], nums[e]) } else { format!("{pre}{}", nums[k]) });
+            k = e + 1;
+        }
+        out.push(format!("{sign}{}{rest}", runs.join(",")));
+        groups.remove(&(sign, pre, rest));
     }
     out
 }

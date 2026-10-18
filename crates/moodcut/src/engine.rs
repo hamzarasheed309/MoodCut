@@ -141,10 +141,11 @@ impl Engine {
     }
 
     /// Rejects paths outside the allowed roots (only when roots are configured).
+    /// Works for paths that don't exist yet (save / render targets).
     pub fn check_path(&self, path: &str) -> Result<()> {
         let roots = self.roots.read();
         let Some(roots) = roots.as_ref() else { return Ok(()) };
-        let p = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let p = resolve_path(Path::new(path));
         if roots.iter().any(|r| p.starts_with(r)) {
             Ok(())
         } else {
@@ -344,7 +345,7 @@ impl Engine {
             }
             None => cur.ok_or_else(|| anyhow!("project has no file yet; save with a path (e.g. C:/Videos/MyEdit.mcut)"))?,
         };
-        self.check_path(target.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default().as_str()).ok();
+        self.check_path(&target.to_string_lossy())?;
         if let Some(d) = target.parent() {
             if !d.as_os_str().is_empty() {
                 std::fs::create_dir_all(d)?;
@@ -494,6 +495,8 @@ impl Engine {
         if opts.out.as_os_str().is_empty() {
             let pr = encode::resolve_preset(&opts.preset, &self.ff, &opts.hw)?;
             opts.out = encode::default_out(path.as_deref(), &p.name, pr.ext);
+        } else {
+            self.check_path(&opts.out.to_string_lossy())?;
         }
         let id = format!("r{}", self.jobs.lock().len() + 1);
         let job = Arc::new(Job { id: id.clone(), opts: opts.clone(), prog: Progress::default(), started: Instant::now(), result: Mutex::new(None) });
@@ -550,4 +553,44 @@ pub fn glob_match(pat: &str, name: &str) -> bool {
         }
     }
     rec(&p, &n)
+}
+
+/// Canonical form of a path that may not exist yet: the longest existing prefix
+/// is canonicalized and the rest is applied lexically, so `allowed/../x` can't
+/// slip past a `starts_with` check.
+pub fn resolve_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let abs = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(path) };
+    let comps: Vec<Component> = abs.components().collect();
+    for i in (1..=comps.len()).rev() {
+        let prefix: PathBuf = comps[..i].iter().collect();
+        if let Ok(mut out) = std::fs::canonicalize(&prefix) {
+            for c in &comps[i..] {
+                match c {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::Normal(n) => out.push(n),
+                    _ => {}
+                }
+            }
+            return out;
+        }
+    }
+    abs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_path;
+
+    #[test]
+    fn resolve_path_handles_missing_parts_and_dotdot() {
+        let base = std::env::temp_dir().join("moodcut-resolve-test");
+        std::fs::create_dir_all(base.join("allowed")).unwrap();
+        let root = std::fs::canonicalize(base.join("allowed")).unwrap();
+        assert!(resolve_path(&base.join("allowed/new/dir/out.mp4")).starts_with(&root));
+        assert!(!resolve_path(&base.join("allowed/missing/../../secret.txt")).starts_with(&root));
+        assert!(!resolve_path(&base.join("allowed/../secret.txt")).starts_with(&root));
+    }
 }

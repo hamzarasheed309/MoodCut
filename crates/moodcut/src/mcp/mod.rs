@@ -409,9 +409,6 @@ impl Mcp {
                     }
                     None => (0.0, 0.0),
                 };
-                if let Some(o) = s(a, "out") {
-                    eng.check_path(std::path::Path::new(&o).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default().as_str()).ok();
-                }
                 let opts = RenderOpts {
                     comp: s(a, "comp").unwrap_or_default(),
                     t0,

@@ -285,4 +285,21 @@ fn repeated_log_lines_are_compacted_and_ranges_resolve() {
     let log = ok(&mut p, "fx c2..c4 blur");
     assert!(log[0].starts_with("+c2..c4.f2 blur"), "{log:?}");
     assert!(err(&mut p, "fx c7..c9 blur").contains("no items in range"));
+    // interleaved lines (~cN.f1 / +cN.f2 per clip) still group
+    let mut p = proj();
+    ok(&mut p, "append /v/a.mp4[0-2] /v/a.mp4[2-4] /v/a.mp4[4-6] /v/a.mp4[6-8] /v/a.mp4[8-10]");
+    let log = ok(&mut p, "color V1 cinematic");
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert!(log[1].starts_with("+c1..c5.f"), "{log:?}");
+}
+
+#[test]
+fn abbreviations_get_suggestions() {
+    let mut p = proj();
+    let e = err(&mut p, "text 'Ship it' at=0 dur=2 enter=type");
+    assert!(e.contains("'typewriter'"), "{e}");
+    let mut p = proj();
+    ok(&mut p, "add /v/a.mp4");
+    let e = err(&mut p, "anim c1 punchin at=1");
+    assert!(e.contains("'zoomPunchIn'"), "{e}");
 }
