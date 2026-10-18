@@ -49,12 +49,20 @@ pub fn tools() -> Value {
         },
         {
             "name": "media",
-            "description": "Import media (files, folders, globs like C:/clips/*.mp4) or list imported media. Returns ids (m1..) with type, size, fps, duration.",
+            "description": "The media library (scales to thousands of files). action:\n\
+import: paths = files, folders (recursive by default), globs (D:/shoot/**/*.mp4) or http(s) URLs; tag='day1' tags them. Unreadable files are skipped and reported.\n\
+list: compact lines, filters kind (video|audio|image|graphic|still) q (words in name/path/note/tags) tag min_dur max_dur orientation (landscape|portrait|square) used (bool), sort (name|dur|date|size|path), offset/limit paging, detail=2 adds paths.\n\
+find: browse a disk folder without importing (path, pattern, recursive, files=true lists names).\n\
+Organise with edit lines: tag m1..m40 broll | note m3 'drone over beach at sunset' | untag | relink m3 <path> | unimport m5. See footage with preview media=...",
             "inputSchema": {"type": "object", "properties": {
-                "action": {"type": "string", "enum": ["import", "list"]},
-                "paths": {"type": "array", "items": {"type": "string"}}
+                "action": {"type": "string", "enum": ["import", "list", "find"]},
+                "paths": {"type": "array", "items": {"type": "string"}}, "recursive": {"type": "boolean"}, "tag": {"type": "string"},
+                "kind": {"type": "string"}, "q": {"type": "string"}, "min_dur": {"type": "number"}, "max_dur": {"type": "number"},
+                "orientation": {"type": "string"}, "used": {"type": "boolean"}, "sort": {"type": "string"},
+                "offset": {"type": "integer"}, "limit": {"type": "integer"}, "detail": {"type": "integer"},
+                "path": {"type": "string"}, "pattern": {"type": "string"}, "files": {"type": "boolean"}
             }, "required": ["action"]},
-            "annotations": {"title": "Media", "destructiveHint": false, "openWorldHint": false}
+            "annotations": {"title": "Media library", "destructiveHint": false, "openWorldHint": true}
         },
         {
             "name": "edit",
@@ -70,25 +78,27 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "view",
-            "description": "Read state as compact text. what: timeline (default; detail 0 summary, 1 items, 2 all props) | item (id) | media | comps | markers | transcript (id) | history | log | json (id or comp).",
+            "description": "Read state as compact text. what: timeline (default; detail 0 summary, 1 items, 2 all props) | item (id) | media | comps | markers | transcript (id) | search (q: words in media names/notes/tags and every analyzed transcript, with times) | history | log | json (id or comp).",
             "inputSchema": {"type": "object", "properties": {
-                "what": {"type": "string", "enum": ["timeline", "item", "media", "comps", "markers", "transcript", "history", "log", "json"]},
-                "id": {"type": "string"}, "detail": {"type": "integer", "minimum": 0, "maximum": 2}, "comp": {"type": "string"}
+                "what": {"type": "string", "enum": ["timeline", "item", "media", "comps", "markers", "transcript", "search", "history", "log", "json"]},
+                "id": {"type": "string"}, "detail": {"type": "integer", "minimum": 0, "maximum": 2}, "comp": {"type": "string"},
+                "q": {"type": "string"}, "limit": {"type": "integer"}
             }},
             "annotations": {"title": "View", "readOnlyHint": true, "openWorldHint": false}
         },
         {
             "name": "preview",
-            "description": "Look at the edit. t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Small widths save tokens (default 512 single, 240/thumb).",
+            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Small widths save tokens.",
             "inputSchema": {"type": "object", "properties": {
-                "t": {"type": "number"}, "times": {"type": "array", "items": {"type": "number"}}, "n": {"type": "integer", "minimum": 1, "maximum": 16},
-                "range": {"type": "string", "description": "a-b seconds"}, "width": {"type": "integer"}, "comp": {"type": "string"}
+                "t": {"type": "number"}, "times": {"type": "array", "items": {"type": "number"}}, "n": {"type": "integer", "minimum": 1, "maximum": 24},
+                "range": {"type": "string", "description": "a-b seconds"}, "width": {"type": "integer"}, "comp": {"type": "string"},
+                "media": {"type": "string"}, "offset": {"type": "integer"}
             }},
             "annotations": {"title": "Preview frames", "readOnlyHint": true, "openWorldHint": false}
         },
         {
             "name": "analyze",
-            "description": "Analyze media or a clip's media (cached): silence (thresh,min) | scenes (thresh) | loudness | beats | transcript (lang, model, src=.srt) | black | stats (exposure hints).",
+            "description": "Analyze media or a clip's media (cached): silence (thresh,min) | scenes (thresh) | loudness | beats | transcript (lang, model, src=.srt) | black | stats (exposure hints). target can be many: m1..m40, all, tag:interviews, kind:video (runs in parallel, one line each).",
             "inputSchema": {"type": "object", "properties": {
                 "target": {"type": "string"}, "kind": {"type": "string", "enum": ["silence", "scenes", "loudness", "beats", "transcript", "black", "stats"]},
                 "params": {"type": "object", "additionalProperties": {"type": ["string", "number"]}}
@@ -242,23 +252,33 @@ impl Mcp {
 
     fn t_media(&self, eng: &Arc<Engine>, a: &Value) -> anyhow::Result<String> {
         let action = s(a, "action").unwrap_or_else(|| "list".into());
-        if action == "import" {
-            let paths: Vec<String> = match &a["paths"] {
-                Value::Array(v) => v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect(),
-                Value::String(x) => vec![x.clone()],
-                _ => vec![],
-            };
-            if paths.is_empty() {
-                anyhow::bail!("import needs paths");
+        let paths: Vec<String> = match &a["paths"] {
+            Value::Array(v) => v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect(),
+            Value::String(x) => vec![x.clone()],
+            _ => s(a, "path").into_iter().collect(),
+        };
+        match action.as_str() {
+            "import" => {
+                if paths.is_empty() {
+                    anyhow::bail!("import needs paths");
+                }
+                for p in paths.iter().filter(|p| !p.starts_with("http")) {
+                    eng.check_path(p)?;
+                }
+                let tags: Vec<String> = s(a, "tag").map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+                let out = eng.import_with(&paths, a["recursive"].as_bool().unwrap_or(true), &tags, "mcp")?;
+                Ok(out.log.join("\n"))
             }
-            for p in &paths {
-                eng.check_path(p)?;
+            "find" | "browse" | "scan" => {
+                let root = paths.first().cloned().ok_or_else(|| anyhow::anyhow!("find needs path (a folder)"))?;
+                eng.find_files(&root, s(a, "pattern").as_deref(), a["recursive"].as_bool().unwrap_or(true), a["files"].as_bool().unwrap_or(false), a["limit"].as_u64().unwrap_or(200) as usize)
             }
-            let out = eng.import(&paths, "mcp")?;
-            return Ok(out.log.join("\n"));
+            _ => {
+                let f = crate::library::filter_from_json(a);
+                let limit = a["limit"].as_u64().unwrap_or(80).clamp(1, 1000) as usize;
+                Ok(eng.media_listing(&f, &s(a, "sort").unwrap_or_default(), a["offset"].as_u64().unwrap_or(0) as usize, limit, a["detail"].as_u64().unwrap_or(1) as u8))
+            }
         }
-        let (p, ..) = eng.snapshot();
-        Ok(outline::media_list(&p, a["detail"].as_u64().unwrap_or(1) as u8))
     }
 
     fn t_edit(&self, eng: &Arc<Engine>, a: &Value) -> anyhow::Result<String> {
@@ -294,7 +314,11 @@ impl Mcp {
                     outline::item_detail(&p, it)
                 }
             }
-            "media" => outline::media_list(&p, detail.max(1)),
+            "media" => eng.media_listing(&Default::default(), "", 0, 200, detail.max(1)),
+            "search" | "find" => {
+                let q = s(a, "q").or_else(|| s(a, "id")).ok_or_else(|| anyhow::anyhow!("view search needs q"))?;
+                eng.search(&q, a["limit"].as_u64().unwrap_or(40).clamp(1, 500) as usize)
+            }
             "comps" => outline::comps_list(&p, &active),
             "markers" => {
                 let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
@@ -338,6 +362,25 @@ impl Mcp {
     fn t_preview(&self, eng: &Arc<Engine>, a: &Value) -> Value {
         let r = (|| -> anyhow::Result<(Vec<u8>, String)> {
             let (p, _, active, _) = eng.snapshot();
+            if let Some(spec) = s(a, "media") {
+                let ids = crate::library::select_media(&p, &spec)?;
+                let parse_range = |r: String| r.split_once('-').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)));
+                let (pm, cap) = if ids.len() == 1 && (a["n"].as_u64().unwrap_or(6) > 1 || a.get("range").is_some()) {
+                    eng.media_strip(&ids[0], a["n"].as_u64().unwrap_or(6) as usize, s(a, "range").and_then(parse_range), a["width"].as_u64().unwrap_or(240) as u32)?
+                } else {
+                    let off = a["offset"].as_u64().unwrap_or(0) as usize;
+                    let page: Vec<String> = ids.iter().skip(off).take(48).cloned().collect();
+                    if page.is_empty() {
+                        anyhow::bail!("offset {off} is past the {} matching media", ids.len());
+                    }
+                    let (pm, mut cap) = eng.media_sheet(&page, a["width"].as_u64().unwrap_or(if page.len() > 24 { 160 } else { 200 }) as u32)?;
+                    if ids.len() > off + page.len() {
+                        cap.push_str(&format!(" (of {}; next offset={})", ids.len(), off + page.len()));
+                    }
+                    (pm, cap)
+                };
+                return Ok((encode::encode_jpeg(&pm, 78)?, cap));
+            }
             let comp = s(a, "comp").unwrap_or(active);
             let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
             // default range: where the pictures are (a long music bed shouldn't stretch the sheet)
@@ -405,6 +448,14 @@ impl Mcp {
                     other => other.to_string(),
                 };
                 opts.insert(k.clone(), vs);
+            }
+        }
+        let (p, ..) = eng.snapshot();
+        let single = p.media(&target).is_some() || p.item(&target).is_some();
+        if !single {
+            let ids = crate::library::select_media(&p, &target)?;
+            if ids.len() > 1 {
+                return eng.analyze_many(&ids, &kind, &opts);
             }
         }
         let (mid, v) = eng.analyze(&target, &kind, &opts)?;

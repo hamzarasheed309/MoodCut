@@ -684,6 +684,11 @@ impl<'a> Exec<'a> {
         let mut a = A::new(c);
         match c.verb.as_str() {
             "import" => self.c_import(&mut a),
+            "tag" => self.c_tag(&mut a, true),
+            "untag" => self.c_tag(&mut a, false),
+            "note" | "describe" => self.c_media_note(&mut a),
+            "relink" => self.c_relink(&mut a),
+            "unimport" => self.c_unimport(&mut a),
             "comp" | "seq" | "sequence" => self.c_comp(&mut a),
             "track" => self.c_track(&mut a),
             "add" | "place" | "overlay" => self.c_add(&mut a, false),
@@ -761,13 +766,21 @@ impl<'a> Exec<'a> {
 
     fn c_import(&mut self, a: &mut A) -> Result<()> {
         let alias = a.take(&["as", "name"]);
+        let tags: Vec<String> = a.take(&["tag", "tags"]).map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let paths: Vec<String> = a.pos.drain(..).collect();
         if paths.is_empty() {
-            bail!("import <path> [path...]");
+            bail!("import <path> [path...] [as=name] [tag=a,b]");
         }
         let single = paths.len() == 1;
         for p in paths {
             let id = self.import_path(&p, if single { alias.clone() } else { None })?;
+            if let Some(m) = self.p.media.iter_mut().find(|m| m.id == id) {
+                for t in &tags {
+                    if !m.tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                        m.tags.push(t.clone());
+                    }
+                }
+            }
             self.created.push(id);
         }
         Ok(())

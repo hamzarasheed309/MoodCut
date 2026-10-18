@@ -12,6 +12,7 @@ pub mod analyze;
 pub mod config;
 pub mod engine;
 pub mod gfx;
+pub mod library;
 pub mod mcp;
 pub mod model;
 pub mod ops;

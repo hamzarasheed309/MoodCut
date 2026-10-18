@@ -60,8 +60,10 @@ PLACE
  shape <rect|ellipse|circle|polygon|star|path|line|arrow> [w= h= fill= stroke= strokeW= radius=] [pos=..] [at dur]
  shape add <shapeLayer> ellipse ...  (more shapes in one layer)
  solid <color> [at dur] [w h radius color2 gradAngle]   adjust [at dur] [fx=blur,vignette]   (adjustment layer)
- import <path..> [as=name]       comp new 'Name' 1080x1920 30 | comp use s2 | comp main s2 | comp set s1 bg=#111 dur=20
+ import <path..> [as=name] [tag=a,b]   comp new 'Name' 1080x1920 30 | comp use s2 | comp main s2 | comp set s1 bg=#111 dur=20
  track add V|A [n] | track set V2 hidden=1 locked=1 mute=1 solo=1 vol=-3 | track del V3 [force]
+LIBRARY (media: m3, m1..m40, all, tag:x, kind:video|audio|image|graphic, q:words)
+ tag <media> broll,drone | untag <media> [tag] | note <media> 'what is in the shot' | relink m3 <new path> | unimport <media> [force]
 EDIT
  cut <id|V1|all> at=T[,T2]       trim <id> start=T|+d end=T|-d dur= in= [ripple]
  del <ids> [ripple|ripple=all]   move <ids> at=T|by=+2 [track=V2] [mode=overwrite]

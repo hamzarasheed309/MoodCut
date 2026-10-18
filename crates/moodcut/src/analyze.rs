@@ -624,6 +624,30 @@ pub fn summarize(kind: &str, v: &Value, max_items: usize) -> String {
             }
             s.trim_end().to_string()
         }
+        "stats" | "exposure" => {
+            let hints: Vec<&str> = v["hints"].as_array().map(|a| a.iter().filter_map(|h| h.as_str()).collect()).unwrap_or_default();
+            format!(
+                "luma {} ({}-{}) sat {} motion {}{}",
+                f(&json!(v["luma_avg"].as_f64().unwrap_or(0.0).round())),
+                f(&json!(v["luma_min"].as_f64().unwrap_or(0.0).round())),
+                f(&json!(v["luma_max"].as_f64().unwrap_or(0.0).round())),
+                f(&json!(v["sat_avg"].as_f64().unwrap_or(0.0).round())),
+                f(&json!((v["motion"].as_f64().unwrap_or(0.0) * 10.0).round() / 10.0)),
+                if hints.is_empty() { String::new() } else { format!(" | {}", hints.join("; ")) }
+            )
+        }
+        "loudness" | "lufs" => format!(
+            "{} LUFS, true peak {} dBTP, LRA {}{}",
+            f(&v["lufs"]),
+            f(&v["true_peak"]),
+            f(&v["lra"]),
+            v["hint"].as_str().map(|h| format!(" | {h}")).unwrap_or_default()
+        ),
+        "black" => {
+            let arr = v["black"].as_array().or(v["segments"].as_array()).cloned().unwrap_or_default();
+            let parts: Vec<String> = arr.iter().take(max_items).map(|r| if r.is_array() { format!("{}-{}", f(&r[0]), f(&r[1])) } else { format!("{}-{}", f(&r["s"]), f(&r["e"])) }).collect();
+            format!("{} black segment(s){}{}", arr.len(), if parts.is_empty() { String::new() } else { format!(": {}", parts.join(" ")) }, if arr.len() > max_items { " …" } else { "" })
+        }
         _ => serde_json::to_string(v).unwrap_or_default(),
     }
 }

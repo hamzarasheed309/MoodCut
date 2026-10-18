@@ -306,3 +306,36 @@ fn abbreviations_get_suggestions() {
     let e = err(&mut p, "anim c1 punchin at=1");
     assert!(e.contains("'zoomPunchIn'"), "{e}");
 }
+
+#[test]
+fn media_tags_notes_selectors_and_unimport() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4 /v/b.mp4 /v/c.mp4 /v/song.mp3 /v/logo.png tag=day1");
+    assert!(p.media.iter().all(|m| m.tags == vec!["day1".to_string()]));
+    let log = ok(&mut p, "tag m1..m3 broll\nnote m2 'drone over the beach'\nuntag m3 day1");
+    assert!(log[0].contains("tagged broll"), "{log:?}");
+    use crate::library::select_media;
+    assert_eq!(select_media(&p, "tag:broll").unwrap(), vec!["m1", "m2", "m3"]);
+    assert_eq!(select_media(&p, "kind:audio").unwrap(), vec!["m4"]);
+    assert_eq!(select_media(&p, "q:beach").unwrap(), vec!["m2"]);
+    assert_eq!(select_media(&p, "m2..m4,m1").unwrap(), vec!["m2", "m3", "m4", "m1"]);
+    assert!(select_media(&p, "m9").unwrap_err().to_string().contains("unknown media"));
+    assert_eq!(p.media(&"m3".to_string()).unwrap().tags, vec!["broll".to_string()]);
+    ok(&mut p, "add m1");
+    let e = err(&mut p, "unimport m1");
+    assert!(e.contains("add `force`"), "{e}");
+    ok(&mut p, "unimport m1 force");
+    assert!(p.media("m1").is_none());
+    assert!(p.main_comp().unwrap().items().next().is_none());
+    ok(&mut p, "relink m2 /v/other.mp4");
+    let m2 = p.media("m2").unwrap();
+    assert_eq!((m2.path.as_str(), m2.note.as_str()), ("/v/other.mp4", "drone over the beach"));
+}
+
+#[test]
+fn library_formatting() {
+    use crate::library::fmt_dur;
+    assert_eq!(fmt_dur(12.34), "12.3s");
+    assert_eq!(fmt_dur(222.0), "3:42");
+    assert_eq!(fmt_dur(3723.0), "1:02:03");
+}

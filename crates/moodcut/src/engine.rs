@@ -90,6 +90,10 @@ pub struct Engine {
     analysis: Mutex<HashMap<String, Value>>,
     /// When set, file access from remote clients is limited to these roots.
     pub roots: RwLock<Option<Vec<PathBuf>>>,
+    /// Probe results by path|size|mtime (also cached on disk).
+    pub(crate) probes: Mutex<HashMap<String, Media>>,
+    /// Library thumbnails / filmstrip frames.
+    pub(crate) thumbs: Mutex<HashMap<String, Arc<resvg::tiny_skia::Pixmap>>>,
 }
 
 pub struct EditOutcome {
@@ -105,7 +109,7 @@ struct EnvImpl<'a> {
 impl<'a> Env for EnvImpl<'a> {
     fn probe(&self, path: &str) -> Result<Media> {
         self.eng.check_path(path)?;
-        self.eng.ff.probe(path)
+        self.eng.probe_cached(path)
     }
     fn analyze(&self, p: &Project, media: &str, kind: &str, opts: &BTreeMap<String, String>) -> Result<Value> {
         let m = p.media(media).ok_or_else(|| anyhow!("unknown media {media}"))?;
@@ -128,6 +132,8 @@ impl Engine {
             log: Mutex::new(VecDeque::new()),
             analysis: Mutex::new(HashMap::new()),
             roots: RwLock::new(None),
+            probes: Mutex::new(HashMap::new()),
+            thumbs: Mutex::new(HashMap::new()),
         })
     }
 
@@ -400,34 +406,6 @@ impl Engine {
         }
     }
 
-    /// Imports files, folders (media inside) and simple globs (*.mp4).
-    pub fn import(&self, paths: &[String], source: &str) -> Result<EditOutcome> {
-        let mut files = vec![];
-        for p in paths {
-            let pb = PathBuf::from(p);
-            if pb.is_dir() {
-                let mut v: Vec<PathBuf> = std::fs::read_dir(&pb)?.flatten().map(|e| e.path()).filter(|x| is_media(x)).collect();
-                v.sort();
-                files.extend(v);
-            } else if p.contains('*') {
-                let (dir, pat) = match pb.parent() {
-                    Some(d) if !d.as_os_str().is_empty() => (d.to_path_buf(), pb.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()),
-                    _ => (PathBuf::from("."), p.clone()),
-                };
-                let mut v: Vec<PathBuf> = std::fs::read_dir(&dir)?.flatten().map(|e| e.path()).filter(|x| glob_match(&pat, &x.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default())).collect();
-                v.sort();
-                files.extend(v);
-            } else {
-                files.push(pb);
-            }
-        }
-        if files.is_empty() {
-            bail!("no media files found");
-        }
-        let script = format!("import {}", files.iter().map(|f| crate::ops::lex::quote(&f.to_string_lossy())).collect::<Vec<_>>().join(" "));
-        self.edit(&script, source)
-    }
-
     fn analysis_key(m: &Media, kind: &str, opts: &BTreeMap<String, String>) -> String {
         let o: Vec<String> = opts.iter().filter(|(k, _)| *k != "src").map(|(k, v)| format!("{k}={v}")).collect();
         format!("{}|{}|{}|{}|{}", m.path, m.size, m.mtime, kind, o.join(","))
@@ -457,6 +435,18 @@ impl Engine {
         let _ = std::fs::write(&file, serde_json::to_string(&v).unwrap_or_default());
         self.analysis.lock().insert(key, v.clone());
         Ok(v)
+    }
+
+    /// A finished analysis from the memory/disk cache, without computing it.
+    pub fn cached_analysis(&self, m: &Media, kind: &str) -> Option<Value> {
+        let key = Self::analysis_key(m, kind, &BTreeMap::new());
+        if let Some(v) = self.analysis.lock().get(&key) {
+            return Some(v.clone());
+        }
+        let file = crate::config::cache_dir().join(format!("an_{:016x}.json", crate::render::eval::hash_str(&key)));
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()?;
+        self.analysis.lock().insert(key, v.clone());
+        Some(v)
     }
 
     /// Runs analysis for a media id or item id (item maps to its media) and records it in the project.

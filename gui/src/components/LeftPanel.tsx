@@ -4,20 +4,20 @@ import type { Media } from "../types";
 import { fmtNum } from "../util";
 
 function MediaCard({ m }: { m: Media }) {
-  const thumb = m.kind !== "audio" ? `url(/api/thumb?media=${m.id}&w=240)` : undefined;
   const add = () => run(`add ${m.id} at=${fmtNum(playhead.value, 4)}`);
   return (
     <div
       class="bin-item"
       draggable
-      title={`${m.path}\nDouble-click: add at playhead · drag onto the timeline`}
+      title={`${m.path}${m.note ? "\n" + m.note : ""}${m.tags?.length ? "\n#" + m.tags.join(" #") : ""}\nDouble-click: add at playhead · drag onto the timeline`}
       onDragStart={(e) => {
         e.dataTransfer!.setData("text/moodcut-media", m.id);
         e.dataTransfer!.effectAllowed = "copy";
       }}
       onDblClick={add}
     >
-      <div class={"bin-thumb" + (m.kind === "audio" ? " audio-thumb" : "") + (m.gfx ? " gfx-thumb" : "")} style={{ backgroundImage: thumb }}>
+      <div class={"bin-thumb" + (m.kind === "audio" ? " audio-thumb" : "") + (m.gfx ? " gfx-thumb" : "")}>
+        {m.kind !== "audio" && <img src={`/api/thumb?media=${m.id}&w=240`} loading="lazy" decoding="async" alt="" />}
         <span class="kind">{m.gfx ? "html" : m.kind}</span>
         {m.gfx && (
           <button class="btn sm edit-gfx" title="Edit the HTML and re-render" onClick={(e) => (e.stopPropagation(), (graphicEditor.value = { id: m.id }))}>
@@ -35,10 +35,19 @@ function MediaCard({ m }: { m: Media }) {
   );
 }
 
+const KINDS = ["all", "video", "audio", "image", "html"] as const;
+
 function ProjectTab() {
   const p = project.value;
   const [filter, setFilter] = useState("");
-  const media = (p?.media || []).filter((m) => !filter || m.name.toLowerCase().includes(filter.toLowerCase()));
+  const [kind, setKind] = useState<(typeof KINDS)[number]>("all");
+  const all = p?.media || [];
+  const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  const media = all.filter((m) => {
+    if (kind === "html" ? !m.gfx : kind !== "all" && (m.kind !== kind || m.gfx)) return false;
+    const text = `${m.id} ${m.name} ${m.note || ""} ${(m.tags || []).join(" ")}`.toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
   return (
     <div class="scroll">
       <div style={{ display: "flex", gap: "6px", padding: "8px 8px 0" }}>
@@ -52,7 +61,17 @@ function ProjectTab() {
           HTML
         </button>
       </div>
-      <input class="search" placeholder="Search media…" value={filter} onInput={(e) => setFilter((e.target as HTMLInputElement).value)} onKeyDown={(e) => e.stopPropagation()} />
+      <input class="search" placeholder="Search names, tags, notes…" value={filter} onInput={(e) => setFilter((e.target as HTMLInputElement).value)} onKeyDown={(e) => e.stopPropagation()} />
+      {all.length > 0 && (
+        <div class="kind-chips">
+          {KINDS.map((k) => (
+            <button key={k} class={"btn sm" + (kind === k ? " on" : "")} onClick={() => setKind(k)}>
+              {k}
+            </button>
+          ))}
+          <span class="count">{media.length === all.length ? `${all.length}` : `${media.length}/${all.length}`}</span>
+        </div>
+      )}
       {media.length === 0 ? (
         <div class="empty">No media yet.<br />Import files, or ask your AI to `media import` a folder.</div>
       ) : (

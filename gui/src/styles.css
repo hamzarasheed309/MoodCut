@@ -940,3 +940,27 @@ input[type="checkbox"] {
     grid-template-columns: 1fr;
   }
 }
+
+.bin-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.bin-thumb .kind,
+.bin-thumb .dur,
+.bin-thumb .edit-gfx {
+  z-index: 1;
+}
+.kind-chips {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 6px;
+  align-items: center;
+}
+.kind-chips .count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--faint);
+}

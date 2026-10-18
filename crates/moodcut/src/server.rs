@@ -37,6 +37,7 @@ struct AppState {
     mcp: Arc<Mcp>,
     token: Option<String>,
     cache: Mutex<HashMap<String, (Vec<u8>, &'static str)>>,
+    thumb_slots: tokio::sync::Semaphore,
 }
 
 type St = Arc<AppState>;
@@ -56,7 +57,7 @@ pub fn random_token() -> String {
 
 pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
     let mcp = Arc::new(Mcp::new(Ok(eng.clone())));
-    let st: St = Arc::new(AppState { eng: eng.clone(), mcp, token: o.token.clone(), cache: Mutex::new(HashMap::new()) });
+    let st: St = Arc::new(AppState { eng: eng.clone(), mcp, token: o.token.clone(), cache: Mutex::new(HashMap::new()), thumb_slots: tokio::sync::Semaphore::new(4) });
     let app = Router::new()
         .route("/api/ping", get(|| async { Json(json!({"app": "moodcut", "version": crate::VERSION})) }))
         .route("/api/state", get(api_state))
@@ -264,34 +265,31 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
     let (p, ..) = st.eng.snapshot();
     let Some(m) = p.media(&q.media).cloned() else { return err(StatusCode::NOT_FOUND, "no media") };
     let w = q.w.unwrap_or(160).clamp(16, 960);
-    let t = q.t.unwrap_or(if m.dur > 2.0 { 1.0 } else { 0.0 });
+    let t = q.t.unwrap_or_else(|| Engine::poster_time(&m));
     let key = format!("thumb|{}|{}|{:.2}|{w}", m.path, m.mtime, t);
     if let Some((b, mime)) = st.cache.lock().get(&key).cloned() {
-        return ([(header::CONTENT_TYPE, mime)], b).into_response();
+        return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
+    // a big library can request hundreds of thumbnails at once; decode a few at a time
+    let _permit = st.thumb_slots.acquire().await;
     let eng = st.eng.clone();
     let r = blocking(move || -> anyhow::Result<Vec<u8>> {
-        use crate::model::project::MediaKind;
-        match m.kind {
-            MediaKind::Audio => anyhow::bail!("audio has no thumbnail"),
-            MediaKind::Image | MediaKind::Svg => {
-                let h = ((m.h as f32 / m.w.max(1) as f32) * w as f32).round().max(2.0) as u32;
-                let pm = if m.kind == MediaKind::Svg { eng.frames.svg(&m.path, w, h)? } else { eng.frames.image(&m.path, w, h)? };
-                encode::encode_jpeg(&pm, 75)
-            }
-            MediaKind::Video => {
-                let (out, _) = eng.ff.run_capture(&[
-                    "-ss".into(), format!("{t:.3}"), "-i".into(), m.path.clone(), "-frames:v".into(), "1".into(), "-vf".into(), format!("scale={w}:-2"), "-f".into(), "image2pipe".into(), "-vcodec".into(), "mjpeg".into(), "-".into(),
-                ])?;
-                Ok(out)
-            }
+        if m.kind == crate::model::project::MediaKind::Audio {
+            anyhow::bail!("audio has no thumbnail");
         }
+        let pm = eng.media_frame(&m, t, w)?;
+        let pm = if m.alpha { crate::library::on_checker(&pm) } else { (*pm).clone() };
+        encode::encode_jpeg(&pm, 75)
     })
     .await;
     match r {
         Ok(b) => {
-            st.cache.lock().insert(key, (b.clone(), "image/jpeg"));
-            ([(header::CONTENT_TYPE, "image/jpeg")], b).into_response()
+            let mut c = st.cache.lock();
+            if c.len() > 2000 {
+                c.clear();
+            }
+            c.insert(key, (b.clone(), "image/jpeg"));
+            ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], b).into_response()
         }
         Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")),
     }
