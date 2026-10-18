@@ -579,3 +579,14 @@ fn nudge_moves_scales_and_keys() {
     assert_eq!(p.item("a").unwrap().props["pos"].k[1].v.vec(), (610.0, 500.0));
     assert!(err(&mut p, "nudge a").contains("nudge <ids>"));
 }
+
+#[test]
+fn move_accepts_mode_overwrite() {
+    let mut p = proj();
+    ok(&mut p, "solid #f00 at=0 dur=2 as=a\nsolid #0f0 at=2 dur=2 as=b");
+    // (the engine runs scripts on a copy; do the same for the failing one)
+    assert!(err(&mut p.clone(), "move a by=+0.5").contains("overlaps"));
+    ok(&mut p, "move a by=+0.5 mode=overwrite");
+    let b = p.item("b").unwrap();
+    assert_eq!((p.item("a").unwrap().start, b.start, b.dur), (0.5, 2.5, 1.5));
+}

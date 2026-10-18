@@ -1075,18 +1075,7 @@ impl<'a> Exec<'a> {
     }
 
     fn c_add(&mut self, a: &mut A, append: bool) -> Result<()> {
-        let mode = if a.flag("overwrite") {
-            Mode::Overwrite
-        } else if a.flag("insert") || a.flag("ripple") {
-            Mode::Insert
-        } else {
-            match a.take(&["mode"]).as_deref() {
-                Some("overwrite") => Mode::Overwrite,
-                Some("insert") | Some("ripple") => Mode::Insert,
-                Some("strict") | None => Mode::Strict,
-                Some(o) => bail!("mode must be strict|overwrite|insert, not {o}"),
-            }
-        };
+        let mode = place_mode(a)?;
         let mut track_spec = a.take(&["track", "t"]);
         let mut srcs = vec![];
         for p in a.pos.drain(..).collect::<Vec<_>>() {
@@ -1472,18 +1461,12 @@ impl<'a> Exec<'a> {
     }
 
     fn c_move(&mut self, a: &mut A) -> Result<()> {
-        let spec = a.shift().ok_or_else(|| anyhow!("move <ids> [at=T|by=±T] [track=V2]"))?;
+        let spec = a.shift().ok_or_else(|| anyhow!("move <ids> [at=T|by=±T] [track=V2] [mode=overwrite|insert]"))?;
         let ids = self.targets(&spec)?;
         let at = a.take(&["at", "to", "start"]);
         let by = a.take(&["by", "delta"]).or_else(|| a.shift());
         let track = a.take(&["track", "t"]).or_else(|| a.pos.iter().position(|p| parse_track_spec(p).is_some()).map(|i| a.pos.remove(i)));
-        let mode = if a.flag("overwrite") {
-            Mode::Overwrite
-        } else if a.flag("insert") {
-            Mode::Insert
-        } else {
-            Mode::Strict
-        };
+        let mode = place_mode(a)?;
         if at.is_none() && by.is_none() && track.is_none() {
             bail!("move needs at=, by= or track=");
         }
@@ -2040,6 +2023,22 @@ pub const VERBS: &[&str] = &[
     "color", "lut", "marker", "master", "name", "duck", "precomp", "autocut", "captions", "montage", "beats", "reframe", "title", "keep", "null", "camera", "roll",
     "lift", "extract", "swap", "paste", "stagger", "align", "nudge", "distribute", "ease", "workarea", "sound", "undo", "redo",
 ];
+
+/// How a placed clip treats clips already there: `overwrite` / `insert` (or `ripple`) as flags or `mode=`.
+fn place_mode(a: &mut A) -> Result<Mode> {
+    if a.flag("overwrite") {
+        return Ok(Mode::Overwrite);
+    }
+    if a.flag("insert") || a.flag("ripple") {
+        return Ok(Mode::Insert);
+    }
+    Ok(match a.take(&["mode"]).map(|m| m.to_ascii_lowercase()).as_deref() {
+        Some("overwrite") => Mode::Overwrite,
+        Some("insert") | Some("ripple") => Mode::Insert,
+        Some("strict") | None => Mode::Strict,
+        Some(o) => bail!("mode must be strict|overwrite|insert, not {o}"),
+    })
+}
 
 pub fn same_path(a: &str, b: &str) -> bool {
     let n = |s: &str| s.replace('\\', "/").to_ascii_lowercase();

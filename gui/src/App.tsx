@@ -1,4 +1,10 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { fitTimeline, installShortcuts, liftOrExtract, markWork, splitAtPlayhead } from "./actions";
+import { AudioPanel } from "./components/AudioPanel";
+import { ColorPanel } from "./components/ColorPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { MarkersPanel } from "./components/MarkersPanel";
+import { ToolsPanel, toolName } from "./components/Tools";
 import { Console } from "./components/Console";
 import { Inspector } from "./components/Inspector";
 import { LeftPanel } from "./components/LeftPanel";
@@ -13,20 +19,15 @@ import {
   comp,
   connected,
   dirty,
-  fps,
   logs,
   pickFiles,
   playhead,
-  playing,
   project,
   project_,
   projectPath,
   redoN,
   rev,
   run,
-  scrollX,
-  selection,
-  setPlayhead,
   showCheck,
   showRender,
   tool,
@@ -99,20 +100,39 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
 
 function TimelineToolbar() {
   const c = comp.value;
+  const w = c?.work;
   return (
     <div class="tl-toolbar">
-      <button class={"btn sm" + (tool.value === "select" ? " on" : "")} title="Select (V)" onClick={() => (tool.value = "select")}>
-        ↖ Select
-      </button>
-      <button class={"btn sm" + (tool.value === "razor" ? " on" : "")} title="Razor (C)" onClick={() => (tool.value = "razor")}>
-        ✂ Razor
-      </button>
+      <span class="tool-name" title="Current tool (see the Tools strip on the left)">{toolName(tool.value)}</span>
       <button class="btn sm" title="Split selected / all at playhead (Ctrl+K)" onClick={splitAtPlayhead}>
         Split
       </button>
       <button class="btn sm" title="Add marker (M)" onClick={() => run(`marker add ${fmtNum(playhead.value, 4)}`, true)}>
         ◆ Marker
       </button>
+      <span class="sep" />
+      <button class="btn sm" title="Work area in at playhead (I)" onClick={() => markWork("in")}>
+        {"{"} In
+      </button>
+      <button class="btn sm" title="Work area out at playhead (O)" onClick={() => markWork("out")}>
+        Out {"}"}
+      </button>
+      {w && (
+        <>
+          <span class="badge" title="Work area (render range=work; lift and extract use it). Shift+drag on the ruler to set it.">
+            {fmtNum(w[0], 2)}–{fmtNum(w[1], 2)}s
+          </span>
+          <button class="btn sm ghost" title="Lift: remove the work area, leave a gap (;)" onClick={() => liftOrExtract("lift")}>
+            Lift
+          </button>
+          <button class="btn sm ghost" title="Extract: remove the work area and close the gap (')" onClick={() => liftOrExtract("extract")}>
+            Extract
+          </button>
+          <button class="btn sm ghost" title="Clear work area (Ctrl+Shift+X)" onClick={() => run("workarea clear", true)}>
+            ✕
+          </button>
+        </>
+      )}
       <span style={{ flex: 1 }} />
       <span style={{ color: "var(--faint)", fontSize: "12px" }}>{c ? `${c.tracks.reduce((n, t) => n + t.items.length, 0)} items · ${fmtNum(compDuration(c), 2)}s` : ""}</span>
       <button class="btn sm ghost" title="Zoom out (-)" onClick={() => (zoom.value = Math.max(2, zoom.value / 1.4))}>
@@ -129,88 +149,35 @@ function TimelineToolbar() {
   );
 }
 
-function fitTimeline() {
-  const c = comp.value;
-  if (!c) return;
-  const w = (document.querySelector(".tl-canvas-wrap") as HTMLElement)?.clientWidth || 800;
-  zoom.value = Math.max(2, (w - 40) / Math.max(1, compDuration(c)));
-  scrollX.value = 0;
-}
-
-function splitAtPlayhead() {
-  const t = fmtNum(playhead.value, 4);
-  const sel = selection.value;
-  if (sel.length) run(`cut ${sel.join(",")} at=${t}`);
-  else run(`cut all at=${t}`);
-}
+type RightTab = "inspector" | "color" | "audio" | "markers" | "history" | "ai";
+const RIGHT_TABS: [RightTab, string, string][] = [
+  ["inspector", "Controls", "Inspector: properties, effects, masks, keyframes"],
+  ["color", "Lumetri", "Lumetri Color: correction, curves, wheels, HSL secondary"],
+  ["audio", "Audio", "Essential Sound and the Audio Track Mixer"],
+  ["markers", "Markers", "Markers"],
+  ["history", "History", "Undo history (yours and the AI's)"],
+  ["ai", "AI", "AI & Script console"],
+];
 
 export function App() {
   const [tlH, setTlH] = useState(320);
   const [connect, setConnect] = useState(false);
-  const [rightTab, setRightTab] = useState<"inspector" | "ai">("inspector");
+  const [rightTab, setRightTab] = useState<RightTab>(() => {
+    try {
+      return (localStorage.getItem("moodcut.rightTab") as RightTab) || "inspector";
+    } catch {
+      return "inspector";
+    }
+  });
+  const pickTab = (t: RightTab) => {
+    setRightTab(t);
+    try {
+      localStorage.setItem("moodcut.rightTab", t);
+    } catch {}
+  };
   const resizing = useRef(false);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      const mod = e.ctrlKey || e.metaKey;
-      const step = 1 / fps.value;
-      if (e.key === " ") {
-        e.preventDefault();
-        playing.value = !playing.value;
-      } else if (mod && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        run(e.shiftKey ? "redo" : "undo", true);
-      } else if (mod && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        run("redo", true);
-      } else if (mod && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        splitAtPlayhead();
-      } else if (mod && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        if (projectPath.value) project_({ action: "save" });
-      } else if (mod && e.key.toLowerCase() === "e") {
-        e.preventDefault();
-        showRender.value = true;
-      } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (selection.value.length) run(`del ${selection.value.join(",")}${e.shiftKey ? " ripple" : ""}`, true);
-      } else if (e.key === "ArrowLeft") {
-        setPlayhead(Math.max(0, playhead.value - (e.shiftKey ? 1 : step)));
-      } else if (e.key === "ArrowRight") {
-        setPlayhead(playhead.value + (e.shiftKey ? 1 : step));
-      } else if (e.key === "Home") {
-        setPlayhead(0);
-      } else if (e.key === "End") {
-        const c = comp.value;
-        if (c) setPlayhead(compDuration(c));
-      } else if (e.key.toLowerCase() === "c" && !mod) {
-        tool.value = "razor";
-      } else if (e.key.toLowerCase() === "v" && !mod) {
-        tool.value = "select";
-      } else if (e.key.toLowerCase() === "m" && !mod) {
-        run(`marker add ${fmtNum(playhead.value, 4)}`, true);
-      } else if (e.key.toLowerCase() === "d" && mod) {
-        e.preventDefault();
-        if (selection.value.length) run(`dup ${selection.value[selection.value.length - 1]}`);
-      } else if (e.key === "+" || e.key === "=") {
-        zoom.value = Math.min(3000, zoom.value * 1.25);
-      } else if (e.key === "-") {
-        zoom.value = Math.max(2, zoom.value / 1.25);
-      } else if (e.key === "\\") {
-        fitTimeline();
-      } else if (e.key === "Escape") {
-        selection.value = [];
-        tool.value = "select";
-      } else if (mod && e.key.toLowerCase() === "a") {
-        e.preventDefault();
-        selection.value = (comp.value?.tracks || []).flatMap((t) => t.items.map((i) => i.id));
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useEffect(installShortcuts, []);
 
   return (
     <div
@@ -226,20 +193,22 @@ export function App() {
       <LeftPanel />
       <Monitor />
       <div class="panel right">
-        <div class="tabs">
-          <div class={"tab" + (rightTab === "inspector" ? " active" : "")} onClick={() => setRightTab("inspector")}>
-            Inspector
-          </div>
-          <div class={"tab" + (rightTab === "ai" ? " active" : "")} onClick={() => setRightTab("ai")}>
-            AI & Script
-          </div>
+        <div class="tabs compact">
+          {RIGHT_TABS.map(([k, name, tip]) => (
+            <div key={k} class={"tab" + (rightTab === k ? " active" : "")} title={tip} onClick={() => pickTab(k)}>
+              {name}
+            </div>
+          ))}
         </div>
-        {rightTab === "inspector" ? <Inspector /> : <Console />}
+        {rightTab === "inspector" ? <Inspector /> : rightTab === "color" ? <ColorPanel /> : rightTab === "audio" ? <AudioPanel /> : rightTab === "markers" ? <MarkersPanel /> : rightTab === "history" ? <HistoryPanel /> : <Console />}
       </div>
       <div class="split" onPointerDown={() => (resizing.current = true)} />
       <div class="panel tl">
-        <TimelineToolbar />
-        <Timeline />
+        <ToolsPanel />
+        <div class="tl-main">
+          <TimelineToolbar />
+          <Timeline />
+        </div>
       </div>
       <RenderPanel />
       <FileBrowser />

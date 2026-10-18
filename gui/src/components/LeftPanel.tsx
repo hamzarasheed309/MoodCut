@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { activeId, catalog, graphicEditor, importPaths, pickFiles, playhead, project, run, selection, toast } from "../store";
+import { activeId, catalog, graphicEditor, importPaths, monitorTab, pickFiles, playhead, project, run, selection, sourceIn, sourceMedia, sourceOut, sourceT, toast } from "../store";
 import type { Media } from "../types";
 import { fmtNum } from "../util";
 
@@ -7,9 +7,18 @@ function MediaCard({ m }: { m: Media }) {
   const add = () => run(`add ${m.id} at=${fmtNum(playhead.value, 4)}`);
   return (
     <div
-      class="bin-item"
       draggable
-      title={`${m.path}${m.note ? "\n" + m.note : ""}${m.tags?.length ? "\n#" + m.tags.join(" #") : ""}\nDouble-click: add at playhead · drag onto the timeline`}
+      class={"bin-item" + (sourceMedia.value === m.id ? " open" : "")}
+      title={`${m.path}${m.note ? "\n" + m.note : ""}${m.tags?.length ? "\n#" + m.tags.join(" #") : ""}\nClick: open in the Source monitor · double-click: add at playhead · drag onto the timeline`}
+      onClick={() => {
+        if (sourceMedia.value !== m.id) {
+          sourceMedia.value = m.id;
+          sourceT.value = 0;
+          sourceIn.value = null;
+          sourceOut.value = null;
+        }
+        monitorTab.value = "source";
+      }}
       onDragStart={(e) => {
         e.dataTransfer!.setData("text/moodcut-media", m.id);
         e.dataTransfer!.effectAllowed = "copy";
@@ -139,6 +148,10 @@ function LibraryTab() {
       { name: "Color matte", desc: "Full-frame solid", act: () => run(`solid #111111 at=${at} dur=3`) },
       { name: "Gradient matte", desc: "Full-frame gradient", act: () => run(`solid #1b1464 color2=#ff5f6d at=${at} dur=3`) },
       { name: "Adjustment layer", desc: "Effects apply to everything below", act: () => run(`adjust at=${at} dur=5`) },
+      { name: "Null object", desc: "Invisible layer to parent the selection to (Ctrl+Alt+Shift+Y)", act: () => run(`null at=${at} dur=5${selection.value.length ? ` children=${selection.value.join(",")}` : ""}`) },
+      { name: "Camera", desc: "3D camera: layers with z / rx / ry or 3d=1 are seen through it", act: () => run(`camera at=${at} dur=5`) },
+      { name: "Camera push-in", desc: "Slow dolly in; the selection becomes 3D for parallax", act: () => run(`camera at=${at} dur=5 move=pushin amount=300${selection.value.length ? ` layers=${selection.value.join(",")}` : ""}`) },
+      { name: "Camera orbit", desc: "Orbit around the point of interest", act: () => run(`camera at=${at} dur=5 move=orbit amount=30${selection.value.length ? ` layers=${selection.value.join(",")}` : ""}`) },
     ],
   };
   const list = secs[sec].filter((x) => match(x.name) || match(x.desc));

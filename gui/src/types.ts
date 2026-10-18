@@ -19,7 +19,7 @@ export interface Transition {
   props?: Record<string, Val>;
 }
 
-export type ItemKind = "clip" | "text" | "shape" | "solid" | "adjust" | "comp";
+export type ItemKind = "clip" | "text" | "shape" | "solid" | "adjust" | "comp" | "null" | "camera";
 
 export interface Item {
   id: string;
@@ -62,6 +62,8 @@ export interface Marker {
   t: number;
   name: string;
   color?: string;
+  dur?: number;
+  note?: string;
 }
 
 export interface Comp {
@@ -75,6 +77,8 @@ export interface Comp {
   tracks: Track[];
   markers?: Marker[];
   master?: { vol?: number; lufs?: number; limiter?: boolean; afx?: Effect[] };
+  /** work area (sequence in/out), seconds */
+  work?: [number, number];
 }
 
 export interface Media {
@@ -131,6 +135,13 @@ export interface Catalog {
   colors: { name: string; desc: string }[];
   props: Record<string, PDef[]>;
   shape_kinds: { name: string; params: PDef[] }[];
+  scopes: string[];
+}
+
+/** On-screen layer geometry from /api/layer (comp px). */
+export interface LayerGeom {
+  quad: [number, number][];
+  anchor: [number, number];
 }
 
 export interface LogEntry {

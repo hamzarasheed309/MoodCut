@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { comp, fps, mediaById, playhead, project, rev, run, scrollX, selection, setPlayhead, tool, zoom } from "../store";
+import { comp, fps, mediaById, playhead, project, rev, run, scrollX, selection, setPlayhead, snapping, tool, zoom } from "../store";
 import type { Comp, Item, Track } from "../types";
-import { clamp, compDuration, fmtShort, isAnimated, itemLabel, kindColor, keyTimes, speedOf } from "../util";
+import { clamp, compDuration, fmtNum, fmtShort, isAnimated, itemLabel, kindColor, keyTimes, LABEL_COLORS, speedOf, staticVal } from "../util";
 
 const RULER = 26;
 const VH = 58;
@@ -50,9 +50,18 @@ function img(url: string): HTMLImageElement | null {
 
 type Drag =
   | { mode: "scrub" }
+  | { mode: "work"; t0: number; t1: number }
   | { mode: "move"; ids: string[]; x0: number; y0: number; dt: number; row: Row | null; moved: boolean; base: Item }
-  | { mode: "trimL" | "trimR"; id: string; x0: number; dt: number; base: Item }
+  /** edge drags: plain trim, ripple trim (B) or rate stretch (R) */
+  | { mode: "trimL" | "trimR"; id: string; x0: number; dt: number; base: Item; how: "trim" | "ripple" | "rate" }
+  /** rolling edit (N): the cut between `id` and `next` */
+  | { mode: "roll"; id: string; next: Item; x0: number; dt: number; base: Item }
+  | { mode: "slip" | "slide"; id: string; x0: number; dt: number; base: Item }
+  | { mode: "hand"; x0: number; y0: number; sx: number; sy: number }
   | null;
+
+const fx4 = (v: number) => fmtNum(v, 4);
+const signed = (v: number) => (v >= 0 ? "+" : "-") + fmtNum(Math.abs(v), 4);
 
 export function Timeline() {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -120,6 +129,7 @@ export function Timeline() {
   }
 
   function snap(t: number, cands: number[]): number {
+    if (!snapping.value) return t;
     const th = 8 / zoom.value;
     let best = t;
     let bd = th;
@@ -188,9 +198,18 @@ export function Timeline() {
           ghost = true;
         } else if (d && (d.mode === "trimL" || d.mode === "trimR") && d.id === it.id) {
           if (d.mode === "trimL") {
-            start = it.start + d.dt;
+            start = d.how === "ripple" ? it.start : it.start + d.dt;
             len = it.dur - d.dt;
           } else len = it.dur + d.dt;
+        } else if (d && d.mode === "roll" && (d.id === it.id || d.next.id === it.id)) {
+          if (d.id === it.id) len = it.dur + d.dt;
+          else {
+            start = it.start + d.dt;
+            len = it.dur - d.dt;
+          }
+        } else if (d && d.mode === "slide" && d.id === it.id) {
+          start = it.start + d.dt;
+          ghost = true;
         }
         const x = tToX(start);
         const w = Math.max(2, len * z);
@@ -238,8 +257,21 @@ export function Timeline() {
         g.fillText(fmtShort(Math.max(0, t)), x + 3, 11);
       }
     }
+    // work area (sequence in/out)
+    const wa = d && d.mode === "work" ? [Math.min(d.t0, d.t1), Math.max(d.t0, d.t1)] : c.work;
+    if (wa) {
+      const [xa, xb] = [tToX(wa[0]), tToX(wa[1])];
+      g.fillStyle = "rgba(139,124,246,0.55)";
+      g.fillRect(xa, RULER - 6, Math.max(2, xb - xa), 5);
+      g.fillStyle = "rgba(139,124,246,0.06)";
+      g.fillRect(xa, RULER, Math.max(2, xb - xa), H);
+    }
     for (const m of c.markers || []) {
       const x = tToX(m.t);
+      if (m.dur && m.dur > 0) {
+        g.fillStyle = (m.color || "#fbbf24") + "88";
+        g.fillRect(x, RULER - 4, m.dur * z, 3);
+      }
       if (x < -20 || x > W) continue;
       g.fillStyle = m.color || "#fbbf24";
       g.beginPath();
@@ -285,7 +317,8 @@ export function Timeline() {
 
   function drawItem(g: CanvasRenderingContext2D, it: Item, r: Row, x: number, y: number, w: number, h: number, selected: boolean, ghost: boolean, media: Map<string, any>) {
     const m = it.src ? media.get(it.src) : undefined;
-    const base = it.kind === "solid" && typeof it.props?.color === "string" ? (it.props.color as string).slice(0, 7) : kindColor(it.kind, r.track.kind);
+    const tag = staticVal(it.props?.label);
+    const base = typeof tag === "string" && LABEL_COLORS[tag] ? LABEL_COLORS[tag] : it.kind === "solid" && typeof it.props?.color === "string" ? (it.props.color as string).slice(0, 7) : kindColor(it.kind, r.track.kind);
     g.save();
     g.globalAlpha = it.off ? 0.35 : ghost ? 0.75 : 1;
     g.beginPath();
@@ -390,13 +423,37 @@ export function Timeline() {
   }
 
   // ------------------------------------------------------------ interaction
+  /** The clip right after / before `it` on its track (touching it). */
+  function neighbour(r: Row, it: Item, after: boolean): Item | undefined {
+    const f = 0.5 / fps.value;
+    return r.track.items.find((o) => o.id !== it.id && (after ? Math.abs(o.start - (it.start + it.dur)) < f : Math.abs(o.start + o.dur - it.start) < f));
+  }
+
   function onDown(e: PointerEvent) {
     if (!c) return;
     const rect = canvasRef.current!.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    const tl = tool.value;
+    if (tl === "hand" || e.button === 1) {
+      drag.current = { mode: "hand", x0: x, y0: y, sx: scrollX.value, sy: scrollY };
+      return;
+    }
+    if (tl === "zoom") {
+      const t = xToT(x);
+      const nz = clamp(zoom.value * (e.altKey || e.shiftKey ? 1 / 1.6 : 1.6), 2, 3000);
+      zoom.value = nz;
+      scrollX.value = Math.max(0, t * nz - x);
+      return;
+    }
     if (y < RULER) {
+      if (e.shiftKey) {
+        // Shift+drag on the ruler sets the work area
+        const t = snap(xToT(x), snapCandidates(new Set()));
+        drag.current = { mode: "work", t0: t, t1: t };
+        return;
+      }
       drag.current = { mode: "scrub" };
       setPlayhead(xToT(x));
       return;
@@ -408,12 +465,20 @@ export function Timeline() {
       drag.current = { mode: "scrub" };
       return;
     }
-    if (tool.value === "razor") {
+    if (tl === "razor") {
       const t = snap(xToT(x), [playhead.value]);
-      run(`cut ${hit.item.id} at=${t.toFixed(3)}`);
+      run(e.shiftKey ? `cut all at=${t.toFixed(3)}` : `cut ${hit.item.id} at=${t.toFixed(3)}`);
       return;
     }
     if (hit.row.track.locked) return;
+    if (tl === "track") {
+      // track select forward: everything from here on (Shift: this track only)
+      const t = hit.item.start - 1e-4;
+      const tracks = e.shiftKey ? [hit.row.track] : c.tracks;
+      selection.value = tracks.flatMap((tr) => tr.items.filter((i) => i.start >= t).map((i) => i.id));
+      drag.current = { mode: "move", ids: selection.value.slice(), x0: x, y0: y, dt: 0, row: null, moved: false, base: hit.item };
+      return;
+    }
     if (e.shiftKey || e.ctrlKey || e.metaKey) {
       const s = new Set(selection.value);
       s.has(hit.item.id) ? s.delete(hit.item.id) : s.add(hit.item.id);
@@ -424,9 +489,37 @@ export function Timeline() {
       // keep the multi-selection, but make this item the primary (last)
       selection.value = [...selection.value.filter((s) => s !== hit.item.id), hit.item.id];
     }
-    if (hit.edge === "L") drag.current = { mode: "trimL", id: hit.item.id, x0: x, dt: 0, base: hit.item };
-    else if (hit.edge === "R") drag.current = { mode: "trimR", id: hit.item.id, x0: x, dt: 0, base: hit.item };
+    if (tl === "roll" && hit.edge) {
+      const left = hit.edge === "R" ? hit.item : neighbour(hit.row, hit.item, false);
+      const right = hit.edge === "R" ? neighbour(hit.row, hit.item, true) : hit.item;
+      if (left && right) {
+        drag.current = { mode: "roll", id: left.id, next: right, x0: x, dt: 0, base: left };
+        return;
+      }
+    }
+    if ((tl === "slip" || tl === "slide") && !hit.edge) {
+      drag.current = { mode: tl, id: hit.item.id, x0: x, dt: 0, base: hit.item };
+      return;
+    }
+    const how = tl === "ripple" ? "ripple" : tl === "rate" ? "rate" : "trim";
+    if (hit.edge === "L") drag.current = { mode: "trimL", id: hit.item.id, x0: x, dt: 0, base: hit.item, how };
+    else if (hit.edge === "R") drag.current = { mode: "trimR", id: hit.item.id, x0: x, dt: 0, base: hit.item, how };
     else drag.current = { mode: "move", ids: selection.value.slice(), x0: x, y0: y, dt: 0, row: hit.row, moved: false, base: hit.item };
+  }
+
+  function cursorFor(x: number, y: number): string {
+    const tl = tool.value;
+    if (tl === "hand") return "grab";
+    if (tl === "zoom") return "zoom-in";
+    if (tl === "razor") return "crosshair";
+    if (y < RULER) return "col-resize";
+    const hit = itemAt(x, y);
+    if (!hit) return "default";
+    if (tl === "roll" && hit.edge) return "col-resize";
+    if (hit.edge) return tl === "rate" ? "ew-resize" : tl === "ripple" ? "w-resize" : "ew-resize";
+    if (tl === "slip" || tl === "slide") return "move";
+    if (tl === "track") return "e-resize";
+    return "grab";
   }
 
   function onMove(e: PointerEvent) {
@@ -437,13 +530,23 @@ export function Timeline() {
     const d = drag.current;
     const cv = canvasRef.current!;
     if (!d) {
-      const hit = y > RULER ? itemAt(x, y) : null;
-      cv.style.cursor = tool.value === "razor" ? "crosshair" : hit?.edge ? "ew-resize" : hit ? "grab" : y < RULER ? "col-resize" : "default";
+      cv.style.cursor = cursorFor(x, y);
       if (tool.value === "razor") force((n) => n + 1);
       return;
     }
     if (d.mode === "scrub") {
       setPlayhead(Math.max(0, xToT(x)));
+      return;
+    }
+    if (d.mode === "work") {
+      d.t1 = Math.max(0, snap(xToT(x), snapCandidates(new Set())));
+      force((n) => n + 1);
+      return;
+    }
+    if (d.mode === "hand") {
+      scrollX.value = Math.max(0, d.sx - (x - d.x0));
+      const total = rows.length ? rows[rows.length - 1].y + rows[rows.length - 1].h : 0;
+      setScrollY(clamp(d.sy - (y - d.y0), 0, Math.max(0, total - (size.h - RULER) + 20)));
       return;
     }
     if (d.mode === "move") {
@@ -463,25 +566,38 @@ export function Timeline() {
       force((n) => n + 1);
       return;
     }
+    const raw = (x - d.x0) / zoom.value;
+    const frame = 1 / fps.value;
     if (d.mode === "trimL" || d.mode === "trimR") {
-      let dt = (x - d.x0) / zoom.value;
+      let dt = raw;
       const cands = snapCandidates(new Set([d.id]));
       if (d.mode === "trimL") {
         const ns = snap(d.base.start + dt, cands);
-        dt = clamp(ns - d.base.start, -d.base.start, d.base.dur - 1 / fps.value);
+        dt = clamp(ns - d.base.start, -d.base.start, d.base.dur - frame);
       } else {
         const ne = snap(d.base.start + d.base.dur + dt, cands);
-        dt = Math.max(ne - d.base.start - d.base.dur, -(d.base.dur - 1 / fps.value));
+        dt = Math.max(ne - d.base.start - d.base.dur, -(d.base.dur - frame));
       }
       d.dt = dt;
-      force((n) => n + 1);
+    } else if (d.mode === "roll") {
+      const cut = snap(d.base.start + d.base.dur + raw, snapCandidates(new Set([d.id, d.next.id])));
+      d.dt = clamp(cut - d.base.start - d.base.dur, -(d.base.dur - frame), d.next.dur - frame);
+    } else {
+      d.dt = raw;
     }
+    force((n) => n + 1);
   }
 
   async function onUp() {
     const d = drag.current;
     drag.current = null;
     if (!d) return;
+    if (d.mode === "work") {
+      const [a, b] = [Math.min(d.t0, d.t1), Math.max(d.t0, d.t1)];
+      if (b - a > 1 / fps.value) await run(`workarea ${fx4(a)} ${fx4(b)}`, true);
+      force((n) => n + 1);
+      return;
+    }
     if (d.mode === "move" && d.moved) {
       const dt = d.dt;
       const ids = d.ids;
@@ -492,11 +608,28 @@ export function Timeline() {
         return;
       }
       if (ids.length === 1) await run(`move ${ids[0]} at=${(d.base.start + dt).toFixed(4)}${trackChange ? ` track=${d.row!.track.id}` : ""}`, true);
-      else await run(`move ${ids.join(",")} by=${dt >= 0 ? "+" : "-"}${Math.abs(dt).toFixed(4)}`, true);
-    } else if (d.mode === "trimL" && Math.abs(d.dt) > 1e-4) {
-      await run(`trim ${d.id} start=${(d.base.start + d.dt).toFixed(4)}`, true);
-    } else if (d.mode === "trimR" && Math.abs(d.dt) > 1e-4) {
-      await run(`trim ${d.id} end=${(d.base.start + d.base.dur + d.dt).toFixed(4)}`, true);
+      else await run(`move ${ids.join(",")} by=${signed(dt)}`, true);
+    } else if ((d.mode === "trimL" || d.mode === "trimR") && Math.abs(d.dt) > 1e-4) {
+      const b = d.base;
+      if (d.how === "rate") {
+        // rate stretch: same media, new duration (speed changes)
+        const nd = d.mode === "trimR" ? b.dur + d.dt : b.dur - d.dt;
+        const ns = b.start + d.dt;
+        if (d.mode === "trimR") await run(`fit ${d.id} dur=${fx4(nd)}`, true);
+        else if (d.dt > 0) await run(`fit ${d.id} dur=${fx4(nd)}\nmove ${d.id} at=${fx4(ns)}`, true);
+        else await run(`move ${d.id} at=${fx4(ns)}\nfit ${d.id} dur=${fx4(nd)}`, true);
+      } else {
+        const ripple = d.how === "ripple" ? " ripple" : "";
+        if (d.mode === "trimL") await run(`trim ${d.id} start=${fx4(b.start + d.dt)}${ripple}`, true);
+        else await run(`trim ${d.id} end=${fx4(b.start + b.dur + d.dt)}${ripple}`, true);
+      }
+    } else if (d.mode === "roll" && Math.abs(d.dt) > 1e-4) {
+      await run(`roll ${d.id} to=${fx4(d.base.start + d.base.dur + d.dt)}`, true);
+    } else if (d.mode === "slip" && Math.abs(d.dt) > 1e-4) {
+      // dragging right shows earlier frames, like Premiere
+      await run(`slip ${d.id} ${signed(-d.dt * speedOf(d.base))}`, true);
+    } else if (d.mode === "slide" && Math.abs(d.dt) > 1e-4) {
+      await run(`slide ${d.id} ${signed(d.dt)}`, true);
     }
     force((n) => n + 1);
   }
