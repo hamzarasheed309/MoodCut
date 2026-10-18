@@ -218,9 +218,25 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
   const url = `${location.origin}/mcp`;
   const port = location.port || "7878";
   const copy = (s: string) => navigator.clipboard?.writeText(s).then(() => toast("Copied"));
+  const [web, setWeb] = useState<{ running: boolean; connector?: string; error?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const tunnel = async (action: "status" | "start" | "stop") => {
+    setBusy(action !== "status");
+    try {
+      const r = await fetch("/api/tunnel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) }).then((x) => x.json());
+      setWeb(r.ok ? r : { running: false, error: r.error });
+      if (r.ok && action === "start" && r.connector) copy(r.connector);
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    tunnel("status");
+  }, []);
+  const pre = { display: "block", padding: "8px", whiteSpace: "pre-wrap", wordBreak: "break-all" } as const;
   return (
     <div class="modal-bg" onClick={onClose}>
-      <div class="modal" style={{ width: "min(640px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
+      <div class="modal" style={{ width: "min(680px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
         <div class="modal-h">
           Connect an AI assistant
           <button class="btn ghost icon x" onClick={onClose}>
@@ -228,28 +244,60 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div class="modal-b" style={{ userSelect: "text" }}>
+          <div class="web-link">
+            <b>Claude on the web (claude.ai) or ChatGPT</b>: they run in the cloud, so MoodCut gives them a private HTTPS link.
+            {web?.running && web.connector ? (
+              <>
+                <pre class="kbd" style={pre} onClick={() => copy(web.connector!)} title="Click to copy">
+                  {web.connector}
+                </pre>
+                <ol>
+                  <li>
+                    <b>claude.ai</b>: Settings → Connectors → Add custom connector → paste the link → Add. Then enable MoodCut in a chat's tools menu.
+                  </li>
+                  <li>
+                    <b>ChatGPT</b>: Settings → Connectors → Advanced → turn on Developer mode → Create → paste the link (no authentication).
+                  </li>
+                </ol>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <button class="btn sm" onClick={() => copy(web.connector!)}>
+                    Copy link
+                  </button>
+                  <button class="btn sm" disabled={busy} onClick={() => tunnel("stop")}>
+                    Stop web link
+                  </button>
+                  <span style={{ color: "var(--faint)", fontSize: "12px" }}>The link contains a secret. Keep MoodCut open while you work.</span>
+                </div>
+              </>
+            ) : (
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
+                <button class="btn primary sm" disabled={busy} onClick={() => tunnel("start")}>
+                  {busy ? "Starting… (first time downloads cloudflared)" : "Create web link"}
+                </button>
+                {web?.error && <span style={{ color: "var(--danger)", fontSize: "12px" }}>{web.error}</span>}
+              </div>
+            )}
+          </div>
           <div>
-            <b>Claude Desktop</b> — run once in a terminal, then restart Claude:
-            <pre class="kbd" style={{ display: "block", padding: "8px", whiteSpace: "pre-wrap" }}>moodcut install-claude</pre>
+            <b>Claude Desktop</b>: run once in a terminal, then restart Claude:
+            <pre class="kbd" style={pre}>moodcut install-claude</pre>
           </div>
           <div>
             <b>Claude Code</b>
-            <pre class="kbd" style={{ display: "block", padding: "8px", whiteSpace: "pre-wrap" }} onClick={() => copy("claude mcp add moodcut -- moodcut mcp")}>
+            <pre class="kbd" style={pre} onClick={() => copy("claude mcp add moodcut -- moodcut mcp")}>
               claude mcp add moodcut -- moodcut mcp
             </pre>
           </div>
           <div>
-            <b>Any MCP client over HTTP</b> (Cursor, VS Code, LM Studio, Open WebUI…):
-            <pre class="kbd" style={{ display: "block", padding: "8px" }} onClick={() => copy(url)}>
+            <b>Any MCP client on this computer</b> (Cursor, VS Code, LM Studio, Open WebUI…):
+            <pre class="kbd" style={pre} onClick={() => copy(url)}>
               {url}
             </pre>
           </div>
-          <div>
-            <b>ChatGPT</b> (Settings → Connectors → Developer mode → Add MCP server) needs an HTTPS URL. Start
-            <pre class="kbd" style={{ display: "block", padding: "8px", whiteSpace: "pre-wrap" }}>{`moodcut serve --public${port === "7878" ? "" : ` --port ${port}`}\ncloudflared tunnel --url http://localhost:${port}`}</pre>
-            then use <code>https://&lt;tunnel&gt;/mcp/&lt;token&gt;</code> (the token is printed by <code>serve --public</code>).
+          <div style={{ color: "var(--muted)" }}>
+            Your own domain or Tailscale Funnel instead of a temporary link: <code>moodcut connect --url https://your-host{port === "7878" ? "" : ` --port ${port}`}</code>. Edits made by
+            the assistant appear here live, and everything you do here is visible to it.
           </div>
-          <div style={{ color: "var(--muted)" }}>Edits made by the assistant appear here live, and everything you do here is visible to it.</div>
         </div>
       </div>
     </div>

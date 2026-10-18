@@ -7,6 +7,7 @@ use crate::ops::templates::TEMPLATES;
 use crate::render::encode::PRESETS;
 
 pub const TOPICS: &[(&str, &str)] = &[
+    ("workflow", "a complete edit from one request, step by step"),
     ("edit", "every MoodCut Script command"),
     ("time", "time & reference syntax"),
     ("props", "layer/clip/text/solid properties"),
@@ -31,6 +32,16 @@ const OVERVIEW: &str = "MoodCut: AI-native video editor. Loop: media import -> v
 Ids: m1 media, c2 clips, t3 text, g4 shapes, o5 solids, j6 adjustment, n7 nested comps, s1 comps; sub-objects c2.f1 (effect) c2.m1 (mask) g4.s1 (shape) t3.x1 (text animator).
 Tracks: V1 is the bottom video track (higher = on top), A1.. audio. Times are seconds.
 Scripts are atomic: if any line fails nothing changes and the error names the line.";
+
+pub const WORKFLOW: &str = "Turning one request into a finished, professional edit. Do every step yourself; send many script lines per edit call; ask the person only if something essential is missing.
+1 GATHER  media find path=<folder> (what is there) -> media import paths=[<folder>] tag=<shoot>. Large library: media list (filters/paging) + preview media=m1..m48 (poster frames, 48 per sheet). Write down what you see so you never look twice: note m3 'wide drone, sunset' | tag m10..m18 interview.
+2 UNDERSTAND  speech: analyze target=tag:interview kind=transcript, then view what=search q=<words> to find quotes (times are source seconds). Shots: analyze target=all kind=scenes / stats (exposure). Music: analyze <m> kind=beats. Filmstrips (preview media=m7 n=8) to pick in/out points.
+3 PLAN  length, format (comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 3 s -> body -> payoff / call to action), music, look, graphics. Build only what was asked.
+4 ASSEMBLE  story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence for talking heads; keep m4 12-30,45-61 for rough cuts; b-roll on V2 over speech (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences. Typical shots 1.5-4 s; vary framing; cut on action; no repeated shots.
+5 POLISH  color <ids|V1> natural|cinematic then fine-tune; tr V1 dissolve 0.3 only where it helps; titles and lower thirds: the graphic tool (HTML/CSS, best looking) or title templates; captions <clip> for speech-led videos; anim kenburns on stills.
+6 SOUND  music on A2 under speech: duck A2 by=A1 amount=-12 (by=V1 when speech is camera audio); fade music in/out; master lufs=-14 limiter=1 (web) | -16 (podcast) | -23 (broadcast).
+7 VERIFY  check expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; preview n=8 for the overall flow; fix what remains and check again until clean.
+8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.";
 
 const GRAPHICS: &str = "graphic tool: html -> rendered video with alpha (or a still, dur=0) in the library. The page is the frame: 100% width/height = comp size (or size=). Transparent unless you paint a background (alpha=false keeps an opaque page).
 Timing runs on a virtual clock, so animate any way you like and every frame is exact:
@@ -269,6 +280,7 @@ pub fn help(topic: &str) -> String {
         }
         "examples" | "example" | "recipes" => EXAMPLES.to_string(),
         "graphics" | "graphic" | "html" | "gfx" | "design" => GRAPHICS.to_string(),
+        "workflow" | "pipeline" | "recipe" | "start" => WORKFLOW.to_string(),
         "fonts" => {
             let f = crate::render::text::families();
             format!("{} families: {}", f.len(), f.join(", "))

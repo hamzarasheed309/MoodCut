@@ -103,7 +103,7 @@ pub async fn run(port: u16, with_http: bool) -> Result<()> {
         if let Ok(e) = &eng {
             let e2 = e.clone();
             tokio::spawn(async move {
-                let opts = crate::server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: false };
+                let opts = crate::server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: false, tunnel: false, public_url: None };
                 if let Err(err) = crate::server::serve(e2, opts).await {
                     eprintln!("moodcut: web GUI not started ({err})");
                 }

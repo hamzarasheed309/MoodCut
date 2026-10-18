@@ -20,6 +20,7 @@ pub mod ops;
 pub mod render;
 pub mod server;
 pub mod setup;
+pub mod tunnel;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -58,6 +59,23 @@ enum Cmd {
         /// Limit file access to these folders (repeatable).
         #[arg(long = "allow")]
         allow: Vec<String>,
+        project: Option<String>,
+    },
+    /// Make MoodCut reachable from claude.ai / ChatGPT on the web: starts the editor plus an HTTPS
+    /// tunnel and prints a secret connector URL to paste into the AI's connector settings.
+    Connect {
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        /// Your own public https address (named Cloudflare tunnel, Tailscale Funnel, reverse proxy)
+        /// that forwards to this port, instead of a temporary quick tunnel.
+        #[arg(long)]
+        url: Option<String>,
+        /// Make a new secret (old connector URLs stop working).
+        #[arg(long)]
+        new_token: bool,
+        /// Don't open the editor window.
+        #[arg(long)]
+        no_window: bool,
         project: Option<String>,
     },
     /// MCP over stdio. Attaches to a running MoodCut if one is listening, otherwise runs embedded.
@@ -209,7 +227,7 @@ fn real_main() -> Result<()> {
             }
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async move {
-                let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: true };
+                let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: true, tunnel: false, public_url: None };
                 server::serve(eng, opts).await
             })
         }
@@ -224,7 +242,21 @@ fn real_main() -> Result<()> {
             }
             let (host, token) = if public { ("0.0.0.0".to_string(), Some(token.unwrap_or_else(server::random_token))) } else { (host, token) };
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move { server::serve(eng, server::ServeOpts { host, port, token, open_window: false }).await })
+            rt.block_on(async move { server::serve(eng, server::ServeOpts { host, port, token, open_window: false, tunnel: false, public_url: None }).await })
+        }
+        Cmd::Connect { port, url, new_token, no_window, project } => {
+            if new_token {
+                let _ = std::fs::remove_file(config::ensure_data_dir().join("remote-token"));
+            }
+            let eng = load_engine()?;
+            if let Some(p) = project {
+                eng.open(&p)?;
+            }
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async move {
+                let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: !no_window, tunnel: url.is_none(), public_url: url };
+                server::serve(eng, opts).await
+            })
         }
         Cmd::Mcp { port, no_http } => {
             let rt = tokio::runtime::Runtime::new()?;

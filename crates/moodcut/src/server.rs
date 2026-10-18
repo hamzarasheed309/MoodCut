@@ -28,14 +28,24 @@ struct Assets;
 pub struct ServeOpts {
     pub host: String,
     pub port: u16,
+    /// Required for every request (serve --token / --public).
     pub token: Option<String>,
     pub open_window: bool,
+    /// Start a public tunnel at startup (moodcut connect).
+    pub tunnel: bool,
+    /// Use this public base URL instead of a tunnel (own domain / Tailscale Funnel).
+    pub public_url: Option<String>,
 }
 
 struct AppState {
     eng: Arc<Engine>,
     mcp: Arc<Mcp>,
     token: Option<String>,
+    /// Token that remote (tunneled / LAN) requests must carry.
+    remote_token: parking_lot::RwLock<Option<String>>,
+    tunnel: Mutex<Option<crate::tunnel::Tunnel>>,
+    public_url: parking_lot::RwLock<Option<String>>,
+    port: u16,
     cache: Mutex<HashMap<String, (Vec<u8>, &'static str)>>,
     thumb_slots: tokio::sync::Semaphore,
 }
@@ -43,21 +53,23 @@ struct AppState {
 type St = Arc<AppState>;
 
 pub fn random_token() -> String {
-    let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(7) ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15);
-    let mut s = String::new();
-    for _ in 0..32 {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        let c = b"abcdefghijkmnopqrstuvwxyz23456789"[(seed % 33) as usize] as char;
-        s.push(c);
-    }
-    s
+    crate::tunnel::random_token()
 }
 
 pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
     let mcp = Arc::new(Mcp::new(Ok(eng.clone())));
-    let st: St = Arc::new(AppState { eng: eng.clone(), mcp, token: o.token.clone(), cache: Mutex::new(HashMap::new()), thumb_slots: tokio::sync::Semaphore::new(4) });
+    let remote = if o.tunnel || o.public_url.is_some() { Some(o.token.clone().unwrap_or_else(crate::tunnel::persistent_token)) } else { o.token.clone() };
+    let st: St = Arc::new(AppState {
+        eng: eng.clone(),
+        mcp,
+        token: o.token.clone(),
+        remote_token: parking_lot::RwLock::new(remote),
+        tunnel: Mutex::new(None),
+        public_url: parking_lot::RwLock::new(o.public_url.clone()),
+        port: o.port,
+        cache: Mutex::new(HashMap::new()),
+        thumb_slots: tokio::sync::Semaphore::new(4),
+    });
     let app = Router::new()
         .route("/api/ping", get(|| async { Json(json!({"app": "moodcut", "version": crate::VERSION})) }))
         .route("/api/state", get(api_state))
@@ -80,6 +92,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/reveal", post(api_reveal))
         .route("/api/graphic", get(api_graphic_get).post(api_graphic))
         .route("/api/check", post(api_check))
+        .route("/api/tunnel", post(api_tunnel))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
@@ -91,6 +104,28 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
     eprintln!("MoodCut {} — GUI {url}  |  MCP {url}/mcp", crate::VERSION);
     if let Some(t) = &o.token {
         eprintln!("token auth on. MCP URL with token: {url}/mcp/{t}  (or header Authorization: Bearer {t})");
+    }
+    if let Some(base) = &o.public_url {
+        let tok = st.remote_token.read().clone().unwrap_or_default();
+        let c = crate::tunnel::connector_url(base, &tok);
+        eprintln!("\n{}\n", crate::tunnel::instructions(&c));
+        if crate::tunnel::copy_to_clipboard(&c) {
+            eprintln!("(connector URL copied to the clipboard)");
+        }
+    } else if o.tunnel {
+        let st2 = st.clone();
+        tokio::task::spawn_blocking(move || match crate::tunnel::start(st2.port) {
+            Ok(t) => {
+                let tok = st2.remote_token.read().clone().unwrap_or_default();
+                let c = crate::tunnel::connector_url(&t.url, &tok);
+                eprintln!("\n{}\n", crate::tunnel::instructions(&c));
+                if crate::tunnel::copy_to_clipboard(&c) {
+                    eprintln!("(connector URL copied to the clipboard)");
+                }
+                *st2.tunnel.lock() = Some(t);
+            }
+            Err(e) => eprintln!("! tunnel failed: {e:#}\n  You can still use a tunnel of your own: moodcut connect --url https://your-host"),
+        });
     }
     // background decoder cleanup
     let e2 = eng.clone();
@@ -111,39 +146,63 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
     Ok(())
 }
 
-fn is_local_origin(o: &str) -> bool {
-    let o = o.trim_end_matches('/');
-    let host = o.split("://").nth(1).unwrap_or(o);
-    let host = host.split(':').next().unwrap_or(host);
-    matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "tauri.localhost") || o == "null"
+fn local_host(h: &str) -> bool {
+    let h = h.trim();
+    let host = if h.starts_with('[') { h.split(']').next().map(|x| format!("{x}]")).unwrap_or_default() } else { h.split(':').next().unwrap_or(h).to_string() };
+    matches!(host.as_str(), "127.0.0.1" | "localhost" | "[::1]" | "tauri.localhost")
 }
 
-/// Token auth + DNS-rebinding protection.
+/// A request is remote when it came through a proxy/tunnel or names a
+/// non-local host (LAN, tunnel hostname): those always need a token.
+fn is_remote(headers: &HeaderMap) -> bool {
+    let fwd = ["x-forwarded-for", "x-forwarded-host", "forwarded", "cf-connecting-ip", "cf-ray", "x-real-ip"].iter().any(|h| headers.contains_key(*h));
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("127.0.0.1");
+    fwd || !local_host(host)
+}
+
+/// Token auth + DNS-rebinding / cross-site protection.
 async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
     let headers = req.headers();
     let path = req.uri().path().to_string();
+    // OAuth discovery probes (claude.ai, ChatGPT): this server is token-in-URL, no OAuth
+    if path.starts_with("/.well-known/") {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "not found"}))).into_response();
+    }
     let q = req.uri().query().unwrap_or("").to_string();
     let bearer = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(|s| s.to_string());
     let cookie_tok = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).and_then(|c| c.split(';').find_map(|kv| kv.trim().strip_prefix("mc_token=").map(|s| s.to_string())));
     let query_tok = q.split('&').find_map(|kv| kv.strip_prefix("token=").map(|s| s.to_string()));
     let path_tok = path.strip_prefix("/mcp/").map(|s| s.to_string());
-    let authed = match &st.token {
-        None => true,
-        Some(t) => [bearer, cookie_tok, query_tok.clone(), path_tok].iter().any(|x| x.as_deref() == Some(t.as_str())),
+    let given = [bearer, cookie_tok, query_tok.clone(), path_tok];
+    let matches = |t: &Option<String>| t.as_ref().is_some_and(|t| given.iter().any(|g| g.as_deref() == Some(t.as_str())));
+    let remote_tok = st.remote_token.read().clone();
+    let remote = is_remote(headers);
+    let authed = if remote {
+        matches(&st.token) || matches(&remote_tok)
+    } else {
+        st.token.is_none() || matches(&st.token) || matches(&remote_tok)
     };
+    if remote && st.token.is_none() && remote_tok.is_none() {
+        return (StatusCode::FORBIDDEN, "remote access is off: start it with `moodcut connect` (or Connect AI > web link)").into_response();
+    }
+    // browsers: only this app's own local pages may call it without a token
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
-        if !is_local_origin(origin) && (st.token.is_none() || !authed) {
+        let o_host = origin.split("://").nth(1).unwrap_or("").trim_end_matches('/');
+        let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let same_local = local_host(o_host) && o_host.eq_ignore_ascii_case(host);
+        let token_given = matches(&st.token) || matches(&remote_tok);
+        if !same_local && !token_given {
             return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
         }
     }
-    let public_path = path == "/api/ping" || (!path.starts_with("/api/") && !path.starts_with("/mcp"));
+    let public_path = !remote && (path == "/api/ping" || (!path.starts_with("/api/") && !path.starts_with("/mcp")));
     if !authed && !public_path {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "missing or invalid token"}))).into_response();
     }
     let mut resp = next.run(req).await;
-    if let (Some(t), Some(qt)) = (&st.token, query_tok) {
-        if &qt == t {
-            if let Ok(v) = HeaderValue::from_str(&format!("mc_token={t}; Path=/; SameSite=Strict; HttpOnly")) {
+    if let Some(qt) = query_tok {
+        if matches(&Some(qt.clone())) && (st.token.as_deref() == Some(qt.as_str()) || remote_tok.as_deref() == Some(qt.as_str())) {
+            if let Ok(v) = HeaderValue::from_str(&format!("mc_token={qt}; Path=/; SameSite=Strict; HttpOnly")) {
                 resp.headers_mut().insert(header::SET_COOKIE, v);
             }
         }
@@ -549,6 +608,52 @@ async fn api_graphic(State(st): State<St>, Json(a): Json<Value>) -> Response {
             let sheet = o.sheet.map(|j| format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(j)));
             Json(json!({"ok": true, "id": o.id, "text": o.text, "sheet": sheet})).into_response()
         }
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
+}
+
+/// Starts/stops/reports the public web link (local requests only).
+async fn api_tunnel(State(st): State<St>, headers: HeaderMap, Json(a): Json<Value>) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "the web link can only be managed from this computer");
+    }
+    let action = a["action"].as_str().unwrap_or("status").to_string();
+    let st2 = st.clone();
+    let r = blocking(move || -> anyhow::Result<Value> {
+        if action == "stop" {
+            *st2.tunnel.lock() = None;
+            *st2.public_url.write() = None;
+            return Ok(json!({"ok": true, "running": false}));
+        }
+        if action == "start" {
+            let running = st2.tunnel.lock().as_mut().map(|t| t.running()).unwrap_or(false);
+            if !running {
+                if st2.remote_token.read().is_none() {
+                    *st2.remote_token.write() = Some(crate::tunnel::persistent_token());
+                }
+                let t = crate::tunnel::start(st2.port)?;
+                *st2.tunnel.lock() = Some(t);
+            }
+        }
+        let mut g = st2.tunnel.lock();
+        let mut live = None;
+        if let Some(t) = g.as_mut() {
+            if t.running() {
+                live = Some(t.url.clone());
+            }
+        }
+        drop(g);
+        let url = live.or_else(|| st2.public_url.read().clone());
+        let tok = st2.remote_token.read().clone();
+        let connector = match (&url, &tok) {
+            (Some(u), Some(t)) => Some(crate::tunnel::connector_url(u, t)),
+            _ => None,
+        };
+        Ok(json!({"ok": true, "running": url.is_some(), "url": url, "connector": connector}))
+    })
+    .await;
+    match r {
+        Ok(v) => Json(v).into_response(),
         Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
     }
 }

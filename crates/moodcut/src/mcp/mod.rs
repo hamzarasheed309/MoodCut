@@ -22,6 +22,7 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05
 pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphics engine. Workflow: media(import) -> view -> edit (send MANY script lines per call; atomic) -> preview (small contact sheet to check) -> render. \
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
 Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media). \
+For a complete edit from one request follow help('workflow'); run check (with expect) before every render and fix what it reports. \
 The edit tool description has a cheat sheet; call help(topic) for full references (edit, effects, transitions, anim, text, templates, macros, graphics, color, render).";
 
 pub struct Mcp {
@@ -181,7 +182,7 @@ impl Mcp {
                 let ver = if PROTOCOL_VERSIONS.contains(&want) { want } else { PROTOCOL_VERSIONS[0] };
                 Ok(json!({
                     "protocolVersion": ver,
-                    "capabilities": {"tools": {"listChanged": false}},
+                    "capabilities": {"tools": {"listChanged": false}, "prompts": {"listChanged": false}},
                     "serverInfo": {"name": "moodcut", "title": "MoodCut Video Editor", "version": crate::VERSION},
                     "instructions": INSTRUCTIONS
                 }))
@@ -195,7 +196,23 @@ impl Mcp {
             }
             "resources/list" => Ok(json!({"resources": []})),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
-            "prompts/list" => Ok(json!({"prompts": []})),
+            "prompts/list" => Ok(json!({"prompts": prompts().iter().map(|p| json!({"name": p.name, "title": p.title, "description": p.desc, "arguments": p.args.iter().map(|(n, d, r)| json!({"name": n, "description": d, "required": r})).collect::<Vec<_>>()})).collect::<Vec<_>>()})),
+            "prompts/get" => {
+                let name = params["name"].as_str().unwrap_or("");
+                match prompts().into_iter().find(|p| p.name == name) {
+                    Some(p) => {
+                        let args = params["arguments"].as_object().cloned().unwrap_or_default();
+                        let get = |k: &str| args.get(k).and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                        let missing: Vec<&str> = p.args.iter().filter(|(n, _, r)| *r && get(n).is_none()).map(|(n, ..)| *n).collect();
+                        if missing.is_empty() {
+                            Ok(json!({"description": p.desc, "messages": [{"role": "user", "content": {"type": "text", "text": (p.build)(&get)}}]}))
+                        } else {
+                            Err((-32602, format!("missing argument(s): {}", missing.join(", "))))
+                        }
+                    }
+                    None => Err((-32602, format!("unknown prompt '{name}'"))),
+                }
+            }
             "logging/setLevel" => Ok(json!({})),
             _ => Err((-32601, format!("method not found: {method}"))),
         };
@@ -594,4 +611,105 @@ pub fn graphic_req(a: &Value) -> crate::gfx::GraphicReq {
         preview: a["preview"].as_u64().unwrap_or(6) as usize,
         at: a["at"].as_f64(),
     }
+}
+
+/// Ready-made requests (MCP prompts) for common jobs; clients show them as commands.
+pub struct Prompt {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub desc: &'static str,
+    pub args: &'static [(&'static str, &'static str, bool)],
+    pub build: fn(&dyn Fn(&str) -> Option<String>) -> String,
+}
+
+fn opt(v: Option<String>, d: &str) -> String {
+    v.unwrap_or_else(|| d.to_string())
+}
+
+pub fn prompts() -> Vec<Prompt> {
+    vec![
+        Prompt {
+            name: "edit-folder",
+            title: "Edit a video from a folder",
+            desc: "Turn a folder of footage into a finished edit, start to finish.",
+            args: &[("folder", "folder with the footage", true), ("brief", "what to make (topic, tone, audience)", true), ("length", "target length in seconds", false), ("format", "16:9, 9:16 or 1:1", false), ("music", "music file or folder (optional)", false)],
+            build: |g| {
+                format!(
+                    "Use MoodCut to make this video: {brief}.\nFootage: {folder}. Target length: {len}. Format: {fmt}. Music: {music}.\n\
+                     Follow help('workflow') end to end: import and look at the footage (poster sheets, transcripts), plan a structure with a strong hook, \
+                     assemble, polish (color, titles with the graphic tool, captions if there is speech), mix the sound, then run check with \
+                     expect (duration and size) and fix everything it reports. Render with the matching preset. Don't ask me questions unless \
+                     something essential is missing; make sensible choices and tell me what you made.",
+                    brief = opt(g("brief"), "a short video"),
+                    folder = opt(g("folder"), "?"),
+                    len = g("length").map(|l| format!("{l} s")).unwrap_or_else(|| "whatever suits the material".into()),
+                    fmt = opt(g("format"), "16:9"),
+                    music = opt(g("music"), "choose from the footage folder if there is any, otherwise none"),
+                )
+            },
+        },
+        Prompt {
+            name: "talking-head",
+            title: "Clean up a talking-head video",
+            desc: "Remove pauses, grade, add captions, name tag, music bed and loudness for a speech-led video.",
+            args: &[("file", "the video file", true), ("name", "speaker name for a lower third", false), ("captions", "caption style: bold, box, minimal or none", false), ("music", "music file (optional)", false)],
+            build: |g| {
+                format!(
+                    "In MoodCut, edit the talking-head video {file}: import it, remove silences (autocut silence), color correct, \
+                     add {cap} captions, {name}add the music {music} ducked under the voice, set loudness to -14 LUFS, \
+                     run check (fix what it finds), and render for YouTube. Tell me the final length and what changed.",
+                    file = opt(g("file"), "?"),
+                    cap = opt(g("captions"), "bold"),
+                    name = g("name").map(|n| format!("a lower third for {n} near the start (graphic tool), ")).unwrap_or_default(),
+                    music = opt(g("music"), "(none given: skip music)"),
+                )
+            },
+        },
+        Prompt {
+            name: "social-cutdown",
+            title: "Vertical social cut-down",
+            desc: "Make a 9:16 short from the current edit: tighter pacing, captions, hook.",
+            args: &[("length", "max length in seconds (default 45)", false), ("platform", "tiktok, reels or shorts", false)],
+            build: |g| {
+                format!(
+                    "In MoodCut, make a vertical {plat} version of the current edit, at most {len} s: keep the strongest moments \
+                     (hook in the first 2 seconds), reframe 9:16 with a blurred fill, keep text inside the title-safe area, add captions \
+                     if there is speech, then check expect={{size: '1080x1920', dur: {len}}} with fix and render preset=social.",
+                    plat = opt(g("platform"), "short-form"),
+                    len = opt(g("length"), "45"),
+                )
+            },
+        },
+        Prompt {
+            name: "motion-graphic",
+            title: "Design a motion graphic",
+            desc: "Design an animated graphic in HTML/CSS/JS, render it with alpha and place it.",
+            args: &[("brief", "what the graphic shows and its style", true), ("dur", "seconds (default 4)", false), ("at", "timeline time to place it (optional)", false)],
+            build: |g| {
+                format!(
+                    "Design this motion graphic for my MoodCut edit with the graphic tool: {brief}. Duration {dur} s. \
+                     Read help('graphics') first. Use a polished, modern style with eased entrance and exit animations, keep text in the \
+                     title-safe area, and check the returned contact sheet; fix anything off (overflow, timing, JS errors) with id= and \
+                     render again. {place}",
+                    brief = opt(g("brief"), "?"),
+                    dur = opt(g("dur"), "4"),
+                    place = g("at").map(|t| format!("Place it at {t} s on a track above the video.")).unwrap_or_else(|| "Then place it where it fits best in the edit.".into()),
+                )
+            },
+        },
+        Prompt {
+            name: "review",
+            title: "Review and fix the edit",
+            desc: "Quality-check the current edit like a finishing editor and fix the problems.",
+            args: &[("target", "web, podcast or broadcast (default web)", false)],
+            build: |g| {
+                format!(
+                    "Review my current MoodCut edit like a finishing editor: run check target={t}, look at the problem frames and a \
+                     preview n=8 contact sheet, apply the safe fixes, fix the rest by hand (pacing, continuity, text, audio), then check \
+                     again until clean. Summarize what you changed.",
+                    t = opt(g("target"), "web")
+                )
+            },
+        },
+    ]
 }

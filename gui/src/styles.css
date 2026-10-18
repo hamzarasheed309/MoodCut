@@ -973,3 +973,15 @@ input[type="checkbox"] {
   line-height: 1.55;
   color: var(--text);
 }
+
+.web-link {
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(124, 92, 255, 0.07);
+}
+.web-link ol {
+  margin: 8px 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}
