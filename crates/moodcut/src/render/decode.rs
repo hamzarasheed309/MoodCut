@@ -111,6 +111,7 @@ impl VideoReader {
         vf.push(format!("fps={:.6}", self.spec.rate));
         vf.push(format!("scale={}:{}:flags=bicubic", self.spec.w, self.spec.h));
         vf.push("format=rgba".into());
+        self.ff.need()?;
         let mut c = self.ff.cmd();
         if self.spec.hw {
             c.args(["-hwaccel", "auto"]);

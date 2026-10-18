@@ -183,8 +183,13 @@ fn main() {
     }
 }
 
+/// Starts the engine; without FFmpeg it still runs graphics-only work and
+/// media operations explain how to install it.
 fn load_engine() -> Result<std::sync::Arc<engine::Engine>> {
-    let ff = render::ffmpeg::Ff::find()?;
+    let ff = render::ffmpeg::Ff::find().unwrap_or_else(|e| {
+        eprintln!("warning: {e}");
+        render::ffmpeg::Ff::missing()
+    });
     Ok(engine::Engine::new(ff))
 }
 

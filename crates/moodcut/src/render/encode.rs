@@ -191,6 +191,7 @@ fn tail(s: &str) -> String {
 /// Renders a comp range to a file.
 pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -> Result<RenderResult> {
     let started = Instant::now();
+    ff.need()?;
     let comp = p.comp(&o.comp).ok_or_else(|| anyhow!("no comp {}", o.comp))?;
     let preset = resolve_preset(&o.preset, ff, &o.hw)?;
     let t0 = o.t0.max(0.0);
@@ -305,6 +306,7 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
 
 /// Streams a fragmented-MP4 preview from t0 to the end of the comp.
 pub fn preview_stream(ff: Arc<Ff>, p: Project, frames: Arc<FrameServer>, comp: String, t0: f64, scale: f32, cancel: Arc<AtomicBool>) -> Result<Receiver<Vec<u8>>> {
+    ff.need()?;
     let c0 = p.comp(&comp).ok_or_else(|| anyhow!("no comp {comp}"))?;
     let t1 = c0.duration();
     if t1 <= t0 {

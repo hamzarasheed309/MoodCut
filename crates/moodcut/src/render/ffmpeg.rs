@@ -97,8 +97,34 @@ fn candidates() -> Vec<PathBuf> {
     v
 }
 
+pub const MISSING: &str = "FFmpeg not found. Install it (Windows: `winget install Gyan.FFmpeg`, or run `moodcut setup`), \
+or set MOODCUT_FFMPEG to the folder containing ffmpeg and ffprobe.";
+
 impl Ff {
+    /// A placeholder when FFmpeg isn't installed: graphics-only work (scripts,
+    /// text, shapes, HTML stills, frames) still runs; media operations report
+    /// how to install it.
+    pub fn missing() -> Ff {
+        Ff { ffmpeg: PathBuf::new(), ffprobe: PathBuf::new(), version: "not installed".into(), encoders: HashSet::new(), filters: HashSet::new(), hw_cache: Mutex::new(None) }
+    }
+
+    pub fn available(&self) -> bool {
+        !self.ffmpeg.as_os_str().is_empty()
+    }
+
+    /// Errors with install instructions when FFmpeg is missing.
+    pub fn need(&self) -> Result<()> {
+        if self.available() {
+            Ok(())
+        } else {
+            bail!("{MISSING}")
+        }
+    }
+
     pub fn find() -> Result<Ff> {
+        if std::env::var("MOODCUT_FFMPEG").is_ok_and(|v| v.eq_ignore_ascii_case("none")) {
+            bail!("{MISSING}"); // lets you run (and test) without FFmpeg
+        }
         for dir in candidates() {
             let ff = dir.join(exe_name("ffmpeg"));
             let fp = dir.join(exe_name("ffprobe"));
@@ -111,10 +137,7 @@ impl Ff {
                 }
             }
         }
-        bail!(
-            "FFmpeg not found. Install it (Windows: `winget install Gyan.FFmpeg`, or run `moodcut setup`), \
-             or set MOODCUT_FFMPEG to the folder containing ffmpeg and ffprobe."
-        )
+        bail!("{MISSING}")
     }
 
     fn version_of(exe: &Path) -> Result<String> {
@@ -220,6 +243,7 @@ impl Ff {
                 note: String::new(),
             });
         }
+        self.need()?;
         let out = command(&self.ffprobe)
             .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path])
             .stdout(Stdio::piped())
@@ -310,6 +334,7 @@ impl Ff {
 
     /// Runs ffmpeg with args, capturing stderr. Returns (stdout, stderr).
     pub fn run_capture(&self, args: &[String]) -> Result<(Vec<u8>, String)> {
+        self.need()?;
         let out = command(&self.ffmpeg).args(["-hide_banner", "-nostdin"]).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
         let err = String::from_utf8_lossy(&out.stderr).to_string();
         if !out.status.success() {

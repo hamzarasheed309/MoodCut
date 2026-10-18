@@ -98,7 +98,7 @@ pub async fn run(port: u16, with_http: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let eng: Result<Arc<Engine>, String> = Ff::find().map(Engine::new).map_err(|e| e.to_string());
+    let eng: Result<Arc<Engine>, String> = Ok(Engine::new(Ff::find().unwrap_or_else(|_| Ff::missing())));
     if with_http {
         if let Ok(e) = &eng {
             let e2 = e.clone();

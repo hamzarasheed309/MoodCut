@@ -312,6 +312,7 @@ pub fn beats_from_samples(x: &[f32], sr: f32) -> (f64, Vec<f64>, Vec<f64>) {
 
 pub fn beats(ff: &Ff, path: &str) -> Result<Value> {
     let sr = 11025u32;
+    ff.need()?;
     let mut c = ff.cmd();
     c.args(["-i", path, "-vn", "-sn", "-ac", "1", "-ar", &sr.to_string(), "-f", "f32le", "pipe:1"]).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = c.spawn()?;
