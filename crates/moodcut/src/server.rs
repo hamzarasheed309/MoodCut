@@ -75,6 +75,8 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/log", get(api_log))
         .route("/api/analyze", post(api_analyze))
         .route("/api/ws", get(api_ws))
+        .route("/fonts/{name}", get(font_file))
+        .route("/api/reveal", post(api_reveal))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
@@ -511,9 +513,40 @@ fn native_dialog(kind: &str, filter: &str) -> anyhow::Result<Vec<String>> {
                 args.push("--separator=\n");
             }
         }
-        run("zenity", &args).unwrap_or_default()
+        run("zenity", &args)?
     };
     Ok(s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+}
+
+async fn font_file(AxPath(name): AxPath<String>) -> Response {
+    use crate::render::text::{INTER_BLACK, INTER_BOLD, INTER_REGULAR};
+    let data: &'static [u8] = match name.as_str() {
+        "Inter-Regular.otf" => INTER_REGULAR,
+        "Inter-Bold.otf" => INTER_BOLD,
+        "Inter-Black.otf" => INTER_BLACK,
+        _ => return (StatusCode::NOT_FOUND, "no such font").into_response(),
+    };
+    ([(header::CONTENT_TYPE, "font/otf"), (header::CACHE_CONTROL, "max-age=31536000")], data).into_response()
+}
+
+/// Shows a rendered file in the OS file manager.
+async fn api_reveal(State(st): State<St>, Json(a): Json<Value>) -> Response {
+    let Some(path) = a["path"].as_str().map(|s| s.to_string()) else { return err(StatusCode::BAD_REQUEST, "path required") };
+    if st.eng.check_path(&path).is_err() {
+        return err(StatusCode::FORBIDDEN, "not allowed");
+    }
+    let p = std::path::PathBuf::from(&path);
+    let r = if cfg!(windows) {
+        crate::render::ffmpeg::command(std::path::Path::new("explorer")).arg(format!("/select,{}", path)).spawn()
+    } else if cfg!(target_os = "macos") {
+        crate::render::ffmpeg::command(std::path::Path::new("open")).args(["-R", &path]).spawn()
+    } else {
+        crate::render::ffmpeg::command(std::path::Path::new("xdg-open")).arg(p.parent().unwrap_or(&p)).spawn()
+    };
+    match r {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }
 
 async fn api_log(State(st): State<St>) -> Response {

@@ -327,7 +327,9 @@ impl Mcp {
             let (p, _, active, _) = eng.snapshot();
             let comp = s(a, "comp").unwrap_or(active);
             let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
-            let dur = c.duration().max(c.frame_dur());
+            // default range: where the pictures are (a long music bed shouldn't stretch the sheet)
+            let vis_end = c.vtracks().map(|t| t.end()).fold(0.0, f64::max);
+            let dur = if vis_end > 0.0 { vis_end } else { c.duration().max(c.frame_dur()) };
             let times: Vec<f64> = if let Some(arr) = a["times"].as_array() {
                 arr.iter().filter_map(|x| x.as_f64()).take(16).collect()
             } else if let Some(t) = a["t"].as_f64() {
@@ -340,7 +342,8 @@ impl Mcp {
                 };
                 (0..n).map(|i| r0 + (i as f64 + 0.5) * (r1 - r0) / n as f64).collect()
             };
-            let times: Vec<f64> = times.into_iter().map(|t| t.clamp(0.0, (dur - c.frame_dur()).max(0.0))).collect();
+            let full = c.duration().max(c.frame_dur());
+            let times: Vec<f64> = times.into_iter().map(|t| t.clamp(0.0, (full - c.frame_dur()).max(0.0))).collect();
             if times.len() == 1 {
                 let w = a["width"].as_u64().unwrap_or(512).clamp(64, 1920) as u32;
                 let pm = eng.frame(Some(&c.id), times[0], w, false)?;

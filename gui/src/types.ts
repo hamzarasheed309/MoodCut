@@ -1,0 +1,153 @@
+// Mirrors the Rust project model (crates/moodcut/src/model/project.rs).
+
+export type Val = number | [number, number] | string | boolean;
+export type Key = [number, Val, string?];
+export type AnimObj = { v?: Val; k?: Key[]; x?: string; loop?: string };
+export type Anim = Val | AnimObj;
+export type Props = Record<string, Anim>;
+
+export interface Effect {
+  id: string;
+  kind: string;
+  on?: boolean;
+  props?: Props;
+}
+
+export interface Transition {
+  kind: string;
+  dur: number;
+  props?: Record<string, Val>;
+}
+
+export type ItemKind = "clip" | "text" | "shape" | "solid" | "adjust" | "comp";
+
+export interface Item {
+  id: string;
+  kind: ItemKind;
+  name?: string;
+  src?: string;
+  start: number;
+  dur: number;
+  in?: number;
+  text?: string;
+  props?: Props;
+  fx?: Effect[];
+  afx?: Effect[];
+  masks?: Effect[];
+  shapes?: Effect[];
+  anims?: Effect[];
+  tin?: Transition;
+  tout?: Transition;
+  parent?: string;
+  matte?: { src: string; mode: string };
+  off?: boolean;
+}
+
+export interface Track {
+  id: string;
+  kind: "video" | "audio";
+  name?: string;
+  items: Item[];
+  hidden?: boolean;
+  locked?: boolean;
+  muted?: boolean;
+  solo?: boolean;
+  vol?: number;
+  pan?: number;
+  duck?: { by: string; amount: number };
+  afx?: Effect[];
+}
+
+export interface Marker {
+  t: number;
+  name: string;
+  color?: string;
+}
+
+export interface Comp {
+  id: string;
+  name: string;
+  w: number;
+  h: number;
+  fps: number;
+  dur?: number;
+  bg: string;
+  tracks: Track[];
+  markers?: Marker[];
+  master?: { vol?: number; lufs?: number; limiter?: boolean; afx?: Effect[] };
+}
+
+export interface Media {
+  id: string;
+  path: string;
+  name: string;
+  kind: "video" | "audio" | "image" | "svg";
+  dur: number;
+  w: number;
+  h: number;
+  fps: number;
+  has_video: boolean;
+  has_audio: boolean;
+  alpha?: boolean;
+}
+
+export interface Project {
+  v: number;
+  name: string;
+  main: string;
+  media: Media[];
+  comps: Comp[];
+}
+
+export interface PDef {
+  name: string;
+  type: "num" | "vec2" | "color" | "str" | "bool" | string[];
+  def: Val;
+  min: number | null;
+  max: number | null;
+  anim: boolean;
+  desc: string;
+}
+
+export interface FxDef {
+  name: string;
+  cat?: string;
+  desc: string;
+  ff?: boolean;
+  params: PDef[];
+}
+
+export interface Catalog {
+  effects: FxDef[];
+  audio_effects: FxDef[];
+  transitions: FxDef[];
+  anims: { name: string; desc: string }[];
+  text_anims: { name: string; desc: string }[];
+  templates: { name: string; params: string; desc: string }[];
+  presets: { name: string; desc: string }[];
+  colors: { name: string; desc: string }[];
+  props: Record<string, PDef[]>;
+  shape_kinds: { name: string; params: PDef[] }[];
+}
+
+export interface LogEntry {
+  rev: number;
+  source: string;
+  script: string;
+  result: string;
+  ok: boolean;
+}
+
+export interface Job {
+  id: string;
+  state: "running" | "done" | "error";
+  pct: number;
+  frames: string;
+  eta_s: number;
+  preset: string;
+  out: string;
+  error?: string;
+  bytes?: number;
+  secs?: number;
+  render_fps?: number;
+}

@@ -186,7 +186,7 @@ fn fft(re: &mut [f32], im: &mut [f32]) {
 /// Onset envelope + tempo + DP beat tracking (Ellis 2007).
 pub fn beats_from_samples(x: &[f32], sr: f32) -> (f64, Vec<f64>, Vec<f64>) {
     let n_fft = 1024;
-    let hop = 256;
+    let hop = 128;
     if x.len() < n_fft * 4 {
         return (0.0, vec![], vec![]);
     }
@@ -211,7 +211,7 @@ pub fn beats_from_samples(x: &[f32], sr: f32) -> (f64, Vec<f64>, Vec<f64>) {
         env.push(flux);
     }
     // high-pass (subtract local mean) and normalize
-    let w = 16;
+    let w = 32;
     let mut o: Vec<f32> = (0..env.len())
         .map(|i| {
             let a = i.saturating_sub(w);
@@ -290,7 +290,24 @@ pub fn beats_from_samples(x: &[f32], sr: f32) -> (f64, Vec<f64>, Vec<f64>) {
         }
     }
     let downs: Vec<f64> = beats.iter().skip(best_phase).step_by(4).cloned().collect();
-    ((bpm as f64 * 10.0).round() / 10.0, beats, downs)
+    // refine tempo by least-squares fit of beat time vs index (sub-frame accuracy)
+    let mut bpm = bpm as f64;
+    if beats.len() >= 8 {
+        let n = beats.len() as f64;
+        let mx = (n - 1.0) / 2.0;
+        let my = beats.iter().sum::<f64>() / n;
+        let (mut sxy, mut sxx) = (0.0, 0.0);
+        for (i, b) in beats.iter().enumerate() {
+            let dx = i as f64 - mx;
+            sxy += dx * (b - my);
+            sxx += dx * dx;
+        }
+        let period = sxy / sxx.max(1e-9);
+        if period > 0.2 && period < 1.5 {
+            bpm = 60.0 / period;
+        }
+    }
+    ((bpm * 10.0).round() / 10.0, beats, downs)
 }
 
 pub fn beats(ff: &Ff, path: &str) -> Result<Value> {

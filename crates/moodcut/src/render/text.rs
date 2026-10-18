@@ -11,9 +11,9 @@ use resvg::usvg::fontdb::{self, Database, Family, Query, Stretch, Style, Weight}
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-static INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.otf");
-static INTER_BOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-Bold.otf");
-static INTER_BLACK: &[u8] = include_bytes!("../../assets/fonts/Inter-Black.otf");
+pub static INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.otf");
+pub static INTER_BOLD: &[u8] = include_bytes!("../../assets/fonts/Inter-Bold.otf");
+pub static INTER_BLACK: &[u8] = include_bytes!("../../assets/fonts/Inter-Black.otf");
 
 pub struct FaceData {
     pub data: Arc<Vec<u8>>,
