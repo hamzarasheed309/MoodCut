@@ -736,3 +736,11 @@ fn pro_entrances() {
     assert!(r.props["mblur"].v.bool() && r.props["pos"].k[0].v.vec().0 < 0.0);
     assert!(p.item("g").unwrap().fx.iter().any(|e| e.kind == "glitch"));
 }
+
+#[test]
+fn track_end_as_a_time() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4 /m/song.mp3\nappend m1[0-4] m1[6-9]\nadd m2 A2 at=0 dur=V1.end");
+    let song = p.comps[0].items().find(|i| i.src.as_deref() == Some("m2")).unwrap();
+    assert_eq!(song.dur, 7.0);
+}

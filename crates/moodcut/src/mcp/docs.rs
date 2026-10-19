@@ -115,7 +115,7 @@ MACROS (see help macros)
 REFERENCES  $ last created, $2 second created in this script; names given with as= work anywhere an id does.";
 
 const TIME: &str = "Times: 12 | 12.5s | 500ms | 90f (frames) | 1:02.5 (m:s) | 1:02:03.5 | 00:00:12:15 (timecode with frames)
- end (comp end) | c3.start c3.end c3.mid | @drop (marker) | sums: c3.end+0.5, end-2. Relative edits: +0.5 / -1.
+ end (comp end) | c3.start c3.end c3.mid | V1.end (where the last clip on V1 ends) | @drop (marker) | sums: c3.end+0.5, end-2. Relative edits: +0.5 / -1.
 Keyframe times are relative to the item start; end = item duration; 50% = half of the item.
 Positions: pos=960,540 | pos=center | top | bottom | left | right | top-left ... | lower-third | pos=50%,80%.
 Units: opacity=50% scale=120% vol=-6dB rot=45 (degrees). Colors: #fff #ff0055 #00000080 rgb(255,0,0) red none.";

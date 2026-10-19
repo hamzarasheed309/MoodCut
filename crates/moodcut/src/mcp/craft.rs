@@ -83,7 +83,8 @@ color V1,V2 commercial
 text 'Nobody tells you this' at=0.1 dur=1.8 size=96 pos=540,500 enter=slamIn exit=popOut
 sfx hit at=0.1
 captions V1 style=punch
-add m8 A2 at=0 vol=-8dB
+# music only as long as the picture, ending on a fade
+add m8 A2 at=0 dur=V1.end vol=-8dB fadeOut=1.5
 sound V1 dialogue
 sound A2 music
 master lufs=-14 limiter=1
@@ -105,7 +106,7 @@ marker add 0 'Intro'
 marker add 13 'The problem'
 title chapter num=1 text='The problem' at=13 dur=2.5
 sfx swish on=titles vol=-18dB
-add m8 A2 at=0 vol=-10dB
+add m8 A2 at=0 dur=V1.end vol=-10dB fadeOut=2
 sound V1 dialogue
 sound A2 music
 master lufs=-14 limiter=1
@@ -173,7 +174,7 @@ title lowerthird text='Mara Okafor' sub='Marine biologist' style=minimal at=1
 tr c2 c3 dissolve 0.6
 color V1 documentary
 fx V1 noise amount=0.04
-add m8 A2 at=0 vol=-14dB
+add m8 A2 at=0 dur=V1.end vol=-14dB fadeOut=3
 sound c1,c3 dialogue
 sound A2 music
 master lufs=-16 limiter=1
@@ -189,7 +190,7 @@ marker add 0 'Setup'
 marker add 12 'Export'
 title chapter num=2 text='Export' at=12 dur=2
 sfx swish at=12
-add m8 A2 at=0 vol=-22dB
+add m8 A2 at=0 dur=V1.end vol=-22dB fadeOut=2
 master lufs=-16 limiter=1";
 
 #[cfg(test)]

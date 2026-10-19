@@ -320,7 +320,14 @@ impl<'a> Exec<'a> {
         self.p.locate(id).ok_or_else(|| anyhow!("item '{id}' vanished"))
     }
 
+    /// Span of an item, or of a track's contents (`V1.end` = where the last clip on V1 ends).
     pub fn item_span(&self, key: &str) -> Option<(f64, f64)> {
+        if parse_track_spec(key).is_some() && self.p.item(key).is_none() {
+            let t = self.comp().track(key)?;
+            let a = t.items.iter().map(|i| i.start).fold(f64::INFINITY, f64::min);
+            let b = t.items.iter().map(|i| i.end()).fold(0.0, f64::max);
+            return a.is_finite().then_some((a, b));
+        }
         let key = self.resolve_ref(key).ok()?;
         self.p.item(&key).map(|i| (i.start, i.end()))
     }

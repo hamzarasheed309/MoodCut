@@ -366,7 +366,8 @@ impl<'a> Exec<'a> {
             item.text = Some(text);
             let iid = item.id.clone();
             self.place(item, &tid, Mode::Overwrite)?;
-            let mut props = vec![("size".to_string(), base_size.clone()), ("pos".to_string(), pos.clone()), ("boxW".to_string(), fmt_num(cw * 0.86))];
+            // vertical: narrow enough to stay clear of the app's side buttons
+            let mut props = vec![("size".to_string(), base_size.clone()), ("pos".to_string(), pos.clone()), ("boxW".to_string(), fmt_num(cw * if vertical { 0.66 } else { 0.86 }))];
             props.extend(style_props.iter().cloned());
             self.apply_props(&iid, &props)?;
             if karaoke {
