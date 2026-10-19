@@ -1,8 +1,8 @@
 MoodCut 1.0.0 for Windows x64
-source commit: ea73580ba18abab032429966fc4eb27df3961ebe
-built by: https://github.com/hamzarasheed309/MoodCut/actions/runs/39220530887
-built at: 2026-10-19T08:17:46Z
-sha256: 03884dd13153b9d50c77180300b7040262265bdac81dac9694e906e25c49c609
-size: 18167296 bytes
-installer sha256: c5e69079906290ccdff6702afe11381daf1dbac7acbcf3d42106debf7750d196
-installer size: 6886087 bytes
+source commit: 86ffa6a52ffd0ad378cce75c5c486e7a4ef6888e
+built by: https://github.com/hamzarasheed309/MoodCut/actions/runs/39224865934
+built at: 2026-10-19T08:58:02Z
+sha256: 4ae73a514f3b82ebec593fd060a5a63b5dceafd89be1d96e6aa29d14b376f586
+size: 18232320 bytes
+installer sha256: e1d76375ba434ceeedc8911438a00c0bf84be701342caa0e4fed1581ee5a8959
+installer size: 6898885 bytes
