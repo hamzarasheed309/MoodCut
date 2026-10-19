@@ -11,7 +11,7 @@
 ; reverses all of it.
 
 #if VER < EncodeVer(6,3,0)
-  #error MoodCut's installer needs Inno Setup 6.3 or later (it uses x64compatible and DownloadTemporaryFile)
+  #error The MoodCut installer needs Inno Setup 6.3 or later (it uses x64compatible and DownloadTemporaryFile)
 #endif
 
 #define AppName "MoodCut"

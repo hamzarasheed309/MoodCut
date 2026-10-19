@@ -244,7 +244,9 @@ Inno Setup, per-user by default (`PrivilegesRequired=lowest`, `/ALLUSERS` on the
 shortcuts (started minimized so the console host never flashes), `PATH`, the `.mcut` association (`moodcut gui "%1"`),
 FFmpeg (downloaded by the installer with a progress bar from gyan.dev or the BtbN mirror, then unpacked by
 `moodcut setup --from <zip> --dest {app}\ffmpeg\bin`, which MoodCut searches first), and `moodcut install-ai --quiet`.
-The uninstaller runs `moodcut uninstall-ai`, removes the PATH entry and FFmpeg, and offers to delete the data folder.
+The uninstaller runs `moodcut uninstall-ai`, removes the PATH entry and FFmpeg, and offers to delete settings, caches
+and downloaded tools from the data folder (autosaves, generated graphics, sound effects, fonts and models are kept).
+In an all-users install, AI apps are connected as the user who started Setup, not the elevated account.
 CI compiles it, installs it silently into a folder with a space, checks FFmpeg, PATH and the association, and uninstalls.
 
 ## Brand (`brand.rs`, `gui/src/brand.tsx`)
