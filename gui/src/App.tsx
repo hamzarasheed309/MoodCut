@@ -1,40 +1,77 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { fitTimeline, installShortcuts, liftOrExtract, markWork, splitAtPlayhead } from "./actions";
-import { AudioPanel } from "./components/AudioPanel";
-import { ColorPanel } from "./components/ColorPanel";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { MarkersPanel } from "./components/MarkersPanel";
-import { ToolsPanel, toolName } from "./components/Tools";
-import { Console } from "./components/Console";
-import { Inspector } from "./components/Inspector";
-import { LeftPanel } from "./components/LeftPanel";
+import { installShortcuts } from "./actions";
 import { CheckPanel } from "./components/CheckPanel";
+import { Dock } from "./components/Dock";
 import { FfmpegBanner } from "./components/FfmpegBanner";
 import { GraphicEditor } from "./components/GraphicEditor";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
-import { Monitor } from "./components/Monitor";
-import { Timeline } from "./components/Timeline";
-import {
-  aiPulse,
-  comp,
-  connected,
-  dirty,
-  logs,
-  pickFiles,
-  playhead,
-  project,
-  project_,
-  projectPath,
-  redoN,
-  rev,
-  run,
-  showCheck,
-  showRender,
-  tool,
-  undoN,
-  zoom,
-} from "./store";
-import { compDuration, fmtNum } from "./util";
+import { ALL_PANELS, closePanel, isOpen, maximized, narrow, PANEL_TITLES, resetWorkspace, setLayout, showPanel, switchWorkspace, workspace, WORKSPACES } from "./dock";
+import { aiPulse, connected, dirty, logs, pickFiles, project, project_, projectPath, redoN, rev, run, showCheck, showRender, undoN } from "./store";
+
+/** Workspace switcher, like the tabs at the top of Premiere Pro and After Effects. */
+function Workspaces() {
+  if (narrow.value) return null;
+  return (
+    <div class="workspaces" role="tablist" aria-label="Workspaces">
+      {WORKSPACES.map((w) => (
+        <button key={w.id} role="tab" aria-selected={workspace.value === w.id} class={"ws" + (workspace.value === w.id ? " on" : "")} title={w.desc} onClick={() => switchWorkspace(w.id)}>
+          {w.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Window menu: open or close any panel, reset the workspace, maximize. */
+function WindowMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    window.addEventListener("pointerdown", off, true);
+    return () => window.removeEventListener("pointerdown", off, true);
+  }, [open]);
+  return (
+    <div class="dock-menu" ref={ref}>
+      <button class={"btn sm ghost" + (open ? " on" : "")} onClick={() => setOpen(!open)} title="Panels and workspaces">
+        Window ▾
+      </button>
+      {open && (
+        <div class="menu-pop wide">
+          <div class="menu-head">Panels</div>
+          {ALL_PANELS.map((p) => {
+            const on = isOpen(p);
+            return (
+              <div key={p} class="menu-item" onClick={() => (on ? setLayout((l) => closePanel(l, p)) : showPanel(p))}>
+                <span class="check">{on ? "✓" : ""}</span>
+                {PANEL_TITLES[p]}
+              </div>
+            );
+          })}
+          <div class="menu-sep" />
+          <div class="menu-head">Workspace</div>
+          {narrow.value && <div class="menu-item disabled">Narrow window: compact layout</div>}
+          {WORKSPACES.map((w) => (
+            <div key={w.id} class="menu-item" onClick={() => (switchWorkspace(w.id), setOpen(false))}>
+              <span class="check">{workspace.value === w.id ? "•" : ""}</span>
+              {w.name}
+            </div>
+          ))}
+          <div class="menu-sep" />
+          <div class="menu-item" onClick={() => (resetWorkspace(), setOpen(false))}>
+            Reset to saved layout
+          </div>
+          {maximized.value && (
+            <div class="menu-item" onClick={() => (maximized.value = null, setOpen(false))}>
+              Restore maximized panel <span class="kbd">`</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TopBar({ onConnect }: { onConnect: () => void }) {
   const p = project.value;
@@ -74,6 +111,9 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
       <span class="proj" title={projectPath.value || "not saved yet (autosaved)"}>
         {p?.name} <span style={{ color: "var(--faint)" }}>· rev {rev.value}</span>
       </span>
+      <WindowMenu />
+      <span class="spacer" />
+      <Workspaces />
       <span class="spacer" />
       <button class="btn sm ghost icon" disabled={!undoN.value} title="Undo (Ctrl+Z)" onClick={() => run("undo", true)}>
         ↶
@@ -98,118 +138,14 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
   );
 }
 
-function TimelineToolbar() {
-  const c = comp.value;
-  const w = c?.work;
-  return (
-    <div class="tl-toolbar">
-      <span class="tool-name" title="Current tool (see the Tools strip on the left)">{toolName(tool.value)}</span>
-      <button class="btn sm" title="Split selected / all at playhead (Ctrl+K)" onClick={splitAtPlayhead}>
-        Split
-      </button>
-      <button class="btn sm" title="Add marker (M)" onClick={() => run(`marker add ${fmtNum(playhead.value, 4)}`, true)}>
-        ◆ Marker
-      </button>
-      <span class="sep" />
-      <button class="btn sm" title="Work area in at playhead (I)" onClick={() => markWork("in")}>
-        {"{"} In
-      </button>
-      <button class="btn sm" title="Work area out at playhead (O)" onClick={() => markWork("out")}>
-        Out {"}"}
-      </button>
-      {w && (
-        <>
-          <span class="badge" title="Work area (render range=work; lift and extract use it). Shift+drag on the ruler to set it.">
-            {fmtNum(w[0], 2)}–{fmtNum(w[1], 2)}s
-          </span>
-          <button class="btn sm ghost" title="Lift: remove the work area, leave a gap (;)" onClick={() => liftOrExtract("lift")}>
-            Lift
-          </button>
-          <button class="btn sm ghost" title="Extract: remove the work area and close the gap (')" onClick={() => liftOrExtract("extract")}>
-            Extract
-          </button>
-          <button class="btn sm ghost" title="Clear work area (Ctrl+Shift+X)" onClick={() => run("workarea clear", true)}>
-            ✕
-          </button>
-        </>
-      )}
-      <span style={{ flex: 1 }} />
-      <span style={{ color: "var(--faint)", fontSize: "12px" }}>{c ? `${c.tracks.reduce((n, t) => n + t.items.length, 0)} items · ${fmtNum(compDuration(c), 2)}s` : ""}</span>
-      <button class="btn sm ghost" title="Zoom out (-)" onClick={() => (zoom.value = Math.max(2, zoom.value / 1.4))}>
-        −
-      </button>
-      <input type="range" min="1" max="100" value={Math.round((Math.log(zoom.value) / Math.log(3000)) * 100)} onInput={(e) => (zoom.value = Math.max(2, Math.pow(3000, parseFloat((e.target as HTMLInputElement).value) / 100)))} style={{ width: "120px" }} />
-      <button class="btn sm ghost" title="Zoom in (+)" onClick={() => (zoom.value = Math.min(3000, zoom.value * 1.4))}>
-        +
-      </button>
-      <button class="btn sm" title="Fit timeline (\)" onClick={fitTimeline}>
-        Fit
-      </button>
-    </div>
-  );
-}
-
-type RightTab = "inspector" | "color" | "audio" | "markers" | "history" | "ai";
-const RIGHT_TABS: [RightTab, string, string][] = [
-  ["inspector", "Controls", "Inspector: properties, effects, masks, keyframes"],
-  ["color", "Lumetri", "Lumetri Color: correction, curves, wheels, HSL secondary"],
-  ["audio", "Audio", "Essential Sound and the Audio Track Mixer"],
-  ["markers", "Markers", "Markers"],
-  ["history", "History", "Undo history (yours and the AI's)"],
-  ["ai", "AI", "AI & Script console"],
-];
-
 export function App() {
-  const [tlH, setTlH] = useState(320);
   const [connect, setConnect] = useState(false);
-  const [rightTab, setRightTab] = useState<RightTab>(() => {
-    try {
-      return (localStorage.getItem("moodcut.rightTab") as RightTab) || "inspector";
-    } catch {
-      return "inspector";
-    }
-  });
-  const pickTab = (t: RightTab) => {
-    setRightTab(t);
-    try {
-      localStorage.setItem("moodcut.rightTab", t);
-    } catch {}
-  };
-  const resizing = useRef(false);
-
   useEffect(installShortcuts, []);
-
   return (
-    <div
-      class="app"
-      style={{ "--tl-h": tlH + "px" } as any}
-      onPointerMove={(e) => {
-        if (resizing.current) setTlH(Math.max(140, Math.min(window.innerHeight - 220, window.innerHeight - e.clientY)));
-      }}
-      onPointerUp={() => (resizing.current = false)}
-    >
+    <div class="app">
       <TopBar onConnect={() => setConnect(true)} />
       <FfmpegBanner />
-      <LeftPanel />
-      <Monitor />
-      <div class="panel right">
-        <div class="tabs compact">
-          {RIGHT_TABS.map(([k, name, tip]) => (
-            <div key={k} class={"tab" + (rightTab === k ? " active" : "")} title={tip} onClick={() => pickTab(k)}>
-              {name}
-            </div>
-          ))}
-        </div>
-        {rightTab === "inspector" ? <Inspector /> : rightTab === "color" ? <ColorPanel /> : rightTab === "audio" ? <AudioPanel /> : rightTab === "markers" ? <MarkersPanel /> : rightTab === "history" ? <HistoryPanel /> : <Console />}
-      </div>
-      <div class="split" onPointerDown={() => (resizing.current = true)} />
-      <div class="panel tl">
-        <ToolsPanel />
-        <div class="tl-main">
-          <TimelineToolbar />
-          <Timeline />
-        </div>
-      </div>
+      <Dock />
       <RenderPanel />
       <FileBrowser />
       <GraphicEditor />

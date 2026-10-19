@@ -479,6 +479,8 @@ async fn api_catalog() -> Response {
         "effects": fx, "audio_effects": afx, "transitions": tr, "anims": anims, "text_anims": text_anims, "templates": templates, "presets": presets, "colors": colors,
         "props": {"layer": pjson(schema::LAYER), "clip": pjson(schema::CLIP), "text": pjson(schema::TEXT), "solid": pjson(schema::SOLID), "comp": pjson(schema::NESTED), "camera": pjson(schema::CAMERA), "shape": pjson(schema::SHAPE_COMMON), "mask": pjson(schema::MASK), "animator": pjson(schema::ANIMATOR)},
         "scopes": crate::render::scopes::KINDS,
+        "sfx": crate::sfx::KINDS.iter().map(|k| json!({"name": k.name, "desc": k.desc, "dur": k.dur, "sync": k.sync, "vol": k.vol})).collect::<Vec<_>>(),
+        "brands": crate::ops::pro::BRAND_PRESETS.iter().map(|(n, u, v)| json!({"name": n, "use": u, "font": v[0], "weight": v[1], "primary": v[2], "accent": v[3], "text": v[4], "dark": v[5]})).collect::<Vec<_>>(),
         "shape_kinds": schema::SHAPE_KINDS.iter().map(|k| json!({"name": k, "params": pjson(schema::shape_props(k).unwrap_or(&[]))})).collect::<Vec<_>>()
     }))
     .into_response()

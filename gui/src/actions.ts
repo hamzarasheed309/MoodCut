@@ -2,6 +2,7 @@
 // line sent through `run`, the same path the AI uses over MCP.
 import { clipboard, comp, findItem, fps, mediaById, monitorTab, playhead, playing, project_, projectPath, run, scrollX, selection, setPlayhead, showRender, snapping, sourceIn, sourceMedia, sourceOut, sourceT, toast, tool, zoom } from "./store";
 import type { Tool } from "./store";
+import { focusedPanel, groupOf, maximized, shown } from "./dock";
 import type { Comp, Item } from "./types";
 import { compDuration, editPoints, fmtNum, keyTimes } from "./util";
 
@@ -338,7 +339,12 @@ export function installShortcuts(): () => void {
       zoom.value = Math.max(2, zoom.value / 1.25);
     } else if (k === "\\") {
       fitTimeline();
+    } else if (k === "`") {
+      // maximize / restore the panel group with focus (Premiere's ` key)
+      const gr = focusedPanel.value ? groupOf(shown.value, focusedPanel.value) : undefined;
+      maximized.value = maximized.value ? null : gr?.id ?? null;
     } else if (k === "Escape") {
+      if (maximized.value) maximized.value = null;
       selection.value = [];
       tool.value = "select";
     }

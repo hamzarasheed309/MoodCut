@@ -12,6 +12,9 @@ export const ffVersion = signal("");
 export const selection = signal<string[]>([]);
 export const playhead = signal(0);
 export const playing = signal(false);
+/** The playhead while paused, -1 while playing: for views that only update when the picture is still
+ * (frame loads, the transform gizmo, scopes), so playback doesn't re-render them every frame. */
+export const pausedPlayhead = computed(() => (playing.value ? -1 : playhead.value));
 export const zoom = signal(80); // px per second
 export const scrollX = signal(0);
 /** Premiere / After Effects tools (see the Tools panel). */
@@ -27,7 +30,6 @@ export const sourceT = signal(0);
 export const sourceIn = signal<number | null>(null);
 export const sourceOut = signal<number | null>(null);
 export const monitorTab = signal<"program" | "source">("program");
-export const showScopes = signal(false);
 export const history = signal<{ undo: string[]; redo: string[] }>({ undo: [], redo: [] });
 export const catalog = signal<Catalog | null>(null);
 export const logs = signal<LogEntry[]>([]);
@@ -86,7 +88,27 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
-export async function refresh() {
+/** Runs `fn` once at a time: calls during a run share it and trigger exactly one more run afterwards,
+ * so an edit's reply and its WebSocket notice cost one state fetch, and the result is never stale. */
+function coalesce(fn: () => Promise<void>): () => Promise<void> {
+  let running: Promise<void> | null = null;
+  let again = false;
+  return () => {
+    if (running) {
+      again = true;
+      return running;
+    }
+    running = (async () => {
+      do {
+        again = false;
+        await fn();
+      } while (again);
+    })().finally(() => (running = null));
+    return running;
+  };
+}
+
+export const refresh = coalesce(async () => {
   const s = await j<any>("/api/state");
   project.value = s.project;
   rev.value = s.rev;
@@ -99,15 +121,15 @@ export async function refresh() {
   // drop selections that no longer exist
   const sel = selection.value.filter((id) => findItem(id));
   if (sel.length !== selection.value.length) selection.value = sel;
-}
+});
 
-export async function refreshLogs() {
+export const refreshLogs = coalesce(async () => {
   logs.value = await j<LogEntry[]>("/api/log");
-}
+});
 
-export async function refreshHistory() {
+export const refreshHistory = coalesce(async () => {
   history.value = await j<{ undo: string[]; redo: string[] }>("/api/history");
-}
+});
 
 export async function refreshJobs() {
   jobs.value = await j<Job[]>("/api/jobs");

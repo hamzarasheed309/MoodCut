@@ -2,7 +2,8 @@
 // Each control writes the same script an AI would: `color <id> k=v` or `fx <id> curves master='...'`.
 import { useEffect, useRef, useState } from "preact/hooks";
 import { setFx } from "../actions";
-import { catalog, mediaById, playhead, run, selectedItem, showScopes } from "../store";
+import { showPanel } from "../dock";
+import { catalog, mediaById, playhead, run, selectedItem } from "../store";
 import type { Effect, FxDef, Item } from "../types";
 import { clamp, fmtNum, q, staticVal } from "../util";
 import { Section, Slider } from "./Controls";
@@ -320,7 +321,7 @@ export function ColorPanel() {
   const [curve, setCurve] = useState("master");
   const [hueTab, setHueTab] = useState("hueSat");
   const it = sel?.item;
-  const at = fmtNum(playhead.value, 4);
+  const at = () => fmtNum(playhead.peek(), 4);
   if (!cat) return <div class="empty">Loading…</div>;
   const media = it?.src ? mediaById.value.get(it.src) : undefined;
   if (!it || it.kind === "null" || it.kind === "camera" || media?.kind === "audio")
@@ -328,7 +329,7 @@ export function ColorPanel() {
       <div class="empty">
         Select a clip, title or adjustment layer to grade it.
         <br />
-        <button class="btn sm" style={{ marginTop: "10px" }} onClick={() => run(`adjust at=${at} dur=5`)}>
+        <button class="btn sm" style={{ marginTop: "10px" }} onClick={() => run(`adjust at=${at()} dur=5`)}>
           Add adjustment layer
         </button>
       </div>
@@ -363,7 +364,7 @@ export function ColorPanel() {
     <div class="scroll color-panel">
       <div class="insp-head">
         <b style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Lumetri · {it.name || it.id}</b>
-        <button class={"btn sm" + (showScopes.value ? " on" : "")} title="Show Lumetri scopes in the monitor" onClick={() => (showScopes.value = !showScopes.value)}>
+        <button class="btn sm" title="Open the Lumetri Scopes panel" onClick={() => showPanel("scopes")}>
           Scopes
         </button>
         <button class="btn sm" title="Remove every color effect from this clip" onClick={() => run((it.fx || []).filter((f) => ["lumetri", "curves", "huecurves", "colorwheels", "secondary", "vignette", "autolevels"].includes(f.kind)).map((f) => `del ${it.id}.${f.id}`).join("\n") || `color ${it.id} none`, true)}>

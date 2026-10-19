@@ -169,12 +169,32 @@ const ALIGN: [string, string, string][] = [
 
 /** After Effects Align panel: to the composition, the title-safe area, or the selection. */
 function AlignGroup() {
+  return (
+    <Group title="Align & Distribute" open={false}>
+      <AlignControls />
+    </Group>
+  );
+}
+
+/** The Align panel on its own. */
+export function AlignPanel() {
+  if (!selection.value.length) return <div class="empty">Select layers to align them to the composition, the title-safe area or each other.</div>;
+  return (
+    <div class="scroll">
+      <div class="group-b" style={{ paddingTop: "10px" }}>
+        <AlignControls />
+      </div>
+    </div>
+  );
+}
+
+function AlignControls() {
   const [to, setTo] = useState("comp");
   const ids = selection.value.join(",");
   const n = selection.value.length;
-  const at = fmtNum(playhead.value, 4);
+  const at = () => fmtNum(playhead.peek(), 4);
   return (
-    <Group title="Align & Distribute" open={false}>
+    <>
       <div class="row">
         <label>align to</label>
         <div class="ctl">
@@ -190,11 +210,11 @@ function AlignGroup() {
       </div>
       <div class="btn-row">
         {ALIGN.map(([k, icon, tip]) => (
-          <button key={k} class="btn sm" title={tip} onClick={() => run(`align ${ids} ${k} to=${to === "sel" && n < 2 ? "comp" : to} at=${at}`, true)}>
+          <button key={k} class="btn sm" title={tip} onClick={() => run(`align ${ids} ${k} to=${to === "sel" && n < 2 ? "comp" : to} at=${at()}`, true)}>
             {icon}
           </button>
         ))}
-        <button class="btn sm" title="Center in the frame" onClick={() => run(`align ${ids} center to=${to === "sel" && n < 2 ? "comp" : to} at=${at}`, true)}>
+        <button class="btn sm" title="Center in the frame" onClick={() => run(`align ${ids} center to=${to === "sel" && n < 2 ? "comp" : to} at=${at()}`, true)}>
           ⊕
         </button>
       </div>
@@ -206,7 +226,27 @@ function AlignGroup() {
           ⇳ distribute V
         </button>
       </div>
-    </Group>
+    </>
+  );
+}
+
+/** Character panel (After Effects): the selected text layer's content and type settings. */
+export function CharacterPanel() {
+  const sel = selectedItem.value;
+  const cat = catalog.value;
+  const it = sel?.item;
+  const [text, setText] = useState("");
+  useEffect(() => setText(it?.text || ""), [it?.id, it?.text]);
+  if (!it || it.kind !== "text" || !cat) return <div class="empty">Select a text layer to set its font, size, tracking, color and stroke.</div>;
+  return (
+    <div class="scroll">
+      <div class="group-b" style={{ paddingTop: "10px" }}>
+        <textarea rows={3} style={{ width: "100%" }} value={text} onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} onBlur={() => text !== it.text && run(`set ${it.id} text=${q(text)}`, true)} onKeyDown={(e) => e.stopPropagation()} />
+        {cat.props.text.map((p) => (
+          <PropRow key={p.name} p={p} a={it.props?.[p.name]} target={it.id} item={it} />
+        ))}
+      </div>
+    </div>
   );
 }
 

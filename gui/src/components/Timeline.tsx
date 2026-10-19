@@ -1,3 +1,4 @@
+import { useSignalEffect } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { comp, fps, mediaById, playhead, project, rev, run, scrollX, selection, setPlayhead, snapping, tool, zoom } from "../store";
 import type { Comp, Item, Track } from "../types";
@@ -61,6 +62,13 @@ type Drag =
   | null;
 
 const fx4 = (v: number) => fmtNum(v, 4);
+
+/** The playhead is a positioned element over the canvas: moving it never redraws the clips. */
+function PlayheadLine() {
+  const x = Math.round(playhead.value * zoom.value - scrollX.value);
+  if (x < -8) return null;
+  return <div class="tl-playhead" style={{ transform: `translateX(${x}px)` }} />;
+}
 const signed = (v: number) => (v >= 0 ? "+" : "-") + fmtNum(Math.abs(v), 4);
 
 export function Timeline() {
@@ -76,7 +84,6 @@ export function Timeline() {
   const rows = layoutRows(c);
   // subscribe to state
   void rev.value;
-  void playhead.value;
   void zoom.value;
   void scrollX.value;
   void selection.value;
@@ -283,25 +290,6 @@ export function Timeline() {
         g.fillStyle = "#c9a33a";
         g.fillText(m.name, x + 6, RULER - 3);
       }
-    }
-    // playhead
-    const px = Math.round(tToX(playhead.value)) + 0.5;
-    if (px >= 0 && px <= W) {
-      g.strokeStyle = "#ff4d6d";
-      g.lineWidth = 1.5;
-      g.beginPath();
-      g.moveTo(px, 0);
-      g.lineTo(px, H);
-      g.stroke();
-      g.lineWidth = 1;
-      g.fillStyle = "#ff4d6d";
-      g.beginPath();
-      g.moveTo(px - 6, 0);
-      g.lineTo(px + 6, 0);
-      g.lineTo(px + 6, 8);
-      g.lineTo(px, 14);
-      g.lineTo(px - 6, 8);
-      g.fill();
     }
     // razor hover line
     if (tool.value === "razor" && hover) {
@@ -667,12 +655,16 @@ export function Timeline() {
     run(`add ${mid}${track} at=${t.toFixed(3)}`);
   }
 
-  // follow the playhead while it moves past the right edge
-  useEffect(() => {
-    const x = tToX(playhead.value);
-    if (x > size.w - 40) scrollX.value = Math.max(0, playhead.value * zoom.value - size.w * 0.2);
-    else if (x < 0) scrollX.value = Math.max(0, playhead.value * zoom.value - 40);
-  }, [playhead.value]);
+  // follow the playhead while it moves past the right edge (without re-rendering every frame)
+  const width = useRef(size.w);
+  width.current = size.w;
+  useSignalEffect(() => {
+    const t = playhead.value;
+    const z = zoom.peek();
+    const x = t * z - scrollX.peek();
+    if (x > width.current - 40) scrollX.value = Math.max(0, t * z - width.current * 0.2);
+    else if (x < 0) scrollX.value = Math.max(0, t * z - 40);
+  });
 
   const heads = rows.map((r) => {
     const t = r.track;
@@ -729,6 +721,7 @@ export function Timeline() {
           const hit = itemAt(e.clientX - rect.left, e.clientY - rect.top);
           if (hit) setPlayhead(Math.max(playhead.value, hit.item.start));
         }} />
+        <PlayheadLine />
         {dropOver && <div class="drop-hint">Drop to place on the timeline</div>}
         {!c?.tracks.some((t) => t.items.length) && (
           <div class="empty" style={{ position: "absolute", left: 0, right: 0, top: "40%", pointerEvents: "none" }}>

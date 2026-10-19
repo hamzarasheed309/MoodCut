@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { placeSource } from "../actions";
 import { attachMeter } from "../meter";
-import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, playhead, playing, project, rev, run, selection, setPlayhead, shapeKind, showScopes, sourceIn, sourceMedia, sourceOut, sourceT, tool } from "../store";
+import { showPanel } from "../dock";
+import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, pausedPlayhead, playhead, playing, project, rev, run, selection, setPlayhead, shapeKind, sourceIn, sourceMedia, sourceOut, sourceT, tool } from "../store";
 import type { Comp, Item, LayerGeom } from "../types";
 import { compDuration, fmtNum, fmtTC, isAnimated } from "../util";
 
@@ -40,7 +41,7 @@ type GDrag =
 
 /** Program monitor overlay: outline and handles of the selected layer (Selection tool), Type and Shape tools. */
 function Overlay({ c }: { c: Comp }) {
-  const t = playhead.value;
+  const t = pausedPlayhead.value;
   const id = selection.value.length === 1 ? selection.value[0] : null;
   const f = id ? findItem(id) : null;
   const it: Item | undefined = f && f.comp.id === c.id ? f.item : undefined;
@@ -51,7 +52,7 @@ function Overlay({ c }: { c: Comp }) {
   const tl = tool.value;
 
   useEffect(() => {
-    if (!it || !visible || playing.value) return setGeom(null);
+    if (!it || !visible || t < 0) return setGeom(null);
     let live = true;
     const h = setTimeout(async () => {
       try {
@@ -63,14 +64,14 @@ function Overlay({ c }: { c: Comp }) {
       live = false;
       clearTimeout(h);
     };
-  }, [it?.id, visible, t, rev.value, playing.value]);
+  }, [it?.id, visible, t, rev.value]);
 
   const pt = (e: PointerEvent): [number, number] => {
     const r = svg.current!.getBoundingClientRect();
     return [((e.clientX - r.left) / r.width) * c.w, ((e.clientY - r.top) / r.height) * c.h];
   };
   const active = tl === "type" || tl === "shape" || (tl === "select" && geom);
-  if (!active || playing.value) return null;
+  if (!active || t < 0) return null;
   const at = fmtNum(t, 4);
   const anchor = geom?.anchor || [0, 0];
   const keyed = (p: string) => (it && isAnimated(it.props?.[p]) ? ` key at=${at}` : "");
@@ -212,13 +213,17 @@ function Scopes({ c }: { c: Comp }) {
   const kinds = (catalog.value?.scopes || ["waveform", "parade", "vectorscope", "histogram"]).filter((k) => k !== "all");
   const [kind, setKind] = useState(kinds[0] || "waveform");
   const [data, setData] = useState<{ img?: string; text?: string; error?: string } | null>(null);
-  const t = playhead.value;
+  const box = useRef<HTMLDivElement>(null);
+  const size = useSize(box);
+  // a request per 64 px of width keeps resizing cheap
+  const w = Math.max(192, Math.min(1024, Math.round((size.w - 16) / 64) * 64));
+  const t = pausedPlayhead.value;
   useEffect(() => {
-    if (playing.value) return;
+    if (t < 0) return;
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/scope?kind=${kind}&t=${t.toFixed(4)}&comp=${c.id}&w=360`).then((r) => r.json());
+        const r = await fetch(`/api/scope?kind=${kind}&t=${t.toFixed(4)}&comp=${c.id}&w=${w}`).then((r) => r.json());
         if (live) setData(r);
       } catch {}
     }, 150);
@@ -226,9 +231,9 @@ function Scopes({ c }: { c: Comp }) {
       live = false;
       clearTimeout(h);
     };
-  }, [kind, t, rev.value, c.id, playing.value]);
+  }, [kind, t, rev.value, c.id, w]);
   return (
-    <div class="scopes">
+    <div class="scopes" ref={box}>
       <div class="seg">
         {kinds.map((k) => (
           <button key={k} class={"btn sm" + (k === kind ? " on" : "")} onClick={() => setKind(k)}>
@@ -303,12 +308,36 @@ function SourceBar() {
   );
 }
 
-// ---------------------------------------------------------------- monitor
+// ---------------------------------------------------------------- panels
 
-export function Monitor() {
+/** Size of an element, kept current. */
+function useSize(ref: { current: HTMLElement | null }) {
+  const [size, setSize] = useState({ w: 640, h: 360 });
+  useEffect(() => {
+    const el = ref.current!;
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return size;
+}
+
+/** The largest frame of `aspect` inside the stage, with a margin. */
+function fitFrame(stage: { w: number; h: number }, aspect: number) {
+  let fw = stage.w - 24;
+  let fh = fw / aspect;
+  if (fh > stage.h - 24) {
+    fh = stage.h - 24;
+    fw = fh * aspect;
+  }
+  return { fw: Math.max(32, fw), fh: Math.max(18, fh) };
+}
+
+/** Program monitor: the composition, playback, safe guides, transform gizmo, Type and Shape tools. */
+export function ProgramMonitor() {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [stage, setStage] = useState({ w: 640, h: 360 });
+  const stage = useSize(stageRef);
   const [src, load] = useLatestImage();
   const [quality, setQuality] = useState(0.5);
   const [safe, setSafe] = useState(false);
@@ -316,38 +345,20 @@ export function Monitor() {
   const c = comp.value;
   const p = project.value;
   const dur = c ? compDuration(c) : 0;
-  const tab = monitorTab.value;
-  const srcMedia = sourceMedia.value ? mediaById.value.get(sourceMedia.value) : undefined;
+  const { fw, fh } = fitFrame(stage, c ? c.w / c.h : 16 / 9);
 
   useEffect(() => {
-    const el = stageRef.current!;
-    const ro = new ResizeObserver(() => setStage({ w: el.clientWidth, h: el.clientHeight }));
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const aspect = c ? c.w / c.h : 16 / 9;
-  let fw = stage.w - 24;
-  let fh = fw / aspect;
-  if (fh > stage.h - 24) {
-    fh = stage.h - 24;
-    fw = fh * aspect;
-  }
-  fw = Math.max(32, fw);
-  fh = Math.max(18, fh);
-
-  useEffect(() => {
-    if (!c || playing.value || tab !== "program") return;
+    const t = pausedPlayhead.value;
+    if (!c || t < 0) return;
     const w = Math.round(Math.min(c.w, fw * (window.devicePixelRatio || 1)) * quality * 2) || 320;
-    load(`/api/frame?t=${playhead.value.toFixed(4)}&w=${Math.max(64, w)}&comp=${c.id}&r=${rev.value}`);
-  }, [playhead.value, rev.value, c?.id, quality, Math.round(fw), playing.value, tab]);
+    load(`/api/frame?t=${t.toFixed(4)}&w=${Math.max(64, w)}&comp=${c.id}&r=${rev.value}`);
+  }, [pausedPlayhead.value, rev.value, c?.id, quality, Math.round(fw)]);
 
   // playback via streamed fragmented MP4
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     if (playing.value) {
-      monitorTab.value = "program";
       const from = playhead.value >= dur - 0.05 ? 0 : playhead.value;
       setStreamFrom(from);
       attachMeter(v);
@@ -376,83 +387,111 @@ export function Monitor() {
     };
   }, [streamFrom]);
 
-  const step = (n: number) => setPlayhead(Math.max(0, playhead.value + n / fps.value));
+  const step = (n: number) => setPlayhead(Math.max(0, playhead.peek() + n / fps.peek()));
 
   return (
-    <div class="panel mon">
+    <div class="mon" onPointerDown={() => (monitorTab.value = "program")}>
       <div class="mon-head">
-        <div class="mon-tabs">
-          <button class={"btn sm" + (tab === "source" ? " on" : "")} title="Source monitor: preview media, mark In/Out, insert or overwrite" onClick={() => (monitorTab.value = "source")}>
-            Source{srcMedia ? `: ${srcMedia.name}` : ""}
-          </button>
-          <button class={"btn sm" + (tab === "program" ? " on" : "")} title="Program monitor: the composition" onClick={() => (monitorTab.value = "program")}>
-            Program
-          </button>
-        </div>
-        {tab === "program" && (
-          <select value={activeId.value} onChange={(e) => run(`comp use ${(e.target as HTMLSelectElement).value}`, true)}>
-            {p?.comps.map((cc) => (
-              <option value={cc.id} key={cc.id}>
-                {cc.id} · {cc.name} {cc.id === p.main ? "★" : ""}
-              </option>
-            ))}
-          </select>
-        )}
+        <select value={activeId.value} onChange={(e) => run(`comp use ${(e.target as HTMLSelectElement).value}`, true)}>
+          {p?.comps.map((cc) => (
+            <option value={cc.id} key={cc.id}>
+              {cc.id} · {cc.name} {cc.id === p.main ? "★" : ""}
+            </option>
+          ))}
+        </select>
+        <span class="badge">
+          {c?.w}×{c?.h} · {c?.fps}fps
+        </span>
         <span style={{ flex: 1 }} />
-        {tab === "program" && (
-          <>
-            <select value={String(quality)} onChange={(e) => setQuality(parseFloat((e.target as HTMLSelectElement).value))} title="Preview resolution">
-              <option value="1">Full</option>
-              <option value="0.5">1/2</option>
-              <option value="0.25">1/4</option>
-            </select>
-            <button class={"btn sm" + (safe ? " on" : "")} onClick={() => setSafe(!safe)} title="Title/action safe guides">
-              Safe
-            </button>
-            <button class={"btn sm" + (showScopes.value ? " on" : "")} onClick={() => (showScopes.value = !showScopes.value)} title="Lumetri scopes: waveform, RGB parade, vectorscope, histogram">
-              Scopes
-            </button>
-          </>
-        )}
+        <select value={String(quality)} onChange={(e) => setQuality(parseFloat((e.target as HTMLSelectElement).value))} title="Playback resolution">
+          <option value="1">Full</option>
+          <option value="0.5">1/2</option>
+          <option value="0.25">1/4</option>
+        </select>
+        <button class={"btn sm" + (safe ? " on" : "")} onClick={() => setSafe(!safe)} title="Title/action safe guides">
+          Safe
+        </button>
+        <button class="btn sm" onClick={() => showPanel("scopes")} title="Lumetri Scopes panel: waveform, RGB parade, vectorscope, histogram">
+          Scopes
+        </button>
       </div>
-      <div class="mon-body">
-        <div class="mon-stage" ref={stageRef}>
-          {tab === "source" && <SourceView fw={fw} fh={fh} />}
-          {/* stays mounted so playback (and its audio meter) keeps one <video> */}
-          <div class="mon-frame" style={{ display: tab === "program" ? undefined : "none", width: fw + "px", height: fh + "px", background: c?.bg && c.bg.length <= 7 ? c.bg : "transparent" }}>
-            {src && <img src={src} draggable={false} />}
-            <video ref={videoRef} playsInline style={{ visibility: playing.value ? "visible" : "hidden" }} />
-            {safe && <div class="safe" />}
-            {c && tab === "program" && <Overlay c={c} />}
-          </div>
+      <div class="mon-stage" ref={stageRef}>
+        <div class="mon-frame" style={{ width: fw + "px", height: fh + "px", background: c?.bg && c.bg.length <= 7 ? c.bg : "transparent" }}>
+          {src && <img src={src} draggable={false} />}
+          <video ref={videoRef} playsInline style={{ visibility: playing.value ? "visible" : "hidden" }} />
+          {safe && <div class="safe" />}
+          {c && <Overlay c={c} />}
         </div>
-        {showScopes.value && tab === "program" && c && <Scopes c={c} />}
       </div>
-      {tab === "source" ? (
-        <SourceBar />
-      ) : (
-        <div class="mon-bar">
-          <span class="tc">{fmtTC(playhead.value, fps.value)}</span>
-          <span style={{ flex: 1 }} />
-          <button class="btn icon ghost" title="Start (Home)" onClick={() => setPlayhead(0)}>
-            ⏮
-          </button>
-          <button class="btn icon ghost" title="Previous frame (←)" onClick={() => step(-1)}>
-            ◀
-          </button>
-          <button class="btn icon" style={{ minWidth: "44px" }} title="Play / pause (Space)" onClick={() => (playing.value = !playing.value)}>
-            {playing.value ? "❚❚" : "▶"}
-          </button>
-          <button class="btn icon ghost" title="Next frame (→)" onClick={() => step(1)}>
-            ▶
-          </button>
-          <button class="btn icon ghost" title="End (End)" onClick={() => setPlayhead(dur)}>
-            ⏭
-          </button>
-          <span style={{ flex: 1 }} />
-          <span class="tc dim">{fmtTC(dur, fps.value)}</span>
-        </div>
-      )}
+      <div class="mon-bar">
+        <Timecode />
+        <span style={{ flex: 1 }} />
+        <button class="btn icon ghost" title="Start (Home)" onClick={() => setPlayhead(0)}>
+          ⏮
+        </button>
+        <button class="btn icon ghost" title="Previous frame (←)" onClick={() => step(-1)}>
+          ◀
+        </button>
+        <button class="btn icon" style={{ minWidth: "44px" }} title="Play / pause (Space)" onClick={() => (playing.value = !playing.value)}>
+          {playing.value ? "❚❚" : "▶"}
+        </button>
+        <button class="btn icon ghost" title="Next frame (→)" onClick={() => step(1)}>
+          ▶
+        </button>
+        <button class="btn icon ghost" title="End (End)" onClick={() => setPlayhead(dur)}>
+          ⏭
+        </button>
+        <span style={{ flex: 1 }} />
+        <span class="tc dim">{fmtTC(dur, fps.value)}</span>
+      </div>
     </div>
   );
+}
+
+/** Only this re-renders on every frame of playback. */
+function Timecode() {
+  return <span class="tc">{fmtTC(playhead.value, fps.value)}</span>;
+}
+
+/** Source monitor: preview a media file, mark In / Out, insert or overwrite at the playhead. */
+export function SourceMonitor() {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const stage = useSize(stageRef);
+  const m = sourceMedia.value ? mediaById.value.get(sourceMedia.value) : undefined;
+  const { fw, fh } = fitFrame(stage, m && m.w && m.h ? m.w / m.h : 16 / 9);
+  return (
+    <div class="mon" onPointerDown={() => (monitorTab.value = "source")}>
+      <div class="mon-head">
+        <select value={sourceMedia.value || ""} onChange={(e) => {
+          sourceMedia.value = (e.target as HTMLSelectElement).value || null;
+          sourceT.value = 0;
+          sourceIn.value = null;
+          sourceOut.value = null;
+        }}>
+          <option value="">(no clip)</option>
+          {project.value?.media.filter((x) => x.kind !== "svg").map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.id} · {x.name}
+            </option>
+          ))}
+        </select>
+        {m && (
+          <span class="badge">
+            {m.kind} {m.w ? `${m.w}×${m.h}` : ""} {m.dur ? `${fmtNum(m.dur, 2)}s` : ""}
+          </span>
+        )}
+      </div>
+      <div class="mon-stage" ref={stageRef}>
+        <SourceView fw={fw} fh={fh} />
+      </div>
+      <SourceBar />
+    </div>
+  );
+}
+
+/** Lumetri Scopes panel. */
+export function ScopesPanel() {
+  const c = comp.value;
+  if (!c) return null;
+  return <Scopes c={c} />;
 }

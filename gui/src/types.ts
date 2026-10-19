@@ -104,6 +104,7 @@ export interface Project {
   main: string;
   media: Media[];
   comps: Comp[];
+  brand?: Brand;
 }
 
 export interface PDef {
@@ -136,6 +137,17 @@ export interface Catalog {
   props: Record<string, PDef[]>;
   shape_kinds: { name: string; params: PDef[] }[];
   scopes: string[];
+  sfx: { name: string; desc: string; dur: number; sync: number; vol: number }[];
+  brands: { name: string; use: string; font: string; weight: string; primary: string; accent: string; text: string; dark: string }[];
+}
+
+export interface Brand {
+  font?: string;
+  weight?: string;
+  primary?: string;
+  accent?: string;
+  text?: string;
+  dark?: string;
 }
 
 /** On-screen layer geometry from /api/layer (comp px). */

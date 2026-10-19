@@ -4,7 +4,7 @@ import { levels } from "../meter";
 import { catalog, comp, findItem, mediaById, run, selection } from "../store";
 import type { Effect, Track } from "../types";
 import { fmtNum } from "../util";
-import { NumField, Section, Slider } from "./Controls";
+import { NumField, Slider } from "./Controls";
 
 const TYPES = [
   { k: "dialogue", icon: "🗣", desc: "Loudness match to -23 LUFS, voice EQ/compression and de-essing" },
@@ -80,24 +80,21 @@ function Strip({ t }: { t: Track }) {
   );
 }
 
-export function AudioPanel() {
-  const c = comp.value;
+/** Essential Sound: tag clips as dialogue, music, effects or ambience. */
+export function EssentialSound() {
   const [amount, setAmount] = useState(1);
   const [match, setMatch] = useState(true);
   const [duck, setDuck] = useState(-12);
-  if (!c) return null;
-  const m = c.master || {};
   const clips = selection.value.filter((id) => {
     const f = findItem(id);
     const md = f?.item.src ? mediaById.value.get(f.item.src) : undefined;
     return !!md && (md.has_audio || md.kind === "audio");
   });
-  const audio = c.tracks.filter((t) => t.kind === "audio").sort((a, b) => parseInt(a.id.slice(1)) - parseInt(b.id.slice(1)));
   const sel = clips.length ? findItem(clips[clips.length - 1])?.item : undefined;
   const kind = sel?.afx?.some((e) => e.kind === "voice") ? "dialogue" : undefined;
   return (
     <div class="scroll audio-panel">
-      <Section title="Essential Sound">
+      <div class="group-b" style={{ paddingTop: "10px" }}>
         {clips.length === 0 ? (
           <div class="hint">Select clips with audio, then tag them. Music and ambience duck under the dialogue automatically.</div>
         ) : (
@@ -127,37 +124,45 @@ export function AudioPanel() {
             </div>
           </>
         )}
-      </Section>
-      <Section title="Audio Track Mixer">
-        <div class="mixer">
-          {audio.map((t) => (
-            <Strip key={t.id} t={t} />
-          ))}
-          <div class="strip master">
-            <b>Master</b>
-            <small>{m.lufs !== undefined ? `${m.lufs} LUFS` : " "}</small>
-            <Meter />
-            <input class="fader" type="range" min={-60} max={12} step={0.5} value={m.vol || 0} title="Master volume (double-click: 0 dB)" onDblClick={() => run("master vol=0", true)} onChange={(e) => run(`master vol=${(e.target as HTMLInputElement).value}`, true)} />
-            <NumField value={m.vol || 0} step={0.5} min={-96} max={24} onCommit={(v) => run(`master vol=${fmtNum(v, 2)}`, true)} />
-            <select value={m.lufs === undefined ? "off" : String(m.lufs)} title="Normalize the export to a loudness target" onChange={(e) => run(`master lufs=${(e.target as HTMLSelectElement).value}`, true)}>
-              <option value="off">no target</option>
-              <option value="-14">-14 LUFS</option>
-              <option value="-16">-16 LUFS</option>
-              <option value="-23">-23 LUFS</option>
-            </select>
-            <label class="lim">
-              <input type="checkbox" checked={!!m.limiter} onChange={(e) => run(`master limiter=${(e.target as HTMLInputElement).checked ? 1 : 0}`, true)} />
-              limiter
-            </label>
-            <FxChips list={m.afx || []} target="master" />
-          </div>
+      </div>
+    </div>
+  );
+}
+
+/** Audio Track Mixer: a strip per audio track and the master. */
+export function AudioMixer() {
+  const c = comp.value;
+  if (!c) return null;
+  const m = c.master || {};
+  const audio = c.tracks.filter((t) => t.kind === "audio").sort((a, b) => parseInt(a.id.slice(1)) - parseInt(b.id.slice(1)));
+  return (
+    <div class="scroll audio-panel">
+      <div class="mixer">
+        {audio.map((t) => (
+          <Strip key={t.id} t={t} />
+        ))}
+        <div class="strip master">
+          <b>Master</b>
+          <small>{m.lufs !== undefined ? `${m.lufs} LUFS` : "\u00a0"}</small>
+          <Meter />
+          <input class="fader" type="range" min={-60} max={12} step={0.5} value={m.vol || 0} title="Master volume (double-click: 0 dB)" onDblClick={() => run("master vol=0", true)} onChange={(e) => run(`master vol=${(e.target as HTMLInputElement).value}`, true)} />
+          <NumField value={m.vol || 0} step={0.5} min={-96} max={24} onCommit={(v) => run(`master vol=${fmtNum(v, 2)}`, true)} />
+          <select value={m.lufs === undefined ? "off" : String(m.lufs)} title="Normalize the export to a loudness target" onChange={(e) => run(`master lufs=${(e.target as HTMLSelectElement).value}`, true)}>
+            <option value="off">no target</option>
+            <option value="-14">-14 LUFS</option>
+            <option value="-16">-16 LUFS</option>
+            <option value="-23">-23 LUFS</option>
+          </select>
+          <label class="lim">
+            <input type="checkbox" checked={!!m.limiter} onChange={(e) => run(`master limiter=${(e.target as HTMLInputElement).checked ? 1 : 0}`, true)} />
+            limiter
+          </label>
+          <FxChips list={m.afx || []} target="master" />
         </div>
-        <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
-          <button class="btn sm" onClick={() => run("track add A", true)}>
-            + Audio track
-          </button>
-        </div>
-      </Section>
+        <button class="btn sm add-track" title="Add an audio track" onClick={() => run("track add A", true)}>
+          + A
+        </button>
+      </div>
     </div>
   );
 }

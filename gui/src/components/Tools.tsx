@@ -1,5 +1,6 @@
 // The Tools panel (Premiere Pro / After Effects). Timeline tools act in the timeline,
 // Type and Shape act in the Program monitor.
+import { useEffect, useRef, useState } from "preact/hooks";
 import { shapeKind, snapping, tool } from "../store";
 import type { Tool } from "../store";
 
@@ -21,8 +22,20 @@ const TOOLS: { id: Tool; key: string; name: string; tip: string; icon: any }[] =
 ];
 
 export function ToolsPanel() {
+  // as many columns as the height needs (a grid flowing in columns can't size itself)
+  const ref = useRef<HTMLDivElement>(null);
+  const [cols, setCols] = useState(1);
+  const n = TOOLS.length + 1 + (tool.value === "shape" ? 2 : 0);
+  useEffect(() => {
+    const el = ref.current!;
+    const fit = () => setCols(Math.max(1, Math.ceil(n / Math.max(1, Math.floor((el.clientHeight - 10) / 28)))));
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    fit();
+    return () => ro.disconnect();
+  }, [n]);
   return (
-    <div class="tools" role="toolbar" aria-label="Tools">
+    <div class="tools" ref={ref} role="toolbar" aria-label="Tools" style={{ width: cols * 30 + 8 + "px" }}>
       {TOOLS.map((t) => (
         <button key={t.id} class={"tool" + (tool.value === t.id ? " on" : "")} title={`${t.name} (${t.key})\n${t.tip}`} aria-label={t.name} onClick={() => (tool.value = t.id)}>
           <svg viewBox="0 0 16 16" width="16" height="16">

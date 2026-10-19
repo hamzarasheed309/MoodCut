@@ -1,5 +1,5 @@
 // Markers panel: every comp marker with its time, name, color, duration and note.
-import { comp, fps, playhead, run, setPlayhead } from "../store";
+import { comp, fps, pausedPlayhead, playhead, run, setPlayhead } from "../store";
 import type { Marker } from "../types";
 import { fmtNum, fmtTC, q } from "../util";
 import { NumField, TextField } from "./Controls";
@@ -34,7 +34,7 @@ export function MarkersPanel() {
         </div>
       )}
       {ms.map((m) => {
-        const here = Math.abs(m.t - playhead.value) < 0.5 / fps.value;
+        const here = Math.abs(m.t - pausedPlayhead.value) < 0.5 / fps.value;
         return (
           <div class={"marker-row" + (here ? " here" : "")} key={key(m)}>
             <span class="swatch" style={{ background: m.color || "#fbbf24" }} title="Change color">
