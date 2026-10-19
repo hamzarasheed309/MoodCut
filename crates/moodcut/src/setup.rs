@@ -1,4 +1,4 @@
-//! Environment checks and installers: `doctor`, `setup`, `install-claude`,
+//! Environment checks and installers: `doctor`, `setup` (FFmpeg), `install-ai` / `uninstall-ai`,
 //! plus Windows console handling for the GUI mode.
 
 use crate::render::ffmpeg::{command, Ff};
