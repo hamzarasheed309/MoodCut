@@ -9,7 +9,7 @@ use super::masks::{self, LBounds};
 use super::pixel::{self, blur_pixmap, lerp_into, src_over, IRect, LayerBuf, Pm};
 use super::shapes;
 use super::text::{self, TextStyle};
-use super::warp;
+use super::warp::{self, Cam};
 use crate::model::anim::{Curve, Ease};
 use crate::model::expr::ExprCtx;
 use crate::model::project::*;
@@ -42,6 +42,47 @@ pub fn render_frame(rc: &RenderCtx, comp_id: &str, t: f64, scale: f32) -> Result
     let cr = CompR { rc, comp, sx: w as f32 / comp.w as f32, sy: h as f32 / comp.h as f32, ow: w as i32, oh: h as i32, path: String::new(), depth: 0 };
     cr.render(t, &mut out)?;
     Ok(out)
+}
+
+/// A layer's on-screen geometry at comp time `t`, in comp px: the corners of
+/// its content box (after parenting and 3D projection) and its anchor point.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct LayerGeom {
+    pub quad: [(f64, f64); 4],
+    pub anchor: (f64, f64),
+}
+
+impl LayerGeom {
+    /// Axis-aligned box (left, top, right, bottom).
+    pub fn bbox(&self) -> (f64, f64, f64, f64) {
+        let xs = self.quad.iter().map(|p| p.0);
+        let ys = self.quad.iter().map(|p| p.1);
+        (xs.clone().fold(f64::INFINITY, f64::min), ys.clone().fold(f64::INFINITY, f64::min), xs.fold(f64::NEG_INFINITY, f64::max), ys.fold(f64::NEG_INFINITY, f64::max))
+    }
+}
+
+/// Geometry of `it` at comp time `t` without rendering it (None for layers with no picture).
+pub fn layer_geom(p: &Project, comp: &Comp, it: &Item, t: f64) -> Option<LayerGeom> {
+    let g = Geo { p, comp };
+    let tl = t - it.start;
+    let lists = Geo::lists(it.kind);
+    let x0 = g.ectx(it, None);
+    let ev0 = Ev::new(tl, &x0, g.vc(), &lists);
+    let b = g.bounds(it, &ev0, &x0, tl)?;
+    let x = g.ectx(it, Some(b));
+    let ev = Ev::new(tl, &x, g.vc(), &lists);
+    let w = g.world(it, t, &ev, b);
+    let corners = [(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)];
+    let quad = g.screen_corners(it, t, &w, corners).unwrap_or_else(|| {
+        corners.map(|(cx, cy)| {
+            let mut pt = Point::from_xy(cx, cy);
+            w.m.map_point(&mut pt);
+            (pt.x as f64, pt.y as f64)
+        })
+    });
+    let mut a = Point::from_xy(w.pos.0 as f32, w.pos.1 as f32);
+    w.parent.map_point(&mut a);
+    Some(LayerGeom { quad, anchor: (a.x as f64, a.y as f64) })
 }
 
 #[derive(Clone, Copy)]
@@ -108,13 +149,16 @@ fn blend_of(s: &str) -> BlendMode {
         "saturation" => BlendMode::Saturation,
         "color" => BlendMode::Color,
         "luminosity" => BlendMode::Luminosity,
-        "add" => BlendMode::Plus,
+        "add" | "lineardodge" => BlendMode::Plus,
         _ => BlendMode::SourceOver,
     }
 }
 
 pub fn composite(out: &mut Pixmap, lb: &LayerBuf, opacity: f32, blend: &str) {
     if opacity <= 0.001 {
+        return;
+    }
+    if pixel::blend_custom(out, lb.pm.get(), lb.x, lb.y, opacity, blend) {
         return;
     }
     match blend_of(blend) {
@@ -139,20 +183,21 @@ fn bake_opacity(lb: &mut LayerBuf, op: f32) {
     pixel::apply_alpha_mask(lb.pm.make_mut(), &vec![m; n]);
 }
 
-impl<'a> CompR<'a> {
-    fn vc(&self) -> VCtx {
+/// Layer geometry that needs no media decoding: content bounds, fit scale and
+/// world transforms. Shared by the compositor, align/distribute and the
+/// editor's transform overlay, so they measure layers the same way.
+#[derive(Clone, Copy)]
+pub struct Geo<'a> {
+    pub p: &'a Project,
+    pub comp: &'a Comp,
+}
+
+impl<'a> Geo<'a> {
+    pub fn vc(&self) -> VCtx {
         VCtx { cw: self.comp.w as f64, ch: self.comp.h as f64 }
     }
 
-    fn out_t(&self) -> Transform {
-        Transform::from_scale(self.sx, self.sy)
-    }
-
-    fn out_rect(&self) -> IRect {
-        IRect { x: 0, y: 0, w: self.ow, h: self.oh }
-    }
-
-    fn ectx(&self, it: &Item, b: Option<LBounds>) -> ExprCtx {
+    pub fn ectx(&self, it: &Item, b: Option<LBounds>) -> ExprCtx {
         ExprCtx {
             dur: it.dur,
             fps: self.comp.fps,
@@ -165,18 +210,18 @@ impl<'a> CompR<'a> {
         }
     }
 
-    fn lists(kind: ItemKind) -> [&'static [schema::P]; 2] {
+    pub fn lists(kind: ItemKind) -> [&'static [schema::P]; 2] {
         [schema::item_props(kind), schema::LAYER]
     }
 
-    fn media(&self, it: &Item) -> Option<&'a Media> {
+    pub fn media(&self, it: &Item) -> Option<&'a Media> {
         if it.kind != ItemKind::Clip {
             return None;
         }
-        self.rc.p.media(it.src.as_deref()?)
+        self.p.media(it.src.as_deref()?)
     }
 
-    fn text_style(&self, it: &Item, ev: &Ev) -> TextStyle {
+    pub fn text_style(&self, it: &Item, ev: &Ev) -> TextStyle {
         let p = &it.props;
         TextStyle {
             family: ev.str(p, "font"),
@@ -195,12 +240,12 @@ impl<'a> CompR<'a> {
         }
     }
 
-    fn text_content(&self, it: &Item, tl: f64, x: &ExprCtx) -> String {
+    pub fn text_content(&self, it: &Item, tl: f64, x: &ExprCtx) -> String {
         text::expand_placeholders(it.text.as_deref().unwrap_or(""), tl, x)
     }
 
     /// Content bounds in layer px.
-    fn bounds(&self, it: &Item, ev: &Ev, x: &ExprCtx, tl: f64) -> Option<LBounds> {
+    pub fn bounds(&self, it: &Item, ev: &Ev, x: &ExprCtx, tl: f64) -> Option<LBounds> {
         match it.kind {
             ItemKind::Clip => {
                 let m = self.media(it)?;
@@ -210,7 +255,7 @@ impl<'a> CompR<'a> {
                 Some(LBounds { x: 0.0, y: 0.0, w: m.w.max(1) as f32, h: m.h.max(1) as f32 })
             }
             ItemKind::Comp => {
-                let c = self.rc.p.comp(it.src.as_deref()?)?;
+                let c = self.p.comp(it.src.as_deref()?)?;
                 Some(LBounds { x: 0.0, y: 0.0, w: c.w as f32, h: c.h as f32 })
             }
             ItemKind::Solid => Some(LBounds { x: 0.0, y: 0.0, w: ev.f(&it.props, "w").max(1.0), h: ev.f(&it.props, "h").max(1.0) }),
@@ -238,11 +283,12 @@ impl<'a> CompR<'a> {
                 let r = r?;
                 Some(LBounds { x: r.x(), y: r.y(), w: r.width().max(1.0), h: r.height().max(1.0) })
             }
+            ItemKind::Null | ItemKind::Camera => None,
         }
     }
 
     /// Content (fit) scale for media/comp layers.
-    fn fit_scale(&self, it: &Item, ev: &Ev, b: &LBounds) -> (f64, f64) {
+    pub fn fit_scale(&self, it: &Item, ev: &Ev, b: &LBounds) -> (f64, f64) {
         if !matches!(it.kind, ItemKind::Clip | ItemKind::Comp) {
             return (1.0, 1.0);
         }
@@ -263,12 +309,12 @@ impl<'a> CompR<'a> {
         }
     }
 
-    fn find_item(&self, id: &str) -> Option<&'a Item> {
+    pub fn find_item(&self, id: &str) -> Option<&'a Item> {
         self.comp.items().find(|i| i.id == id)
     }
 
     /// Parent chain transform (comp px) at time t.
-    fn parent_m(&self, it: &Item, t: f64, depth: u32) -> Transform {
+    pub fn parent_m(&self, it: &Item, t: f64, depth: u32) -> Transform {
         let Some(pid) = &it.parent else { return Transform::identity() };
         if depth > 32 {
             return Transform::identity();
@@ -303,6 +349,129 @@ impl<'a> CompR<'a> {
             .pre_scale(sc.0 as f32, sc.1 as f32)
             .pre_translate(-anchor.0 as f32, -anchor.1 as f32);
         World { m, opacity: ev.f(p, "opacity").clamp(0.0, 1.0), rx: ev.num(p, "rx"), ry: ev.num(p, "ry"), z: ev.num(p, "z"), pos, rot, sc, anchor, parent }
+    }
+
+
+    /// Projected corners (comp px) of a 3D layer, or None for a 2D layer.
+    fn screen_corners(&self, it: &Item, t: f64, w: &World, corners: [(f32, f32); 4]) -> Option<[(f64, f64); 4]> {
+        let cam = self.camera(t);
+        if !self.is_3d(it, w, cam.is_some()) {
+            return None;
+        }
+        let cam = cam.unwrap_or_else(|| Cam::default_for(self.comp.w as f64, self.comp.h as f64));
+        let q = self.project_corners(w, corners, (0.0, 0.0), &cam)?;
+        Some(q.map(|(x, y)| {
+            let mut pt = Point::from_xy(x as f32, y as f32);
+            w.parent.map_point(&mut pt);
+            (pt.x as f64, pt.y as f64)
+        }))
+    }
+
+    /// True when a layer is drawn in 3D: rotated in X/Y, given depth, or switched to 3D while a camera is active.
+    fn is_3d(&self, it: &Item, w: &World, camera: bool) -> bool {
+        w.rx.abs() > 1e-6 || w.ry.abs() > 1e-6 || w.z.abs() > 1e-6 || (camera && it.props.get("3d").is_some_and(|a| a.v.bool()))
+    }
+
+    /// The active camera at comp time t: the topmost visible camera layer.
+    pub fn camera(&self, t: f64) -> Option<Cam> {
+        let it = self.comp.vtracks().filter(|tr| !tr.hidden).flat_map(|tr| tr.items.iter()).filter(|i| i.kind == ItemKind::Camera && !i.off && i.contains(t)).last()?;
+        let (cw, ch) = (self.comp.w as f64, self.comp.h as f64);
+        let x = self.ectx(it, None);
+        let lists = Self::lists(ItemKind::Camera);
+        let ev = Ev::new(t - it.start, &x, self.vc(), &lists);
+        let p = &it.props;
+        let zoom = Some(ev.num(p, "zoom")).filter(|z| *z > 0.0).unwrap_or(cw * 0.926);
+        let pos = ev.vec(p, "pos");
+        // a camera parented to a null follows it
+        let mut pt = Point::from_xy(pos.0 as f32, pos.1 as f32);
+        self.parent_m(it, t, 0).map_point(&mut pt);
+        let poi = ev.bool(p, "aim").then(|| {
+            let q = ev.vec(p, "poi");
+            (q.0, q.1, ev.num(p, "poiZ"))
+        });
+        Some(Cam::new((pt.x as f64, pt.y as f64, ev.num(p, "z") - zoom), poi, ev.num(p, "rx"), ev.num(p, "ry"), ev.num(p, "rot"), zoom, cw, ch))
+    }
+
+    /// Layer corners through the camera (comp px, before the parent's 2D transform). None if any is behind it.
+    fn project_corners(&self, w: &World, corners: [(f32, f32); 4], ex: (f64, f64), cam: &Cam) -> Option<[(f64, f64); 4]> {
+        let mut q = [(0.0, 0.0); 4];
+        for (i, (cx, cy)) in corners.iter().enumerate() {
+            let v = ((*cx as f64 - w.anchor.0) * w.sc.0, (*cy as f64 - w.anchor.1) * w.sc.1, 0.0);
+            let r = warp::rotate3(v, w.rx + ex.0, w.ry + ex.1, w.rot);
+            q[i] = cam.project((w.pos.0 + r.0, w.pos.1 + r.1, w.z + r.2))?;
+        }
+        Some(q)
+    }
+
+    /// Camera-space depth of a 3D layer's anchor (None for 2D layers), for sorting.
+    fn depth(&self, it: &Item, t: f64, cam: &Cam, camera: bool) -> Option<f64> {
+        let x = self.ectx(it, None);
+        let lists = Self::lists(it.kind);
+        let ev = Ev::new(t - it.start, &x, self.vc(), &lists);
+        let p = &it.props;
+        let z = ev.num(p, "z");
+        let flat = ev.num(p, "rx").abs() < 1e-6 && ev.num(p, "ry").abs() < 1e-6 && z.abs() < 1e-6;
+        if flat && !(camera && ev.bool(p, "3d")) {
+            return None;
+        }
+        let pos = ev.vec(p, "pos");
+        let mut pt = Point::from_xy(pos.0 as f32, pos.1 as f32);
+        self.parent_m(it, t, 0).map_point(&mut pt);
+        Some(cam.depth((pt.x as f64, pt.y as f64, z)))
+    }
+}
+
+impl<'a> CompR<'a> {
+    fn g(&self) -> Geo<'a> {
+        Geo { p: self.rc.p, comp: self.comp }
+    }
+
+    fn out_t(&self) -> Transform {
+        Transform::from_scale(self.sx, self.sy)
+    }
+
+    fn out_rect(&self) -> IRect {
+        IRect { x: 0, y: 0, w: self.ow, h: self.oh }
+    }
+
+    fn vc(&self) -> VCtx {
+        self.g().vc()
+    }
+
+    fn ectx(&self, it: &Item, b: Option<LBounds>) -> ExprCtx {
+        self.g().ectx(it, b)
+    }
+
+    fn lists(kind: ItemKind) -> [&'static [schema::P]; 2] {
+        Geo::lists(kind)
+    }
+
+    fn media(&self, it: &Item) -> Option<&'a Media> {
+        self.g().media(it)
+    }
+
+    fn text_style(&self, it: &Item, ev: &Ev) -> TextStyle {
+        self.g().text_style(it, ev)
+    }
+
+    fn text_content(&self, it: &Item, tl: f64, x: &ExprCtx) -> String {
+        self.g().text_content(it, tl, x)
+    }
+
+    fn bounds(&self, it: &Item, ev: &Ev, x: &ExprCtx, tl: f64) -> Option<LBounds> {
+        self.g().bounds(it, ev, x, tl)
+    }
+
+    fn fit_scale(&self, it: &Item, ev: &Ev, b: &LBounds) -> (f64, f64) {
+        self.g().fit_scale(it, ev, b)
+    }
+
+    fn find_item(&self, id: &str) -> Option<&'a Item> {
+        self.g().find_item(id)
+    }
+
+    fn world(&self, it: &Item, t: f64, ev: &Ev, b: LBounds) -> World {
+        self.g().world(it, t, ev, b)
     }
 
     /// Max scale factor of a transform (for choosing raster resolutions).
@@ -586,9 +755,8 @@ impl<'a> CompR<'a> {
         it.fx.iter().map(|e| effects::margin(e, ev, scale)).sum::<f32>().ceil() as i32
     }
 
-    fn has_3d(it: &Item, w: &World, ex: &Extra) -> bool {
-        let _ = it;
-        w.rx.abs() > 1e-6 || w.ry.abs() > 1e-6 || w.z.abs() > 1e-6 || ex.rx.abs() > 1e-6 || ex.ry.abs() > 1e-6
+    fn has_3d(&self, it: &Item, w: &World, ex: &Extra, camera: bool) -> bool {
+        self.g().is_3d(it, w, camera) || ex.rx.abs() > 1e-6 || ex.ry.abs() > 1e-6
     }
 
     fn cornerpin<'b>(it: &'b Item) -> Option<&'b Effect> {
@@ -596,7 +764,67 @@ impl<'a> CompR<'a> {
     }
 
     /// Renders an item into an output-space layer buffer (before opacity/blend).
+    /// Time effects run here: posterize time quantizes the layer's clock and
+    /// echo composites it with copies of its earlier frames.
     fn render_item(&self, it: &Item, t: f64, ex: &Extra) -> Result<Option<(LayerBuf, f32, String)>> {
+        let t = match it.fx.iter().find(|e| e.on && e.kind == "posterizetime") {
+            Some(e) => {
+                let fps = e.props.get("fps").map(|a| a.v.num()).unwrap_or(12.0).clamp(0.1, 240.0);
+                it.start + (((t - it.start) * fps) + 1e-6).floor() / fps
+            }
+            None => t,
+        };
+        if let Some(e) = it.fx.iter().find(|e| e.on && e.kind == "echo") {
+            return self.render_echo(it, t, ex, e);
+        }
+        self.render_item_motion(it, t, ex)
+    }
+
+    fn render_echo(&self, it: &Item, t: f64, ex: &Extra, e: &Effect) -> Result<Option<(LayerBuf, f32, String)>> {
+        let g = |k: &str, d: f64| e.props.get(k).map(|a| a.v.num()).unwrap_or(d);
+        let (dt, n, decay) = (g("time", 0.05), g("count", 4.0).round().clamp(1.0, 16.0) as i32, g("decay", 0.6).clamp(0.0, 1.0) as f32);
+        let mode = e.props.get("mode").map(|a| a.v.str()).unwrap_or_else(|| "behind".into());
+        let cur = self.render_item_motion(it, t, ex)?;
+        let blend = cur.as_ref().map(|c| c.2.clone()).unwrap_or_else(|| it.props.get("blend").map(|a| a.v.str()).unwrap_or_else(|| "normal".into()));
+        let mut echoes = vec![];
+        for k in 1..=n {
+            let tk = t - dt * k as f64;
+            if tk < it.start - 1e-9 || tk >= it.end() {
+                continue;
+            }
+            if let Some((lb, op, _)) = self.render_item_motion(it, tk, ex)? {
+                echoes.push((lb, op * decay.powi(k)));
+            }
+        }
+        if echoes.is_empty() {
+            return Ok(cur);
+        }
+        let mut all: Vec<(LayerBuf, f32)> = echoes;
+        let echo_mode = match mode.as_str() {
+            "add" => "add",
+            "screen" => "screen",
+            _ => "normal",
+        };
+        if mode == "front" {
+            if let Some((lb, op, _)) = cur {
+                all.insert(0, (lb, op));
+            }
+        } else {
+            all.reverse();
+            if let Some((lb, op, _)) = cur {
+                all.push((lb, op));
+            }
+        }
+        let r = all.iter().fold(IRect { x: 0, y: 0, w: 0, h: 0 }, |acc, (b, _)| acc.union(&b.rect()));
+        let mut out = LayerBuf::new(r.x, r.y, r.w as u32, r.h as u32).ok_or_else(|| anyhow!("alloc"))?;
+        for (i, (b, op)) in all.iter().enumerate() {
+            let shifted = LayerBuf { pm: Pm::Shared(std::sync::Arc::new(b.pm.get().clone())), x: b.x - r.x, y: b.y - r.y };
+            composite(out.pm.make_mut(), &shifted, *op, if i == 0 { "normal" } else { echo_mode });
+        }
+        Ok(Some((out, 1.0, blend)))
+    }
+
+    fn render_item_motion(&self, it: &Item, t: f64, ex: &Extra) -> Result<Option<(LayerBuf, f32, String)>> {
         let mblur = it.props.get("mblur").map(|a| a.v.bool()).unwrap_or(false);
         if mblur && ["pos", "scale", "rot", "rx", "ry"].iter().any(|k| it.props.get(*k).map(|a| a.is_animated()).unwrap_or(false)) {
             return self.render_mblur(it, t, ex);
@@ -658,6 +886,7 @@ impl<'a> CompR<'a> {
         let fxm = self.fx_margin(it, &ev, scale);
         let clip = self.out_rect().pad(fxm.max(0) + 2);
         let mut pre_blurred = false;
+        let cam = self.g().camera(t);
         let mut lb = if let Some(cp) = Self::cornerpin(it) {
             let pev = ev.with_lists(&[schema::effect("cornerpin").unwrap().params]);
             let q: Vec<(f64, f64)> = ["tl", "tr", "br", "bl"]
@@ -674,17 +903,16 @@ impl<'a> CompR<'a> {
                 Some(src) => warp::warp_to_quad(&src, [q[0], q[1], q[2], q[3]], clip),
                 None => None,
             }
-        } else if Self::has_3d(it, &w, ex) {
-            let (cw, ch) = (self.comp.w as f64, self.comp.h as f64);
+        } else if self.has_3d(it, &w, ex, cam.is_some()) {
             let corners = [(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)];
             let post = out_t.pre_concat(ex.mat).pre_concat(w.parent);
-            let q: Vec<(f64, f64)> = corners
+            let cam = cam.unwrap_or_else(|| Cam::default_for(self.comp.w as f64, self.comp.h as f64));
+            // a layer crossing the camera plane is not drawn (After Effects clips it)
+            let Some(q) = self.g().project_corners(&w, corners, (ex.rx, ex.ry), &cam) else { return Ok(None) };
+            let q: Vec<(f64, f64)> = q
                 .iter()
-                .map(|(cx, cy)| {
-                    let v = ((*cx as f64 - w.anchor.0) * w.sc.0, (*cy as f64 - w.anchor.1) * w.sc.1, 0.0);
-                    let r = warp::rotate3(v, w.rx + ex.rx, w.ry + ex.ry, w.rot);
-                    let (px, py) = warp::project((w.pos.0 + r.0, w.pos.1 + r.1, w.z + r.2), cw, ch);
-                    let mut pt = Point::from_xy(px as f32, py as f32);
+                .map(|(px, py)| {
+                    let mut pt = Point::from_xy(*px as f32, *py as f32);
                     post.map_point(&mut pt);
                     (pt.x as f64, pt.y as f64)
                 })
@@ -708,7 +936,7 @@ impl<'a> CompR<'a> {
         if it.fx.iter().any(|e| e.on) {
             let fcx = FxCtx { ev: &ev, scale, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps).round() as i64, seed: x.seed };
             // a leading blur may already have been applied at source resolution
-            for e in it.fx.iter().filter(|e| e.on).skip(pre_blurred as usize).filter(|e| e.kind != "crop" && e.kind != "cornerpin") {
+            for e in it.fx.iter().filter(|e| e.on).skip(pre_blurred as usize).filter(|e| !matches!(e.kind.as_str(), "crop" | "cornerpin" | "posterizetime" | "echo")) {
                 effects::apply(e, lbuf, &fcx);
             }
         }
@@ -853,6 +1081,54 @@ impl<'a> CompR<'a> {
         }))
     }
 
+    /// Cube spin as two perspective faces that always fill the frame (a real
+    /// camera can't see both faces of a frame-filling cube), meeting at an edge
+    /// that sweeps across, with a slight pull-back at the middle.
+    fn render_cube(&self, a: Option<&Item>, b: Option<&Item>, q: f64, dir: &str, t: f64) -> Result<Option<LayerBuf>> {
+        let full = self.out_rect();
+        let side = |it: Option<&Item>| -> Result<Option<Pixmap>> {
+            Ok(self.render_side(it, t, Extra::none())?.map(|mut lb| {
+                lb.expand_to(full);
+                lb.pm.get().clone()
+            }))
+        };
+        let (sa, sb) = (side(a)?, side(b)?);
+        let (w, h) = (self.ow as f64, self.oh as f64);
+        let s = (q * std::f64::consts::PI).sin();
+        let (bulge, far_a, far_b) = (0.06 * s, 0.18 * q, 0.18 * (1.0 - q));
+        let back = 1.0 - 0.08 * s;
+        let vert = matches!(dir, "up" | "down");
+        // A leaves toward `dir`; quads are (along, across) corner lists TL TR BR BL in a frame where A exits to the left
+        let len = if vert { h } else { w };
+        let e = len * (1.0 - q);
+        let qa = [(0.0, far_a), (e, -bulge), (e, 1.0 + bulge), (0.0, 1.0 - far_a)];
+        let qb = [(e, -bulge), (len, far_b), (len, 1.0 - far_b), (e, 1.0 + bulge)];
+        let mirror = matches!(dir, "right" | "down");
+        let place = |quad: [(f64, f64); 4]| -> [(f64, f64); 4] {
+            let mut out = quad.map(|(along, across)| {
+                let along = if mirror { len - along } else { along };
+                let (x, y) = if vert { (across * w, along) } else { (along, across * h) };
+                (w / 2.0 + (x - w / 2.0) * back, h / 2.0 + (y - h / 2.0) * back)
+            });
+            if mirror {
+                // keep corners in TL TR BR BL order after flipping
+                out = if vert { [out[1], out[2], out[3], out[0]] } else { [out[1], out[0], out[3], out[2]] };
+            } else if vert {
+                out = [out[0], out[3], out[2], out[1]];
+            }
+            out
+        };
+        let mut out = LayerBuf::new(0, 0, self.ow as u32, self.oh as u32).ok_or_else(|| anyhow!("alloc"))?;
+        for (src, quad) in [(sa, qa), (sb, qb)] {
+            if let Some(src) = src {
+                if let Some(face) = warp::warp_to_quad(&src, place(quad), full) {
+                    src_over(out.pm.make_mut(), face.pm.get(), face.x, face.y, 1.0);
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+
     fn render_transition(&self, tr: &Transition, a: Option<&Item>, b: Option<&Item>, p: f64, t: f64) -> Result<Option<LayerBuf>> {
         let (cw, ch) = (self.comp.w as f32, self.comp.h as f32);
         let c = (cw / 2.0, ch / 2.0);
@@ -927,6 +1203,9 @@ impl<'a> CompR<'a> {
             "pixelate" | "glitch" => (true, true),
             _ => (true, true),
         };
+        if kind == "cube" {
+            return self.render_cube(a, b, pe as f64, &dir, t);
+        }
         let la = if show_a { self.render_side(a, t, ea)? } else { None };
         let lb = if show_b { self.render_side(b, t, eb)? } else { None };
         if la.is_none() && lb.is_none() && !matches!(kind, "dip" | "fadeblack" | "fadewhite" | "flash") {
@@ -1101,6 +1380,127 @@ impl<'a> CompR<'a> {
                     });
                 }
             }
+            "blocks" => {
+                let bs = (num("size", 48.0) as f32 * self.sx).max(1.0);
+                lerp_into(aa.pm.make_mut(), bb.pm.get(), |x, y, _| {
+                    let r = (effects::hash2(((x as f32 + rx0) / bs) as u32, ((y as f32 + ry0) / bs) as u32, 0x51ed) & 0xffff) as f32 / 65535.0;
+                    if r < pp {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                });
+            }
+            "checker" => {
+                let cs = ow / num("count", 8.0).max(1.0) as f32;
+                lerp_into(aa.pm.make_mut(), bb.pm.get(), |x, y, _| {
+                    let (gx, gy) = ((x as f32 + rx0) / cs, (y as f32 + ry0) / cs);
+                    let even = (gx.floor() as i64 + gy.floor() as i64).rem_euclid(2) == 0;
+                    let u = gx.fract();
+                    if (if even { pp * 2.0 } else { pp * 2.0 - 1.0 }) > u {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                });
+            }
+            "inset" | "irisbox" | "iriscross" | "band" => {
+                let n = num("count", 8.0).max(1.0) as f32;
+                lerp_into(aa.pm.make_mut(), bb.pm.get(), |x, y, _| {
+                    let (gx, gy) = ((x as f32 + rx0 + 0.5) / ow, (y as f32 + ry0 + 0.5) / oh);
+                    let (dx, dy) = ((gx - 0.5).abs() * 2.0, (gy - 0.5).abs() * 2.0);
+                    let u = match kind {
+                        "irisbox" => dx.max(dy),
+                        "iriscross" => dx.min(dy),
+                        "band" => {
+                            let (along, across) = if dir == "v" { (gy, gx) } else { (gx, gy) };
+                            if ((across * n).floor() as i64) % 2 == 0 {
+                                along
+                            } else {
+                                1.0 - along
+                            }
+                        }
+                        _ => match dir.as_str() {
+                            "tr" => (1.0 - gx).max(gy),
+                            "bl" => gx.max(1.0 - gy),
+                            "br" => (1.0 - gx).max(1.0 - gy),
+                            "center" => dx.max(dy),
+                            _ => gx.max(gy),
+                        },
+                    };
+                    edge(u)
+                });
+            }
+            "filmdissolve" | "additive" => {
+                let film = kind == "filmdissolve";
+                let (ka, kb) = ((2.0 * (1.0 - pp)).min(1.0), (2.0 * pp).min(1.0));
+                let lin: Vec<f32> = (0..256).map(|v| (v as f32 / 255.0).powf(2.2)).collect();
+                mix_px(aa.pm.make_mut(), bb.pm.get(), |a, b| {
+                    let mut o = [0u8; 4];
+                    for k in 0..4 {
+                        let v = if film && k < 3 {
+                            (lin[a[k] as usize] * (1.0 - pp) + lin[b[k] as usize] * pp).powf(1.0 / 2.2) * 255.0
+                        } else if film {
+                            a[k] as f32 * (1.0 - pp) + b[k] as f32 * pp
+                        } else {
+                            a[k] as f32 * ka + b[k] as f32 * kb
+                        };
+                        o[k] = v.round().clamp(0.0, 255.0) as u8;
+                    }
+                    o[0] = o[0].min(o[3]);
+                    o[1] = o[1].min(o[3]);
+                    o[2] = o[2].min(o[3]);
+                    o
+                });
+            }
+            "leak" => {
+                let k = smoothstep(0.35, 0.65, pe as f64) as f32;
+                lerp_into(aa.pm.make_mut(), bb.pm.get(), |_, _, _| k);
+                let peak = 1.0 - (2.0 * pe - 1.0).abs();
+                let col = tr.props.get("color").cloned().unwrap_or_else(|| Val::S("#ff7a18".into()));
+                let col = crate::model::anim::Anim::new(Val::C(col.color()));
+                let leak = Effect { id: String::new(), kind: "lightleak".into(), on: true, props: [("amount".to_string(), crate::model::anim::Anim::new(Val::N(peak as f64 * 0.95))), ("color".to_string(), col)].into_iter().collect() };
+                let x = ExprCtx::default();
+                let ev = Ev::new(t, &x, self.vc(), &[]);
+                let fcx = FxCtx { ev: &ev, scale: self.sx, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps) as i64, seed: 11 };
+                effects::apply(&leak, &mut aa, &fcx);
+            }
+            "burn" => {
+                let col = tr.props.get("color").map(|v| v.color()).unwrap_or(Color::rgba(1.0, 0.42, 0.0, 1.0));
+                let (w, h) = (aa.w() as usize, aa.h() as usize);
+                // noise on a coarse grid; the burn front moves through it
+                let step = 4usize;
+                let (gw, gh) = (w / step + 2, h / step + 2);
+                let grid: Vec<f32> = (0..gw * gh)
+                    .into_par_iter()
+                    .map(|i| super::noise::fbm(((i % gw * step) as f32 + rx0) / ow * 3.0, ((i / gw * step) as f32 + ry0) / ow * 3.0, 0.0, 4.0, super::noise::Kind::Smooth, 77))
+                    .collect();
+                let noise = move |x: usize, y: usize| {
+                    let (fx, fy) = (x as f32 / step as f32, y as f32 / step as f32);
+                    let (ix, iy) = ((fx as usize).min(gw - 2), (fy as usize).min(gh - 2));
+                    let (tx, ty) = (fx - ix as f32, fy - iy as f32);
+                    let g = |a: usize, b: usize| grid[b * gw + a];
+                    (g(ix, iy) * (1.0 - tx) + g(ix + 1, iy) * tx) * (1.0 - ty) + (g(ix, iy + 1) * (1.0 - tx) + g(ix + 1, iy + 1) * tx) * ty
+                };
+                let e = pp * (1.0 + 2.0 * soft) - soft;
+                lerp_into(aa.pm.make_mut(), bb.pm.get(), |x, y, _| ((e - noise(x as usize, y as usize)) / soft + 0.5).clamp(0.0, 1.0));
+                let glow_k = 1.0 - (2.0 * pp - 1.0).powi(2);
+                let cp = [col.r * 255.0, col.g * 255.0, col.b * 255.0];
+                aa.pm.make_mut().data_mut().par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+                    for x in 0..w {
+                        let g = (-((noise(x, y) - e) / (soft * 1.5)).powi(2)).exp() * glow_k;
+                        if g < 0.01 {
+                            continue;
+                        }
+                        let px = &mut row[x * 4..x * 4 + 4];
+                        let na = (px[3] as f32 + (255.0 - px[3] as f32) * g).min(255.0);
+                        for i in 0..3 {
+                            px[i] = (px[i] as f32 + cp[i] * g).min(na) as u8;
+                        }
+                        px[3] = na as u8;
+                    }
+                });
+            }
             _ => lerp_into(aa.pm.make_mut(), bb.pm.get(), |_, _, _| pp),
         }
         Ok(Some(aa))
@@ -1134,7 +1534,7 @@ impl<'a> CompR<'a> {
                 }
             }
             for (i, it) in items.iter().enumerate() {
-                if used[i] || it.off || !it.contains(t) || matte_src.contains(it.id.as_str()) {
+                if used[i] || it.off || it.kind.is_invisible() || !it.contains(t) || matte_src.contains(it.id.as_str()) {
                     continue;
                 }
                 let prev_adj = i > 0 && items[i - 1].tout.is_some() && (it.start - items[i - 1].end()).abs() <= fd;
@@ -1178,6 +1578,37 @@ impl<'a> CompR<'a> {
         }
     }
 
+    /// Compositing order of a group: track order, except that runs of
+    /// consecutive 3D layers are sorted back to front through the camera.
+    fn stacking_order(&self, group: &[Unit], t: f64) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..group.len()).collect();
+        if group.len() < 2 {
+            return order;
+        }
+        let g = self.g();
+        let active = g.camera(t);
+        let cam = active.unwrap_or_else(|| Cam::default_for(self.comp.w as f64, self.comp.h as f64));
+        let depth: Vec<Option<f64>> = group
+            .iter()
+            .map(|u| match u {
+                Unit::Single(it, _) => g.depth(it, t, &cam, active.is_some()),
+                _ => None,
+            })
+            .collect();
+        let mut i = 0;
+        while i < order.len() {
+            let mut j = i;
+            while j < order.len() && depth[j].is_some() {
+                j += 1;
+            }
+            if j - i > 1 {
+                order[i..j].sort_by(|a, b| depth[*b].partial_cmp(&depth[*a]).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            i = j.max(i + 1);
+        }
+        order
+    }
+
     fn apply_adjust(&self, it: &Item, k: f64, t: f64, out: &mut Pixmap) {
         let tl = t - it.start;
         let lists = Self::lists(it.kind);
@@ -1218,8 +1649,9 @@ impl<'a> CompR<'a> {
             let end = units[start..].iter().position(|u| matches!(u, Unit::Adjust(..))).map(|p| start + p).unwrap_or(units.len());
             let group = &units[start..end];
             let rendered: Vec<Result<Option<(LayerBuf, f32, String)>>> = if group.len() > 1 { group.par_iter().map(|u| self.render_unit(u, t)).collect() } else { group.iter().map(|u| self.render_unit(u, t)).collect() };
-            for r in rendered {
-                if let Some((lb, op, blend)) = r? {
+            let mut rendered: Vec<Option<Result<Option<(LayerBuf, f32, String)>>>> = rendered.into_iter().map(Some).collect();
+            for i in self.stacking_order(group, t) {
+                if let Some((lb, op, blend)) = rendered[i].take().unwrap()? {
                     composite(out, &lb, op, &blend);
                 }
             }
@@ -1234,6 +1666,18 @@ impl<'a> CompR<'a> {
         }
         Ok(())
     }
+}
+
+/// Combines two same-size premultiplied buffers pixel by pixel into `a`, in parallel.
+fn mix_px(a: &mut Pixmap, b: &Pixmap, f: impl Fn(&[u8], &[u8]) -> [u8; 4] + Sync) {
+    let w = a.width() as usize;
+    let bd = b.data();
+    a.data_mut().par_chunks_mut(w * 4).zip(bd.par_chunks(w * 4)).for_each(|(ra, rb)| {
+        for (pa, pb) in ra.chunks_exact_mut(4).zip(rb.chunks_exact(4)) {
+            let o = f(pa, pb);
+            pa.copy_from_slice(&o);
+        }
+    });
 }
 
 fn apply_matte(lb: &mut LayerBuf, matte: Option<(&LayerBuf, f32)>, mode: MatteMode) {

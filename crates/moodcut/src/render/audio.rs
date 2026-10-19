@@ -163,6 +163,56 @@ pub fn afx_filter(e: &Effect, ff: &Ff) -> Option<String> {
             format!("highpass=f=80,afftdn=nr={},acompressor=threshold=0.125:ratio={}:attack=10:release=200:makeup=2,equalizer=f=3000:t=q:w=1:g={}", n(6.0 + 8.0 * a), n(2.0 + 2.0 * a), n(2.0 * a + 1.0))
         }
         "telephone" => "highpass=f=300,lowpass=f=3400,acompressor=ratio=4".into(),
+        "peq" => {
+            let bands: Vec<String> = (1..=3)
+                .filter(|i| g(&format!("g{i}")).abs() > 1e-6)
+                .map(|i| format!("equalizer=f={}:t=q:w={}:g={}", n(g(&format!("f{i}")).clamp(20.0, 20000.0)), n(g(&format!("q{i}")).clamp(0.1, 20.0)), n(g(&format!("g{i}")).clamp(-30.0, 30.0))))
+                .collect();
+            if bands.is_empty() {
+                return None;
+            }
+            bands.join(",")
+        }
+        "bassboost" => format!("bass=g={}:f={}", n(g("gain").clamp(-30.0, 30.0)), n(g("freq").clamp(20.0, 1000.0))),
+        "gain" => {
+            if g("db").abs() < 1e-6 {
+                return None;
+            }
+            format!("volume={}dB", n(g("db").clamp(-60.0, 30.0)))
+        }
+        "chorus" => {
+            let (d, m) = (g("depth").clamp(0.0, 1.0), g("mix").clamp(0.0, 1.0));
+            format!("chorus=0.6:0.9:45|62:{}|{}:0.25|0.4:{}|{}", n(0.5 * m), n(0.4 * m), n(1.0 + 2.0 * d), n(1.3 + 2.0 * d))
+        }
+        "flanger" => format!("flanger=delay=0:depth={}:regen=0:width=71:speed={}", n(g("depth").clamp(0.0, 10.0)), n(g("speed").clamp(0.1, 10.0))),
+        "phaser" => format!("aphaser=in_gain=0.4:out_gain=0.74:delay=3:decay={}:speed={}", n(g("decay").clamp(0.0, 0.99)), n(g("speed").clamp(0.1, 2.0))),
+        "tremolo" => format!("tremolo=f={}:d={}", n(g("freq").clamp(0.1, 20000.0)), n(g("depth").clamp(0.0, 1.0))),
+        "vibrato" => format!("vibrato=f={}:d={}", n(g("freq").clamp(0.1, 20000.0)), n(g("depth").clamp(0.0, 1.0))),
+        "distortion" => {
+            let drive = 1.0 + g("amount").clamp(0.0, 1.0) * 24.0;
+            if ff.has_filter("asoftclip") {
+                format!("volume={}dB,asoftclip=type=tanh,volume=-{}dB", n(drive), n(drive * 0.6))
+            } else {
+                format!("volume={}dB,alimiter=limit=0.5,volume=-{}dB", n(drive), n(drive * 0.6))
+            }
+        }
+        "bitcrush" => format!("acrusher=bits={}:mode=lin:mix=1:aa=1:samples={}", n(g("bits").clamp(1.0, 16.0)), n(g("downsample").clamp(1.0, 250.0))),
+        "widen" => format!("extrastereo=m={}", n(g("amount").clamp(0.0, 4.0))),
+        "mono" => "pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1".into(),
+        "swap" => "pan=stereo|c0=c1|c1=c0".into(),
+        "dehum" => {
+            let f = if g("freq") >= 55.0 { 60.0 } else { 50.0 };
+            (1..=(g("harmonics").round().clamp(1.0, 8.0) as i32)).map(|k| format!("bandreject=f={}:t=q:w=30", n(f * k as f64))).collect::<Vec<_>>().join(",")
+        }
+        "declick" => "adeclick".into(),
+        "exciter" => {
+            if ff.has_filter("aexciter") {
+                format!("aexciter=amount={}:freq={}", n(g("amount").clamp(0.0, 64.0)), n(g("freq").clamp(2000.0, 12000.0)))
+            } else {
+                format!("treble=g={}:f={}", n(2.0 * g("amount").clamp(0.0, 10.0)), n(g("freq").clamp(2000.0, 12000.0)))
+            }
+        }
+        "autogain" => format!("dynaudnorm=f=250:g=15:p=0.9:m={}", n(1.0 + g("strength").clamp(0.0, 1.0) * 19.0)),
         "ff" => {
             let f = e.props.get("filter").map(|a| a.v.str()).unwrap_or_default();
             if f.trim().is_empty() {
@@ -495,6 +545,23 @@ mod tests {
     use super::*;
     use crate::model::anim::Key;
     use crate::model::value::Val;
+
+    #[test]
+    fn every_audio_effect_builds_a_valid_filter() {
+        let Ok(ff) = Ff::find() else { return };
+        for def in schema::AUDIO_EFFECTS.iter().filter(|d| d.name != "ff") {
+            let mut e = Effect { id: "a1".into(), kind: def.name.into(), on: true, props: Default::default() };
+            for (k, v) in [("g2", 4.0), ("db", -3.0), ("semitones", 2.0)] {
+                if schema::find(def.params, k).is_some() {
+                    e.props.insert(k.into(), Anim::new(crate::model::value::Val::N(v)));
+                }
+            }
+            let Some(f) = afx_filter(&e, &ff) else { continue };
+            let args: Vec<String> = ["-v", "error", "-f", "lavfi", "-i", "sine=f=440:d=0.2,aformat=channel_layouts=stereo", "-af", &f, "-f", "null", "-"].iter().map(|s| s.to_string()).collect();
+            let (_, err) = ff.run_capture(&args).unwrap_or_else(|e| panic!("{}: {f}: {e}", def.name));
+            assert!(!err.to_lowercase().contains("error"), "{}: {f}: {err}", def.name);
+        }
+    }
 
     #[test]
     fn db_expression() {

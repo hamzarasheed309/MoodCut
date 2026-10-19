@@ -19,7 +19,7 @@ The design aims for three things:
 | Compositor | **tiny-skia** (vector raster, via resvg) + custom SIMD-friendly pixel loops + **rayon** | Predictable CPU rendering that matches the preview exactly, with no GPU driver issues. The hot paths (affine warps, blends, blurs, LUTs) are parallel and allocation-free. |
 | Text | **rustybuzz** shaping + bundled Inter + system fonts | Correct kerning/ligatures/RTL, per-glyph layout for text animators. |
 | Server | **tokio + axum**: MCP Streamable HTTP, REST, WebSocket | One async server feeds the GUI, MCP clients and tunnels. |
-| GUI | **Preact + signals**, Vite, TypeScript, canvas timeline; embedded with rust-embed | 26 KB gzipped. It opens as an Edge/Chrome `--app` window, so there's no WebView runtime to ship. |
+| GUI | **Preact + signals**, Vite, TypeScript, canvas timeline; embedded with rust-embed | About 58 KB gzipped with every panel and the dock. It opens as an Edge/Chrome `--app` window, so there's no WebView runtime to ship. |
 | Protocol | **MCP 2025-06-18** over stdio and Streamable HTTP | Works with Claude Desktop, Claude Code, claude.ai and ChatGPT connectors and other MCP clients. |
 | HTML graphics | **Headless Edge/Chrome** over the DevTools protocol (a small synchronous WebSocket client) | The best layout and animation engine there is, already installed on every Windows PC. No Node, Puppeteer or bundled Chromium. |
 | Web access | **cloudflared** quick tunnel, downloaded on first use | A public HTTPS URL for web AI clients without an account, port forwarding or certificates. |
@@ -58,13 +58,71 @@ run through `Engine::edit`:
 Because the GUI edits through the same path (its inspector and timeline generate script lines), undo/redo,
 the activity log and what the AI sees in `view` stay consistent.
 
+## Editor (`gui/src`)
+
+The window is a dock (`dock.ts`, rendered by `components/Dock.tsx`): a tree of row/column splits whose leaves are
+tab groups of panels, plus floating windows. Split sizes are fractions of the free space, fixed pixels, or 0 to fit
+the content (the Tools strip measures its height and asks for the columns it needs). Dragging a tab hit-tests the
+tab bars and groups under the pointer: a tab bar or a group's center adds it as a tab, an edge splits that group,
+nothing floats it. Workspaces are preset layouts (Assembly, Editing, Color, Effects, Audio, Motion, Graphics, AI);
+each keeps its own arrangement in `localStorage`, and below 900 px a one-column layout of tabs is shown instead.
+`panels.tsx` maps panel ids to components, so a panel is just a component that reads the store.
+
+Every panel is a thin view over the project that writes script lines (`actions.ts` holds the shared actions and the
+Premiere/After Effects shortcuts):
+
+| Panel | Script it writes |
+| --- | --- |
+| Tools (V A B N R C Y U H Z T G) + timeline | `move` (`mode=overwrite` for nudges), `trim … ripple`, `roll … to=`, `fit`, `cut`, `slip`, `slide`, `workarea` |
+| Program monitor | transform gizmo → `nudge <id> pos=/scale=/rot= [key at=]`; Type → `text … pos=`; Shape → `shape …` or (Alt) `mask <id> …` |
+| Source monitor | `add m1[in-out] <targeted track> at=<playhead> mode=insert\|overwrite` |
+| Lumetri Color | `color <id> k=v`, `fx <id> curves\|huecurves\|colorwheels\|secondary\|vignette\|autolevels` |
+| Audio (Essential Sound, Track Mixer) | `sound`, `track set`, `master`, `afx <track\|master>` |
+| Effect Controls | `set`, `kf`/`kf+`/`kf-`, `fx`, `mask`, `anim`, `align`, `distribute`, `ease`, `stagger` |
+| Markers, History | `marker add\|set\|del`, `undo n` / `redo n` |
+
+The editor also shares what the person is doing: the selection, playhead and active comp go to the engine over
+the WebSocket (`ops::Ui`), so scripts can say `sel` and `playhead` (`color sel cinematic`, `text 'Hi' at=playhead`);
+with no editor window open they are empty. Overlays and panels read from the renderer instead of re-implementing
+it: `/api/layer` returns a layer's on-screen corners and anchor from the same `layer_geom` the compositor uses
+(parenting, 3D and cameras included), `/api/scope` returns the Lumetri scope image and the measured readout that
+MCP's `preview scope=` gives the AI, and `/api/history` lists the undo/redo labels. The peak meter is a Web Audio
+analyser on the program monitor's streamed preview.
+
+Playback moves the playhead every frame, so nothing heavy depends on it: the timeline's playhead is a positioned
+element over the canvas (the clips are only redrawn when the edit, zoom or scroll changes), frame loads, the
+transform gizmo, scopes and markers follow a `pausedPlayhead` signal that stays constant while playing, and the
+timecode is its own tiny component. State, log and history fetches are coalesced, so an edit's reply and its
+WebSocket notice cost one fetch.
+
+## Finishing and craft (`ops/pro.rs`, `sfx.rs`, `mcp/craft.rs`)
+
+- **Sound design** (`sfx.rs`): 13 effects synthesized in Rust (filtered-noise whooshes with a moving band and stereo
+  pan, risers with rising oscillators and noise, kick/sub impacts, bells, keystrokes...), deterministic per
+  (kind, length, pitch, seed). Each instance gets a new seed and a slight pitch change so repeats never sound copied,
+  and each kind declares where its moment is (a whoosh's peak, a riser's end, a hit's attack) so `sfx … at=T`
+  places the clip with that point on T. Files are written next to the project's graphics and imported as media
+  tagged `sfx`; they go on audio tracks above dialogue and music.
+- **Speed ramps** write `remap` keyframes: the speed multiplier is eased in and out, integrated over item time and
+  composed with any earlier ramp; the clip keeps its length, the peak speed drops if the source runs out, slow
+  sections get frame blending. **Punch-ins** scale alternate clips around a focus point. **J/L cuts** detach the
+  audio (found again later by its sync offset) and extend it before or after the cut with a short fade.
+- **Brand kit** (`Project.brand`): defaults for text, captions, title templates and shapes, and CSS variables in
+  HTML graphics; what a command asks for explicitly still wins.
+- **Craft guidance** (`mcp/craft.rs`): the style rules, platform specs, sound and brand topics and the recipes. A
+  test runs every recipe against the engine with mock media, so the AI is never taught a line that fails.
+- **Craft notes** in `check`: platform UI zones (with move fixes) for vertical short-form targets, then taste: weak
+  hook, fade from black, slow pacing, static shots, linear keyframes, transition variety, silent transitions and
+  titles, inconsistent type, missing brand or captions, length. Their suggestions are printed as `try:` and are
+  never applied by `fix=true`.
+
 ## Data model (`src/model`)
 
 ```
 Project ─ media[] (m1…: probed path, kind, size, fps, duration, audio layout)
-        ─ comps[] (s1…: size, fps, background, markers, master audio)
+        ─ comps[] (s1…: size, fps, background, markers, work area, master audio)
              └─ tracks[] (V1… bottom→top, A1…; hidden/locked/mute/solo/gain)
-                   └─ items[] (c clip, t text, g shape, o solid, j adjustment, n nested comp)
+                   └─ items[] (c clip, t text, g shape, o solid, j adjustment, n nested comp, l null, k camera)
                         props:  name → Anim (static value | keyframes with easing | expression)
                         fx[] / afx[] (f1…), masks[] (m1…), shapes[] (s1…), text animators[] (x1…)
                         transitions, parent, track matte, speed/remap
@@ -91,13 +149,17 @@ compactly. Notable pieces:
   (light leak, grain…) are placed directly above existing layers instead.
 - `macros.rs`: multi-step operations that use analysis: `autocut`, `captions`, `montage`, `beats`, `reframe`,
   `keep`, `duck`, `precomp`.
+- `tools.rs`: the Premiere / After Effects tools as commands (rolling edit, lift/extract, swap, paste
+  attributes, stagger/sequence layers, align/distribute, nudge, keyframe assistant, nulls and cameras, work
+  area, Essential Sound) and the selectors (`sel`, `after:T`, `kind:text`, `V2:after:10`).
 - `outline.rs`: the compact text views returned by `view`.
 
 ## Rendering (`src/render`)
 
 Per output frame, `comp.rs` evaluates each visible layer bottom-up:
 
-1. **Evaluate** properties at the frame time (keyframes → expressions → parent chain → 2.5D camera).
+1. **Evaluate** properties at the frame time (keyframes → expressions → parent chain → camera). Time effects
+   (posterize time, echo) evaluate the layer at other times.
 2. **Rasterize** the layer into a tight bounding-box buffer in output pixels:
    - media is decoded by FFmpeg already scaled to the size it will be drawn at (including upscales), so the
      compositor never resamples a 4K frame just to show it at 640 px. Decoders are per clip, prefetch on a
@@ -107,8 +169,9 @@ Per output frame, `comp.rs` evaluates each visible layer bottom-up:
    - a layer whose first effect is a large blur is rasterized and blurred at reduced resolution, which costs
      nothing visible and makes blurred backgrounds (9:16 reframes) about 4× faster.
 3. **Effects, masks and mattes** run on that buffer. 3D layers and corner pins use a perspective warp.
-4. **Blend** into the frame with the layer's blend mode, using parallel premultiplied loops. Transitions
-   composite both sides with their own progress curve.
+4. **Blend** into the frame with the layer's blend mode (32 modes, including stencil/silhouette), using parallel
+   premultiplied loops. 3D layers are drawn back to front as seen from the active camera; 2D layers keep track
+   order. Transitions composite both sides with their own progress curve.
 
 The frame buffer is shared, not copied, between steps where possible (`Arc` frames, zero-copy for unscaled
 layers). LUTs use a fixed-point 3D table, and vignette masks and fonts are cached.
@@ -176,7 +239,7 @@ These choices keep a typical edit to a few calls and a few thousand tokens:
 
 | Choice | Effect |
 | --- | --- |
-| **10 coarse tools** (~8.7 KB, ~2,200 tokens of definitions) | Small fixed cost per conversation; the `edit` description carries a cheat sheet so most edits need no `help` call. |
+| **10 coarse tools** (~10.9 KB, ~2,700 tokens of definitions) | Small fixed cost per conversation; the `edit` description carries a cheat sheet so most edits need no `help` call. |
 | **Batch script instead of one tool per operation** | 20 edits in one call instead of 20 round trips. |
 | **Atomic scripts with line-numbered errors and suggestions** | No half-applied state to inspect; the fix is usually one corrected line. |
 | **Diff replies** (`+t4 …`, `~c1..c3.f1 …`) | The AI learns the new ids and effects without re-reading the project. Repeated changes collapse into id ranges, which also work as targets (`fx c2..c9 blur`). |
@@ -217,16 +280,19 @@ crates/moodcut/src/
   engine.rs        project state, transactions, undo, autosave, event log, renders
   library.rs       import at scale, probe cache, selectors, poster sheets, filmstrips, search
   gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture
+  sfx.rs           procedural sound effects (synthesis, WAV writer)
   check.rs         measured quality check, expectations, fixes
   export.rs        SRT / WebVTT / YouTube chapters / FCP7 XML / CMX3600 EDL
   tunnel.rs        remote token, cloudflared quick tunnel, connector instructions
   server.rs        axum: MCP HTTP, REST API, WebSocket, static GUI, file dialogs, access guard
-  mcp/             MCP protocol, tool definitions, prompts, help docs, stdio transport
+  mcp/             MCP protocol, tool definitions, prompts, help docs, craft guidance and recipes, stdio transport
   model/           project, values, anim/easing, expressions, schema, time parsing
-  ops/             MoodCut Script: lexer, executor, presets, templates, macros, outline
-  render/          ffmpeg, decode, compositor, text, shapes, masks, effects, LUT, warp, audio, encode
+  ops/             MoodCut Script: lexer, executor, tools, pro finishing, presets, templates, macros, outline
+  render/          ffmpeg, decode, compositor, text, shapes, masks, effects, LUT, warp, scopes, audio, encode
   analyze.rs       silence, scenes, loudness, beats, black frames, transcription
   setup.rs         doctor / setup / install-claude
 assets/gfx_shim.js virtual clock injected into HTML graphics
-gui/src/           Preact app: Timeline (canvas), Monitor, Inspector, LeftPanel, Console, Modals, GraphicEditor, CheckPanel
+gui/src/           Preact app: dock.ts + Dock (workspaces), panels.tsx (registry), Timeline (canvas), Tools, Monitor
+                   (program/source/scopes/gizmo), Inspector (+Align, Character), ColorPanel, AudioPanel, BrandPanel,
+                   Markers, History, LeftPanel (Project, Effects), Console, Modals, GraphicEditor, CheckPanel; actions.ts
 ```

@@ -8,18 +8,26 @@ use crate::render::encode::PRESETS;
 
 pub const TOPICS: &[(&str, &str)] = &[
     ("workflow", "a complete edit from one request, step by step"),
+    ("style", "pro editing + motion design rules (hook, pacing, sound, type, easing) as commands"),
+    ("recipes", "complete scripts for Reels, YouTube, montage, promo, podcast, documentary, tutorial"),
+    ("platforms", "Reels/TikTok/Shorts/YouTube/feed/ads specs and UI safe zones"),
+    ("sfx", "sound design: whoosh, riser, hit, pop... placed on cuts, titles and beats"),
+    ("brand", "brand kit: font + colors every title, caption and graphic uses"),
     ("edit", "every MoodCut Script command"),
+    ("tools", "Premiere Pro / After Effects tools and panels as commands"),
     ("time", "time & reference syntax"),
     ("props", "layer/clip/text/solid properties"),
     ("effects", "video effects + params"),
     ("audio", "audio effects, ducking, loudness"),
     ("transitions", "transition types"),
     ("anim", "animation presets, easing, keyframes"),
+    ("3d", "cameras, nulls, 3D layers and parallax"),
     ("text", "titles, text animators, captions"),
     ("shapes", "shape layers & masks"),
     ("templates", "motion graphics templates"),
     ("macros", "autocut, captions, montage, reframe..."),
     ("color", "color grading"),
+    ("scopes", "Lumetri scopes and grading by measurement"),
     ("expr", "expressions"),
     ("render", "export presets"),
     ("analyze", "analysis kinds"),
@@ -36,11 +44,11 @@ Scripts are atomic: if any line fails nothing changes and the error names the li
 pub const WORKFLOW: &str = "Turning one request into a finished, professional edit. Do every step yourself; send many script lines per edit call; ask the person only if something essential is missing.
 1 GATHER  media find path=<folder> (what is there) -> media import paths=[<folder>] tag=<shoot>. Large library: media list (filters/paging) + preview media=m1..m48 (poster frames, 48 per sheet). Write down what you see so you never look twice: note m3 'wide drone, sunset' | tag m10..m18 interview.
 2 UNDERSTAND  speech: analyze target=tag:interview kind=transcript, then view what=search q=<words> to find quotes (times are source seconds). Shots: analyze target=all kind=scenes / stats (exposure). Music: analyze <m> kind=beats. Filmstrips (preview media=m7 n=8) to pick in/out points.
-3 PLAN  length, format (comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 3 s -> body -> payoff / call to action), music, look, graphics. Build only what was asked.
-4 ASSEMBLE  story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence for talking heads; keep m4 12-30,45-61 for rough cuts; b-roll on V2 over speech (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences. Typical shots 1.5-4 s; vary framing; cut on action; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
-5 POLISH  color <ids|V1> natural|cinematic then fine-tune; tr V1 dissolve 0.3 only where it helps; titles and lower thirds: the graphic tool (HTML/CSS, best looking) or title templates; captions <clip> for speech-led videos; anim kenburns on stills.
+3 PLAN  like a senior editor (help style): platform and length (help platforms; comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 1-2 s -> body -> payoff / call to action or loop), the closest help('recipes') to start from, brand (brand <preset> or the client's font and colors), ONE look, 2-3 reusable motion moves, music and where its drop lands, a sound palette. Build only what was asked, but finish it to a professional standard.
+4 ASSEMBLE  bottom-up: story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence V1 + punchin V1 for talking heads; keep m4 12-30,45-61 for rough cuts; jcut/lcut between interview answers; b-roll on V2 over speech starting on the word it shows (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences; speedramp into action and drops. Shot lengths per platform (help style); vary framing; cut on action and on the beat; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
+5 POLISH  color <ids|V1> <one look> then fine-tune by scopes; one or two motivated transition types (whip between places, cuts elsewhere); titles and lower thirds in the brand (graphic tool for bespoke designs, else title templates) with the same entrance everywhere; captions V1 last (they go on top) for speech-led videos; anim kenburns amount=0.06 on stills; then sound design: sfx whoosh on=transitions, hit on title slams, riser into reveals (help sfx).
 6 SOUND  music on A2 under speech: duck A2 by=A1 amount=-12 (by=V1 when speech is camera audio); fade music in/out; master lufs=-14 limiter=1 (web) | -16 (podcast) | -23 (broadcast).
-7 VERIFY  check expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; preview n=8 for the overall flow; fix what remains and check again until clean.
+7 VERIFY  check target=<platform> expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; fix its craft notes too (hook, pacing, safe zones, easing, music ending, sound design); preview n=12 and judge it as a viewer (would you stop scrolling at frame 1? does something change every 3-5 s?); fix and check again until clean.
 8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.";
 
 const GRAPHICS: &str = "graphic tool: html -> rendered video with alpha (or a still, dur=0) in the library. The page is the frame: 100% width/height = comp size (or size=). Transparent unless you paint a background (alpha=false keeps an opaque page).
@@ -96,16 +104,68 @@ LOOK
  fade <ids> [in=0.5] [out=1] [video|audio]
 AUDIO
  set <id> vol=-6dB pan=-0.3 mute=1 fadeIn=1 fadeOut=2   duck A1 by=A2 amount=-12   master vol=-1 lufs=-14 limiter=1
+TOOLS (see help tools: Premiere/AE tools and panels)
+ roll <id> +0.3   lift|extract [in out]   swap <a> <b>   paste <from> <to> [fx|color|transform|...]   stagger <ids> by=0.1|seq   workarea 2 8
+ align <ids> left|center|... [to=comp|safe|sel]   distribute <ids> h|v   nudge <ids> pos=10,0 scale=120% rot=5 [key]   ease <ids> [props|all] easy   kf <id> all reverse|shift=+1|stretch=2|bake|clear
+ null [children=<ids>]   camera [move=pushin] [layers=<ids>]   sound <clips> dialogue|music|sfx|ambience   marker set <name|T> name= color= dur= note=
+ selectors: sel after:T before:T at:T kind:text name:x V2:after:T; time keyword playhead
 MACROS (see help macros)
  autocut silence|scenes <clip>   captions <clip> [style=]   montage m1,m2 music=<m|clip> [beats=2]   beats <music>
  reframe 9:16 [mode=blur|fill|fit]   keep <media> 0-12.5,15-30   title <template> [params]
 REFERENCES  $ last created, $2 second created in this script; names given with as= work anywhere an id does.";
 
 const TIME: &str = "Times: 12 | 12.5s | 500ms | 90f (frames) | 1:02.5 (m:s) | 1:02:03.5 | 00:00:12:15 (timecode with frames)
- end (comp end) | c3.start c3.end c3.mid | @drop (marker) | sums: c3.end+0.5, end-2. Relative edits: +0.5 / -1.
+ end (comp end) | c3.start c3.end c3.mid | V1.end (where the last clip on V1 ends) | @drop (marker) | sums: c3.end+0.5, end-2. Relative edits: +0.5 / -1.
 Keyframe times are relative to the item start; end = item duration; 50% = half of the item.
 Positions: pos=960,540 | pos=center | top | bottom | left | right | top-left ... | lower-third | pos=50%,80%.
 Units: opacity=50% scale=120% vol=-6dB rot=45 (degrees). Colors: #fff #ff0055 #00000080 rgb(255,0,0) red none.";
+
+const TOOLS: &str = "Premiere Pro and After Effects tools and panels as MoodCut Script. The editor's panels send these same lines, so everything is undoable and visible to both of you.
+TIMELINE TOOLS
+ selection (V): move <ids> at=T|by=+1f|track=V2   track select forward (A): any command with after:T or V2:after:T
+ ripple edit (B): trim <id> start=+0.5 ripple | trim <id> end=-1 ripple   rolling edit (N): roll <id> +0.3 | roll <id> to=T (cut between <id> and the next clip)
+ rate stretch (R): fit <id> dur=4 | speed <id> 150% [ripple]   razor (C): cut <id|V1|all> at=T   slip (Y): slip <id> +0.5   slide (U): slide <id> -0.3
+ rearrange: swap <a> <b>   lift (;): lift 2 5 [tracks=V1,A1]   extract ('): extract 2 5   both use the work area when no range is given
+ work area / sequence in-out: workarea 2 8 | workarea c3 | workarea all | workarea clear (render range=work)
+ paste attributes: paste <from> <to ids> [fx|color|transform|opacity|masks|audio|speed|anims|all] [stack] (default fx+transform+opacity+masks; same-kind effects are replaced)
+ enable/disable: set <id> off=1   label color: set <id> label=green   nudge: move <ids> by=+1f
+SELECTORS (anywhere ids go) sel = the editor's selection | after:T | before:T | at:T | kind:text|clip|video|audio|image|graphic|shape|solid|adjust|comp|null|camera | name:intro | V2:after:10
+ time keyword playhead (or now) = the editor's playhead, e.g. text 'Hi' at=playhead
+KEYFRAME ASSISTANT (Effect Controls, Graph Editor)
+ ease <ids|id.f1> [prop,prop|all] easy|easeIn|easeOut|linear|hold|outBack|bezier(x1,y1,x2,y2) [at=T]   (F9 Easy Ease = ease <id> all easy)
+ kf <id|id.f1> <prop|all> reverse | shift=+0.5 | stretch=2 | bake [step=1f] (expression/loop -> keyframes) | clear | smooth
+ stagger <ids> by=0.1 [from=T] [order=forward|reverse|random|time] | stagger <ids> seq [overlap=0.5] (Sequence Layers)
+ALIGN (After Effects Align panel)
+ align <ids> left|hcenter|right|top|vcenter|bottom|center [to=comp|safe|sel] [margin=40] [at=T]   distribute <ids> h|v [gap=24]
+ nudge <ids> [pos=dx,dy] [scale=120%] [rot=15] [key] [at=T]: relative move/scale/rotate (all keyframes move; with key: a keyframe at the playhead)
+ boxes are measured from the rendered layer (text, shapes, media, parenting, 3D); position keyframes move together.
+LAYERS null [at dur] [children=<ids>] | camera [move=pushin|pullout|truck|pedestal|orbit|drift|shake] [layers=<ids>] (help 3d) | set <id> blend=<mode> | matte | precomp
+COLOR (Lumetri Color panel; help color)
+ basic correction: color <ids> exposure= contrast= highlights= shadows= whites= blacks= temp= tint= sat= vibrance=   creative: color <ids> <look> + fade= stint= htint=
+ curves: fx <id> curves master='0,0 .25,.2 .75,.85 1,1' | fx <id> huecurves hueSat='0.33,-0.6' lumaSat='0.05,-1'
+ color wheels: fx <id> colorwheels shadows=#2a6cff40 highlights=#ff9a4440 midtonesL=5   HSL secondary: fx <id> secondary hue=120 hueRange=25 sat=0.6
+ vignette: fx <id> vignette   match a grade: paste <graded> <others> color   scopes: preview scope=all (help scopes)
+AUDIO (Essential Sound, Audio Track Mixer)
+ sound <clips> dialogue|music|sfx|ambience|clear [amount=1] [match=0] [under=A1] [duck=-12]: loudness match, speech chain (voice+de-ess), music ducks under dialogue
+ mixer: track set A2 vol=-3 pan=-0.2 mute=1 solo=1 | master vol=-1 lufs=-14 limiter=1 | afx <clip|A1|master> <effect> (help audio)
+MARKERS marker add T 'name' [color=#f00 dur=2 note='...'] | marker set <name|T> name= t= color= dur= note= | marker del <name|T> | marker clear
+HISTORY project action=history (undo labels) | undo [n] / redo [n]";
+
+const THREE_D: &str = "3D layers and cameras (After Effects style). x right, y down, z into the screen (bigger z = farther away).
+A layer is 3D when it has rx, ry or z, or 3d=1 (flat layers need 3d=1 to move with a camera). 3D layers are drawn back to front as seen from the camera; 2D layers keep track order and ignore the camera.
+camera [at= dur=] [zoom=px] [pos=x,y] [z=offset] [poi=x,y] [poiZ=] [aim=0] [move=<preset> amount= ease=] [layers=<ids>]
+ zoom 0 = default (0.926 x comp width, like a 50mm lens). z moves the camera along its view: + dollies in. poi is the point it aims at (two-node);
+ aim=0 makes a one-node camera turned with rx/ry/rot. The topmost camera layer active at a time is used. Keyframe pos, z, poi and zoom like any property; parent it to a null for rigs.
+ move presets: pushin, pullout (z, amount=px), truck, truckleft (x), pedestal, pedestaldown (y), orbit, orbitleft (around the poi, amount=degrees), drift, shake. layers=V2,V3 switches those layers to 3D.
+null [at dur] [pos=] [children=<ids>]: an invisible layer to parent others to (parent <ids> <null>) and animate them together.
+Parallax recipe: background at z=800 scale=150%, b-roll at z=0, title at z=-300, all 3d=1, then camera move=pushin amount=400.
+Layers behind the camera aren't drawn. Card flips and tilts: kf <id> ry 0:-90 0.6:0@outBack (no camera needed).";
+
+const SCOPES: &str = "preview scope=waveform|parade|vectorscope|histogram|all [t=seconds] [comp=] [width=] returns the Lumetri scope and a measured line:
+ luma 1st-99th percentile, median and mean | clipped (any channel >= 99.5%) | crushed (luma <= 1%) | outside broadcast 16-235 | saturation | color cast (warm/cool, green/magenta) | hints.
+ all = the frame + luma waveform + vectorscope (75% color targets, skin-tone line) + RGB parade. The time defaults to the editor's playhead, else the comp middle.
+Grade by numbers: correct first (exposure/whites/blacks until luma spans roughly 2-98% with under 1% clipped; temp/tint until the cast reads neutral), then apply a look.
+Normal scenes have a median around 35-55%; skin tones sit on the vectorscope's skin line. fx autolevels (perchannel=1) fixes levels and casts per frame; fx legalize keeps broadcast levels.";
 
 const ANIM_HEAD: &str = "Easing (kf @ease, anim ease=, animator ease=): linear hold ease(easy ease) in out inout easeIn easeOut easeInOut snap overshoot anticipate,
  in/out/inOut + Quad Cubic Quart Quint Sine Expo Circ Back Elastic Bounce (e.g. outBack, inOutSine), bezier(x1,y1,x2,y2).
@@ -134,7 +194,8 @@ title <template> ...                    motion graphics (help templates)";
 
 const COLOR: &str = "color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 sat=105`.
 lumetri params: exposure(stops) contrast highlights shadows whites blacks temp tint (-100..100) sat(%) vibrance fade stint htint (split-tone colors, alpha=strength).
-Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
+Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
+Measure with preview scope=all (help scopes); copy a grade with paste <from> <to> color.
 Use analyze stats to check exposure first. Presets:";
 
 const EXPR: &str = "Expressions (expr <id> <prop> '...') run every frame on top of keyframes.
@@ -183,6 +244,9 @@ pub fn help(topic: &str) -> String {
             s
         }
         "edit" | "dsl" | "script" | "commands" => EDIT.to_string(),
+        "tools" | "panels" | "premiere" | "aftereffects" | "ae" | "pro" => TOOLS.to_string(),
+        "3d" | "camera" | "cameras" | "null" | "nulls" | "parallax" => THREE_D.to_string(),
+        "scopes" | "scope" | "lumetri" | "waveform" | "vectorscope" => SCOPES.to_string(),
         "time" | "times" | "units" | "refs" => TIME.to_string(),
         "props" | "properties" => {
             let mut s = String::from("Static props (static) can't be keyframed. Use with add/set/kf.\n");
@@ -191,10 +255,12 @@ pub fn help(topic: &str) -> String {
             s.push_str(&props_section("Text", schema::TEXT));
             s.push_str(&props_section("Solid", schema::SOLID));
             s.push_str(&props_section("Nested comp", schema::NESTED));
+            s.push_str(&props_section("Camera (camera layers; also pos z rx ry rot)", schema::CAMERA));
+            s.push_str(&format!("Blend modes: {}\nNull layers have only the layer props.", schema::BLEND_MODES.join(" ")));
             s
         }
         "effects" | "fx" | "video" => {
-            let mut s = String::from("fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param> ...). Spatial params in comp px.\n");
+            let mut s = String::from("fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param> ...). Spatial params in comp px. Effects run top to bottom; reorder with fx <id.fN> up|down.\nAfter Effects / Premiere names work as aliases (gaussian blur, keylight, fractal noise, turbulent displace, venetian blinds, motion tile...). [transition] effects hide the layer as completion goes 0->100; [time] effects change when frames are taken.\n");
             let mut cat = "";
             for e in schema::EFFECTS {
                 if e.cat != cat {
@@ -279,7 +345,12 @@ pub fn help(topic: &str) -> String {
             }
             s
         }
-        "examples" | "example" | "recipes" => EXAMPLES.to_string(),
+        "examples" | "example" => EXAMPLES.to_string(),
+        "style" | "craft" | "professional" | "creative" | "rules" => super::craft::STYLE.to_string(),
+        "recipes" | "formats" | "reels" | "youtube" | "templates-edit" => super::craft::RECIPES.to_string(),
+        "platforms" | "platform" | "specs" | "social" | "safezones" => super::craft::PLATFORMS.to_string(),
+        "sfx" | "sounddesign" | "sound-design" | "whoosh" => super::craft::sound_help(),
+        "brand" | "brandkit" | "branding" => super::craft::brand_help(),
         "graphics" | "graphic" | "html" | "gfx" | "design" => GRAPHICS.to_string(),
         "workflow" | "pipeline" | "recipe" | "start" => WORKFLOW.to_string(),
         "fonts" => {

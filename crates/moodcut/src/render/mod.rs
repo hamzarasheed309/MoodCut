@@ -3,11 +3,18 @@ pub mod decode;
 pub mod effects;
 pub mod eval;
 pub mod ffmpeg;
+pub mod fx_color;
+pub mod fx_distort;
+pub mod fx_stylize;
 pub mod lut;
 pub mod masks;
+pub mod noise;
 pub mod pixel;
+pub mod scopes;
 pub mod shapes;
 pub mod text;
 pub mod warp;
 pub mod audio;
 pub mod encode;
+#[cfg(test)]
+mod tests;

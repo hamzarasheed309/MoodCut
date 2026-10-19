@@ -72,12 +72,12 @@ pub fn sub_schema(k: SubKind, kind: &str) -> Vec<&'static P> {
     }
 }
 
-fn find_in<'a>(list: &[&'a P], name: &str) -> Option<&'a P> {
+pub(crate) fn find_in<'a>(list: &[&'a P], name: &str) -> Option<&'a P> {
     let l = name.to_ascii_lowercase();
     list.iter().copied().find(|p| p.name.eq_ignore_ascii_case(&l)).or_else(|| list.iter().copied().find(|p| p.alias.iter().any(|a| a.eq_ignore_ascii_case(&l))))
 }
 
-fn unknown_prop(list: &[&P], name: &str, what: &str) -> anyhow::Error {
+pub(crate) fn unknown_prop(list: &[&P], name: &str, what: &str) -> anyhow::Error {
     let hint = schema::suggest(list.iter().map(|p| p.name), name).map(|h| format!(" Did you mean '{h}'?")).unwrap_or_default();
     let names: Vec<&str> = list.iter().map(|p| p.name).collect();
     anyhow!("unknown property '{name}' for {what}.{hint} Valid: {}", names.join(" "))
@@ -113,7 +113,7 @@ impl<'a> Exec<'a> {
     }
 
     /// Schema of a target plus a closure-friendly description.
-    fn target_schema(&self, t: &Target) -> Result<(Vec<&'static P>, String)> {
+    pub(crate) fn target_schema(&self, t: &Target) -> Result<(Vec<&'static P>, String)> {
         let l = self.relocate(&t.item)?;
         let it = self.item_at(l);
         Ok(match &t.sub {
@@ -125,7 +125,7 @@ impl<'a> Exec<'a> {
         })
     }
 
-    fn target_anim_mut(&mut self, t: &Target, name: &str, def: Val) -> Result<&mut Anim> {
+    pub(crate) fn target_anim_mut(&mut self, t: &Target, name: &str, def: Val) -> Result<&mut Anim> {
         let l = self.relocate(&t.item)?;
         let it = self.item_mut_at(l);
         let props = match &t.sub {
@@ -160,7 +160,7 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 
-    fn set_sub(&mut self, t: &Target, kvs: &[(String, String)]) -> Result<()> {
+    pub(crate) fn set_sub(&mut self, t: &Target, kvs: &[(String, String)]) -> Result<()> {
         let (sk, sid) = t.sub.clone().unwrap();
         let l = self.relocate(&t.item)?;
         let cx = self.vctx_of(l.0);
@@ -208,7 +208,7 @@ impl<'a> Exec<'a> {
                 "start" | "at" => {
                     let ns = super::exec::rel_or_abs(v, it.start, |x| self.time(x))?;
                     let tid = self.p.comps[l.0].tracks[l.1].id.clone();
-                    let mut moved = self.remove_item(id)?;
+                    let mut moved = self.take_item(id)?;
                     moved.start = ns;
                     self.place(moved, &tid, Mode::Strict)?;
                     changed.push(format!("start={}", fmt_t(ns)));
@@ -258,7 +258,7 @@ impl<'a> Exec<'a> {
                     changed.push("text".into());
                 }
                 "track" => {
-                    let mut moved = self.remove_item(id)?;
+                    let mut moved = self.take_item(id)?;
                     moved.start = it.start;
                     let dest = self.place(moved, v, Mode::Strict)?;
                     changed.push(format!("track={dest}"));
@@ -296,6 +296,9 @@ impl<'a> Exec<'a> {
     pub fn c_kf(&mut self, a: &mut A, mode: u8) -> Result<()> {
         let spec = a.shift().ok_or_else(|| anyhow!("kf <id|id.fN> <prop> <t:v[@ease]> ... [ease=] [loop=cycle|pingpong|offset]"))?;
         let prop = a.shift().ok_or_else(|| anyhow!("kf needs a property name"))?;
+        if self.kf_assist(&spec, &prop, a)? {
+            return Ok(());
+        }
         let def_ease = match a.take(&["ease", "e"]) {
             Some(e) => Ease::parse(&e)?,
             None => Ease::Bezier(0.33, 0.0, 0.67, 1.0),
@@ -637,7 +640,7 @@ impl<'a> Exec<'a> {
         Ok(Some(Transition { kind: def.name.to_string(), dur, props }))
     }
 
-    fn adjacent_next(&self, id: &str) -> Option<String> {
+    pub(crate) fn adjacent_next(&self, id: &str) -> Option<String> {
         let (ci, ti, _) = self.p.locate(id)?;
         let it = self.p.item(id)?;
         let fps = self.p.comps[ci].fps;
@@ -1014,7 +1017,7 @@ impl<'a> Exec<'a> {
     }
 }
 
-fn truthy(v: &str) -> bool {
+pub(crate) fn truthy(v: &str) -> bool {
     !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
 }
 

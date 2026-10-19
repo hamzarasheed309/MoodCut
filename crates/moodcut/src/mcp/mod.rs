@@ -6,6 +6,7 @@
 //! - Results are compact diffs/outlines, never full project JSON (unless asked).
 //! - `preview` returns one contact-sheet image instead of N frames.
 
+pub mod craft;
 pub mod docs;
 pub mod stdio;
 
@@ -23,7 +24,9 @@ pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphic
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
 Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media). \
 For a complete edit from one request follow help('workflow'); run check (with expect) before every render and fix what it reports. \
-The edit tool description has a cheat sheet; call help(topic) for full references (edit, effects, transitions, anim, text, templates, macros, graphics, color, render).";
+Work like a senior editor and motion designer, never generic: read help('style') and the closest help('recipes') before building; set a brand kit (brand <preset> or the client's font/colors), one look, 2-3 reusable motion moves, and sound design (sfx whoosh/hit/riser); check target=reels|tiktok|shorts|youtube flags hooks, pacing, platform safe zones and craft issues. \
+Premiere/After Effects tools and panels (rolling edits, lift/extract, paste attributes, align, keyframe assistant, cameras, Lumetri, scopes, Essential Sound) are script commands: help('tools'). \
+The edit tool description has a cheat sheet; call help(topic) for full references (edit, tools, effects, transitions, anim, 3d, text, templates, macros, graphics, color, scopes, render).";
 
 pub struct Mcp {
     pub eng: Result<Arc<Engine>, String>,
@@ -73,6 +76,9 @@ Edit: cut <id|V1> at=T | trim <id> start=+1 end=-0.5 | del <ids> [ripple] | move
 Props: set <id> pos=center scale=1.2 rot=10 opacity=50% blend=screen vol=-6dB | kf <id> scale 0:1 2:1.2@outBack | expr <id> pos 'wiggle(2,20)'\n\
 Look: fx <id> blur radius=8 | color <id> cinematic | tr <a> <b> dissolve 0.5 | tr V1 dissolve | fade <id> in=0.5 out=1 | mask <id> ellipse feather=40 | anim <id> popIn,fadeOut\n\
 Pro: title lowerthird text='Jane' sub='CEO' | captions <clip> | autocut silence <clip> | montage m1,m2 music=m3 beats=2 | reframe 9:16 | duck A1 by=A2 | parent <a> <b> | precomp <ids>\n\
+Tools (help tools): roll <id> +0.3 | lift|extract 2 5 | swap a b | paste <from> <to> fx | stagger <ids> by=0.1 | align <ids> center | ease <id> all easy | kf <id> all reverse | null | camera move=pushin layers=V2 | sound <clip> dialogue | workarea 2 8\n\
+Finish (help style, sfx, brand): brand bold | sfx whoosh on=transitions | sfx hit at=0.1 | speedramp V1 at=3 to=4x | punchin V1 | jcut c4 by=0.4 | captions V1 style=punch | anim t1 slamIn|wipeInLeft|whipInRight\n\
+Selectors: sel (editor selection) after:T at:T kind:text V2:after:5; time playhead. Scopes: preview scope=waveform|vectorscope|all.\n\
 Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02, 90f, end, c3.end+0.5, @marker. undo / redo alone. help('edit') lists everything.",
             "inputSchema": {"type": "object", "properties": {"script": {"type": "string", "description": "MoodCut Script lines"}}, "required": ["script"]},
             "annotations": {"title": "Edit timeline", "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
@@ -89,11 +95,12 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "preview",
-            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Small widths save tokens.",
+            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Scopes: scope=waveform|parade|vectorscope|histogram|all at t gives the Lumetri scope plus measured levels, clipping and color cast (grade by numbers). Small widths save tokens.",
             "inputSchema": {"type": "object", "properties": {
                 "t": {"type": "number"}, "times": {"type": "array", "items": {"type": "number"}}, "n": {"type": "integer", "minimum": 1, "maximum": 24},
                 "range": {"type": "string", "description": "a-b seconds"}, "width": {"type": "integer"}, "comp": {"type": "string"},
-                "media": {"type": "string"}, "offset": {"type": "integer"}
+                "media": {"type": "string"}, "offset": {"type": "integer"},
+                "scope": {"type": "string", "enum": ["waveform", "parade", "vectorscope", "histogram", "all"]}
             }},
             "annotations": {"title": "Preview frames", "readOnlyHint": true, "openWorldHint": false}
         },
@@ -108,7 +115,7 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "render",
-            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b, scale, hw=auto (GPU), wait=true to block until done.",
+            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b or work (the work area), scale, hw=auto (GPU), wait=true to block until done.",
             "inputSchema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["start", "status", "list", "cancel"]},
                 "preset": {"type": "string"}, "out": {"type": "string"}, "range": {"type": "string"}, "scale": {"type": "number"},
@@ -130,7 +137,7 @@ html: full page or body fragment (Inter built in; {{key}} = vars; library media 
         },
         {
             "name": "check",
-            "description": "Quality-check the edit before rendering (and after big changes). Finds black gaps, 1-2 frame gaps, flash frames, layers hidden under opaque clips, offline media, upscaled/soft footage, fps judder, transitions without handles, text/graphics outside title-safe, off-screen or overlapping, small or low-contrast text, text too short to read, fast captions, audio past the picture, music under dialogue without ducking, and the real mix loudness/true peak vs the delivery target. Each problem has an id/time and usually a fix line; fix=true applies them as one undoable edit. expect verifies the request: {dur, dur_tol, size:'1080x1920', aspect, fps, lufs, captions, music, max_shot, min_shot}. target: web (default, -14 LUFS) | youtube | social | podcast (-16) | broadcast (-23). Returns frames of visual problems with title-safe guides.",
+            "description": "Quality-check the edit before rendering (and after big changes). Finds black gaps, 1-2 frame gaps, flash frames, layers hidden under opaque clips, offline media, upscaled/soft footage, fps judder, transitions without handles, text/graphics outside title-safe, off-screen or overlapping, small or low-contrast text, text too short to read, fast captions, audio past the picture, music under dialogue without ducking, and the real mix loudness/true peak vs the delivery target. Each problem has an id/time and usually a fix line; fix=true applies them as one undoable edit. Craft notes (C#: weak hook, slow pacing, static shots, linear easing, too many transition types, silent transitions/titles, inconsistent type, missing brand or captions) come with `try:` commands that are never auto-applied: act on them as an editor would. expect verifies the request: {dur, dur_tol, size:'1080x1920', aspect, fps, lufs, captions, music, max_shot, min_shot}. target: web (default, -14 LUFS) | reels | tiktok | shorts (vertical UI zones, hook, pacing) | youtube | social | podcast (-16) | broadcast (-23). Returns frames of visual problems with title-safe guides (and the app UI zones for short-form).",
             "inputSchema": {"type": "object", "properties": {
                 "comp": {"type": "string"}, "target": {"type": "string"}, "fix": {"type": "boolean"}, "audio": {"type": "boolean"}, "frames": {"type": "boolean"},
                 "safe": {"type": "number", "description": "title-safe margin fraction, default 0.05"},
@@ -143,7 +150,7 @@ html: full page or body fragment (Inter built in; {{key}} = vars; library media 
         },
         {
             "name": "help",
-            "description": "MoodCut reference on demand. topic: edit time props effects audio transitions anim text shapes templates macros color expr render analyze examples fonts.",
+            "description": "MoodCut reference on demand. topic: workflow style recipes platforms sfx brand edit tools time props effects audio transitions anim 3d text shapes templates macros color scopes expr render analyze graphics examples fonts.",
             "inputSchema": {"type": "object", "properties": {"topic": {"type": "string"}}},
             "annotations": {"title": "Help", "readOnlyHint": true, "openWorldHint": false}
         }
@@ -336,7 +343,17 @@ impl Mcp {
         let detail = a["detail"].as_u64().unwrap_or(1).min(2) as u8;
         let comp = s(a, "comp").unwrap_or(active.clone());
         Ok(match what.as_str() {
-            "timeline" => format!("rev {rev}\n{}", outline::timeline(&p, &comp, &active, detail)),
+            "timeline" => {
+                let ui = eng.ui();
+                let mut head = format!("rev {rev}");
+                if let Some(t) = ui.playhead {
+                    head.push_str(&format!(" | editor: playhead={}", crate::model::time::fmt_t(t)));
+                    if !ui.selection.is_empty() {
+                        head.push_str(&format!(" selected={} (script: sel)", ui.selection.join(",")));
+                    }
+                }
+                format!("{head}\n{}", outline::timeline(&p, &comp, &active, detail))
+            }
             "item" => {
                 let id = s(a, "id").ok_or_else(|| anyhow::anyhow!("view item needs id"))?;
                 if let Some(c) = p.comp(&id) {
@@ -394,6 +411,15 @@ impl Mcp {
     fn t_preview(&self, eng: &Arc<Engine>, a: &Value) -> Value {
         let r = (|| -> anyhow::Result<(Vec<u8>, String)> {
             let (p, _, active, _) = eng.snapshot();
+            if let Some(kind) = s(a, "scope") {
+                let comp = s(a, "comp").unwrap_or_else(|| active.clone());
+                let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
+                let t = a["t"].as_f64().or(eng.ui().playhead).unwrap_or(c.duration() / 2.0).clamp(0.0, (c.duration() - c.frame_dur()).max(0.0));
+                let w = a["width"].as_u64().unwrap_or(if kind == "all" { 640 } else { 384 }).clamp(128, 1280) as u32;
+                let h = if kind == "vectorscope" { w } else { w * 9 / 16 };
+                let (pm, text) = eng.scope(Some(&c.id), t, &kind, w, h)?;
+                return Ok((encode::encode_jpeg(&pm, 82)?, format!("{kind} t={}s\n{text}", crate::model::time::fmt_t(t))));
+            }
             if let Some(spec) = s(a, "media") {
                 let ids = crate::library::select_media(&p, &spec)?;
                 let parse_range = |r: String| r.split_once('-').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?)));
@@ -553,10 +579,7 @@ impl Mcp {
             }
             _ => {
                 let (t0, t1) = match s(a, "range") {
-                    Some(r) => {
-                        let (x, y) = r.split_once('-').ok_or_else(|| anyhow::anyhow!("range must be a-b"))?;
-                        (x.trim().parse()?, y.trim().parse()?)
-                    }
+                    Some(r) => eng.render_range(&s(a, "comp").unwrap_or_default(), &r)?,
                     None => (0.0, 0.0),
                 };
                 let opts = RenderOpts {
@@ -636,10 +659,12 @@ pub fn prompts() -> Vec<Prompt> {
             build: |g| {
                 format!(
                     "Use MoodCut to make this video: {brief}.\nFootage: {folder}. Target length: {len}. Format: {fmt}. Music: {music}.\n\
-                     Follow help('workflow') end to end: import and look at the footage (poster sheets, transcripts), plan a structure with a strong hook, \
-                     assemble, polish (color, titles with the graphic tool, captions if there is speech), mix the sound, then run check with \
-                     expect (duration and size) and fix everything it reports. Render with the matching preset. Don't ask me questions unless \
-                     something essential is missing; make sensible choices and tell me what you made.",
+                     Work like a senior editor and motion designer: read help('style') and the closest help('recipes'), then follow help('workflow') \
+                     end to end: import and look at the footage (poster sheets, transcripts), plan a structure with a hook in the first 2 seconds, \
+                     set a brand kit and one look, assemble, polish (titles with one consistent entrance, captions if there is speech), add sound \
+                     design (help sfx), mix to -14 LUFS, then run check with the platform target and expect (duration and size) and fix everything \
+                     it reports, including craft notes. Render with the matching preset. Don't ask me questions unless something essential is \
+                     missing; make confident creative choices and tell me what you made and why.",
                     brief = opt(g("brief"), "a short video"),
                     folder = opt(g("folder"), "?"),
                     len = g("length").map(|l| format!("{l} s")).unwrap_or_else(|| "whatever suits the material".into()),
@@ -673,10 +698,99 @@ pub fn prompts() -> Vec<Prompt> {
             build: |g| {
                 format!(
                     "In MoodCut, make a vertical {plat} version of the current edit, at most {len} s: keep the strongest moments \
-                     (hook in the first 2 seconds), reframe 9:16 with a blurred fill, keep text inside the title-safe area, add captions \
-                     if there is speech, then check expect={{size: '1080x1920', dur: {len}}} with fix and render preset=social.",
+                     (hook in the first 1-2 seconds, read help('platforms')), reframe 9:16 with a blurred fill, tighten the pacing (shots \
+                     0.8-2 s, something new every 3-5 s), keep text and faces out of the app's UI zones, add punchy captions if there is speech \
+                     (captions V1 style=punch), add sound design on the cuts that move, then check target=reels expect={{size: '1080x1920', \
+                     dur: {len}}} with fix and render preset=social.",
                     plat = opt(g("platform"), "short-form"),
                     len = opt(g("length"), "45"),
+                )
+            },
+        },
+        Prompt {
+            name: "reel",
+            title: "Instagram Reel / TikTok / Short",
+            desc: "A scroll-stopping vertical video from footage: hook, punchy captions, pattern interrupts, sound design.",
+            args: &[("footage", "folder or files", true), ("brief", "topic, tone, audience, call to action", true), ("length", "seconds (default 30)", false), ("platform", "reels, tiktok or shorts", false), ("brand", "brand colors/font, or a vibe", false), ("music", "music file (optional)", false)],
+            build: |g| {
+                format!(
+                    "Make a {plat} in MoodCut: {brief}. Footage: {footage}. Length about {len} s. Brand: {brand}. Music: {music}.\n\
+                     Read help('style'), help('platforms') and the reel-talk recipe in help('recipes') first. Build a 1080x1920 comp. \
+                     Open with the strongest moment and an on-screen hook within the first 6 frames (slamIn or wordPop, with a hit). \
+                     Keep shots 0.8-2 s and change something every 3-5 s (punch-ins on jump cuts, b-roll with whooshes, text pops). \
+                     Captions last: captions V1 style=punch words=2 inside the safe zone. One look, the brand kit, one transition type, \
+                     music ducked under speech, -14 LUFS. End on a loop or a 1-2 s CTA. Then check target={plat} with expect size 1080x1920, \
+                     fix everything (craft notes too), look at a preview n=12 like a viewer, and render preset=social.",
+                    plat = opt(g("platform"), "reels"),
+                    brief = opt(g("brief"), "?"),
+                    footage = opt(g("footage"), "?"),
+                    len = opt(g("length"), "30"),
+                    brand = opt(g("brand"), "choose a brand preset that fits the brief"),
+                    music = opt(g("music"), "use one from the footage folder if there is any"),
+                )
+            },
+        },
+        Prompt {
+            name: "youtube-video",
+            title: "YouTube video",
+            desc: "A polished YouTube edit: cold open, tight talking head with b-roll, lower thirds, chapters, sound design.",
+            args: &[("footage", "folder or files", true), ("brief", "topic and audience", true), ("length", "target minutes or seconds", false), ("music", "music file or folder (optional)", false)],
+            build: |g| {
+                format!(
+                    "Edit a YouTube video in MoodCut: {brief}. Footage: {footage}. Target length: {len}. Music: {music}.\n\
+                     Read help('style') and the youtube-talk recipe in help('recipes'). Transcribe the talking head and cut the story from the \
+                     transcript (strongest claim first as a 5-15 s cold open), autocut silence and punch in on every few jump cuts, b-roll or a \
+                     graphic every 5-10 s starting on the word it shows, a lower third for each speaker, chapter markers and chapter titles, one \
+                     look and one transition style, subtle music ducked under speech, sound design on b-roll entries and titles, -14 LUFS. Keep \
+                     the last 15-20 s clear for end-screen elements. check target=youtube with expect, fix everything, then render preset=youtube \
+                     and preset=chapters.",
+                    brief = opt(g("brief"), "?"),
+                    footage = opt(g("footage"), "?"),
+                    len = opt(g("length"), "whatever the story needs (tight)"),
+                    music = opt(g("music"), "optional: only if it helps"),
+                )
+            },
+        },
+        Prompt {
+            name: "promo",
+            title: "Product / brand promo",
+            desc: "A launch film or ad with kinetic typography, motion design and a CTA end card.",
+            args: &[("footage", "product shots / footage", true), ("brief", "product, the one message, call to action", true), ("brand", "brand font and colors (or a vibe)", false), ("length", "6, 15 or 30 s (default 15)", false), ("format", "16:9, 9:16, 1:1 or 4:5", false), ("music", "music file", false)],
+            build: |g| {
+                format!(
+                    "Make a {len} s {fmt} promo in MoodCut: {brief}. Footage: {footage}. Brand: {brand}. Music: {music}.\n\
+                     Read help('style'), help('brand') and the promo recipe in help('recipes'). Set the brand kit first. Product or claim within \
+                     3 s, one message, kinetic typography on the beat (one word or short line per beat, the same entrance style throughout), \
+                     product shots with camera moves or parallax, a designed end card with logo and CTA for the last 2-3 s. Use the graphic tool \
+                     (HTML with var(--brand-*) colors) for anything the templates can't do. Sound design on every typographic hit and \
+                     transition, a riser into the logo. check with expect (duration, size), fix, render.",
+                    len = opt(g("length"), "15"),
+                    fmt = opt(g("format"), "16:9"),
+                    brief = opt(g("brief"), "?"),
+                    footage = opt(g("footage"), "?"),
+                    brand = opt(g("brand"), "pick a preset that fits"),
+                    music = opt(g("music"), "choose from the footage folder if any"),
+                )
+            },
+        },
+        Prompt {
+            name: "montage",
+            title: "Cinematic music montage",
+            desc: "Travel, event or brand-film montage cut to the music with ramps, whips and a film look.",
+            args: &[("footage", "folder or files", true), ("music", "the track", true), ("length", "seconds (default: the music phrase that fits)", false), ("look", "kodak, fuji, warm, moody...", false), ("title", "title text (optional)", false)],
+            build: |g| {
+                format!(
+                    "Cut a cinematic montage in MoodCut from {footage} to {music}. Length {len}. Look: {look}. {title}\n\
+                     Read help('style') and the montage recipe in help('recipes'). Look at every clip (poster sheets, filmstrips) and pick the \
+                     best 1-3 s of each (action, light, faces); order them as a story (establishing -> details -> people -> peak -> ending). Find \
+                     the beats and the drop; cut every 2-4 beats, faster after the drop, speed ramps into the drop with a riser ending on it and \
+                     a boom on it, whips with whooshes between locations, one look with grain and letterbox, end on the music's ending. check, \
+                     fix, render preset=youtube (and a 9:16 version with reframe if useful).",
+                    footage = opt(g("footage"), "?"),
+                    music = opt(g("music"), "?"),
+                    len = opt(g("length"), "a natural phrase of the music"),
+                    look = opt(g("look"), "kodak"),
+                    title = g("title").map(|t| format!("Title: '{t}' (cinematic, wide tracking, trackIn).")).unwrap_or_default(),
                 )
             },
         },
@@ -694,6 +808,23 @@ pub fn prompts() -> Vec<Prompt> {
                     brief = opt(g("brief"), "?"),
                     dur = opt(g("dur"), "4"),
                     place = g("at").map(|t| format!("Place it at {t} s on a track above the video.")).unwrap_or_else(|| "Then place it where it fits best in the edit.".into()),
+                )
+            },
+        },
+        Prompt {
+            name: "color-grade",
+            title: "Color grade with scopes",
+            desc: "Balance and grade the edit shot by shot, measuring with the Lumetri scopes.",
+            args: &[("look", "the look to aim for (natural, cinematic, warm, teal-orange, moody...)", false), ("target", "web or broadcast (broadcast keeps levels legal)", false)],
+            build: |g| {
+                format!(
+                    "Color grade my MoodCut edit like a colorist, aiming for a {look} look. Read help('scopes') and help('color'). For every \
+                     distinct shot on the main video track: preview scope=all at its middle, then correct first (exposure, whites/blacks, \
+                     temp/tint until the cast is neutral and luma sits about 2-98% without clipping) with color <clip> key=value, then apply \
+                     the look consistently (color preset, colorwheels, huecurves; secondary hue=25 to protect skin), and check the scope \
+                     again. Match shots that cut together (paste <graded> <others> color). {legal}Summarize the grade per shot.",
+                    look = opt(g("look"), "natural, polished"),
+                    legal = if g("target").is_some_and(|t| t.contains("broad")) { "Finish with fx <all clips> legalize and a scope check (outside 16-235 must be ~0%). " } else { "" },
                 )
             },
         },

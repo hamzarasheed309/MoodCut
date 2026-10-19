@@ -85,6 +85,10 @@ export function itemLabel(it: Item, srcName?: string): string {
       return "Adjustment";
     case "comp":
       return srcName || `Comp ${it.src}`;
+    case "null":
+      return "Null";
+    case "camera":
+      return "Camera";
   }
 }
 
@@ -105,6 +109,19 @@ export function debounce<T extends (...a: any[]) => void>(fn: T, ms: number): T 
   }) as T;
 }
 
+/** Timeline label colors (the `label` layer property). */
+export const LABEL_COLORS: Record<string, string> = {
+  red: "#d6455d",
+  orange: "#e0803a",
+  yellow: "#d8b737",
+  green: "#4cae5b",
+  aqua: "#33a9b5",
+  blue: "#3d6fd6",
+  violet: "#8e5bd8",
+  pink: "#d65aa8",
+  gray: "#7b7b88",
+};
+
 export function kindColor(kind: string, trackKind: string): string {
   if (trackKind === "audio") return "#2f9e6e";
   switch (kind) {
@@ -120,7 +137,39 @@ export function kindColor(kind: string, trackKind: string): string {
       return "#6b7280";
     case "comp":
       return "#1f9aa6";
+    case "null":
+      return "#5b5b6b";
+    case "camera":
+      return "#4b6584";
     default:
       return "#555";
   }
+}
+
+/** Value of a keyframed number/vec at item-local time `t` (linear between keys; for display). */
+export function valueAt(a: Anim | undefined, t: number): Val | undefined {
+  if (!isAnimObj(a) || !a.k || !a.k.length) return staticVal(a);
+  const k = a.k;
+  if (t <= k[0][0]) return k[0][1];
+  for (let i = 0; i < k.length - 1; i++) {
+    const [t0, v0] = k[i];
+    const [t1, v1] = k[i + 1];
+    if (t >= t0 && t <= t1) {
+      const f = t1 > t0 ? (t - t0) / (t1 - t0) : 1;
+      if (typeof v0 === "number" && typeof v1 === "number") return v0 + (v1 - v0) * f;
+      if (Array.isArray(v0) && Array.isArray(v1)) return [v0[0] + (v1[0] - v0[0]) * f, v0[1] + (v1[1] - v0[1]) * f];
+      return f < 1 ? v0 : v1;
+    }
+  }
+  return k[k.length - 1][1];
+}
+
+/** Cut points of a comp (item starts/ends and markers), sorted. */
+export function editPoints(c: Comp): number[] {
+  const s = new Set<number>([0]);
+  for (const tr of c.tracks) for (const i of tr.items) {
+    s.add(+i.start.toFixed(4));
+    s.add(+(i.start + i.dur).toFixed(4));
+  }
+  return [...s].sort((a, b) => a - b);
 }

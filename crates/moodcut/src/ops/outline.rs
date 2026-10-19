@@ -24,6 +24,9 @@ pub fn comp_header(p: &Project, c: &Comp, active: &str) -> String {
     if c.id == active && c.id != p.main {
         s.push_str(" [active]");
     }
+    if let Some((a, b)) = c.work {
+        s.push_str(&format!(" work={}-{}", fmt_t(a), fmt_t(b)));
+    }
     if c.bg.a < 1.0 {
         s.push_str(" bg=none");
     } else if c.bg.to_hex() != "#000000" {
@@ -64,6 +67,8 @@ pub fn item_line(p: &Project, it: &Item) -> String {
             let _ = write!(s, " solid {c}");
         }
         ItemKind::Adjust => s.push_str(" adjust"),
+        ItemKind::Null => s.push_str(" null"),
+        ItemKind::Camera => s.push_str(" camera"),
         ItemKind::Comp => {
             let _ = write!(s, " comp {}", it.src.clone().unwrap_or_default());
         }
@@ -86,7 +91,7 @@ pub fn item_line(p: &Project, it: &Item) -> String {
         s.push_str(" OFF");
     }
     // static notable props
-    for k in ["pos", "scale", "rot", "opacity", "vol", "blend", "fit", "size"] {
+    for k in ["pos", "scale", "rot", "opacity", "vol", "blend", "fit", "size", "3d", "zoom"] {
         if let Some(a) = it.props.get(k) {
             if !a.is_animated() {
                 let _ = write!(s, " {k}={}", a.v.display());
@@ -184,6 +189,9 @@ pub fn timeline(p: &Project, comp_id: &str, active: &str, detail: u8) -> String 
     let Some(c) = p.comp(comp_id) else { return format!("no comp '{comp_id}'") };
     let mut s = comp_header(p, c, active);
     s.push('\n');
+    if !p.brand.is_empty() {
+        let _ = writeln!(s, "brand {}", super::pro::brand_line(&p.brand));
+    }
     let mut tracks: Vec<&Track> = c.vtracks().collect();
     tracks.reverse(); // top track first, like an NLE
     tracks.extend(c.atracks());
@@ -237,7 +245,18 @@ pub fn timeline(p: &Project, comp_id: &str, active: &str, detail: u8) -> String 
         }
     }
     if !c.markers.is_empty() {
-        let ms: Vec<String> = c.markers.iter().take(64).map(|m| if m.name.is_empty() { fmt_t(m.t) } else { format!("{}:{}", fmt_t(m.t), m.name) }).collect();
+        let ms: Vec<String> = c
+            .markers
+            .iter()
+            .take(64)
+            .map(|m| {
+                let mut x = if m.name.is_empty() { fmt_t(m.t) } else { format!("{}:{}", fmt_t(m.t), m.name) };
+                if m.dur > 0.0 {
+                    x.push_str(&format!("+{}s", fmt_t(m.dur)));
+                }
+                x
+            })
+            .collect();
         let more = if c.markers.len() > 64 { format!(" …+{}", c.markers.len() - 64) } else { String::new() };
         let _ = writeln!(s, "markers: {}{more}", ms.join(" "));
     }

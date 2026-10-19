@@ -113,6 +113,33 @@ impl<'a> Exec<'a> {
     // ------------------------------------------------------------ autocut
 
     pub fn c_autocut(&mut self, a: &mut A) -> Result<()> {
+        // several clips (a track, a selector): from the last back, so ripples never move a clip still to cut
+        if let Some(spec) = a.pos.get(1).cloned() {
+            let ids = self.targets(&spec)?;
+            if let [one] = ids.as_slice() {
+                a.pos[1] = one.clone();
+            } else if ids.len() > 1 {
+                let mut order: Vec<(f64, String)> = ids.iter().map(|id| (self.item_span(id).map(|s| s.0).unwrap_or(0.0), id.clone())).collect();
+                order.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap());
+                let mut left = vec![];
+                for (_, id) in order {
+                    let mut sub = a.clone();
+                    sub.pos[1] = id;
+                    self.autocut_one(&mut sub)?;
+                    left = sub.rest();
+                }
+                a.rest();
+                a.pos.clear();
+                if !left.is_empty() {
+                    bail!("unused argument(s): {}", left.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>().join(", "));
+                }
+                return Ok(());
+            }
+        }
+        self.autocut_one(a)
+    }
+
+    fn autocut_one(&mut self, a: &mut A) -> Result<()> {
         let mode = a.shift().ok_or_else(|| anyhow!("autocut silence <clip> [thresh=-35] [min=0.5] [pad=0.12] [sync] | autocut scenes <clip> [thresh=0.3]"))?.to_ascii_lowercase();
         let id = self.item_id(&a.shift().ok_or_else(|| anyhow!("autocut needs a clip id"))?)?;
         let l = self.relocate(&id)?;
@@ -209,52 +236,65 @@ impl<'a> Exec<'a> {
     // ------------------------------------------------------------ captions
 
     pub fn c_captions(&mut self, a: &mut A) -> Result<()> {
-        let id = self.item_id(&a.shift().ok_or_else(|| anyhow!("captions <clip> [style=bold|box|minimal|neon|karaoke] [words=3] [pos=bottom] [size=] [hl=#ffd60a] [track=]"))?)?;
+        let spec = a.shift().ok_or_else(|| anyhow!("captions <clips|V1> [style=punch|bold|box|minimal|neon|karaoke] [words=3] [pos=bottom] [size=] [hl=#ffd60a] [track=]"))?;
         let style = a.take(&["style"]).unwrap_or_else(|| "bold".into());
-        let words_per: usize = a.take(&["words", "n"]).map(|s| s.parse()).transpose()?.unwrap_or(3).max(1);
+        let punch = matches!(style.to_ascii_lowercase().as_str(), "punch" | "hormozi" | "impact");
+        let words_per: usize = a.take(&["words", "n"]).map(|s| s.parse()).transpose()?.unwrap_or(if punch { 2 } else { 3 }).max(1);
         let pos = a.take(&["pos", "position"]);
         let size = a.take(&["size"]);
-        let hl = a.take(&["hl", "highlight"]).unwrap_or_else(|| "#ffd60a".into());
+        // the brand's accent marks the spoken word
+        let hl = a.take(&["hl", "highlight"]).or_else(|| self.p.brand.accent.clone()).unwrap_or_else(|| "#ffd60a".into());
         let track = a.take(&["track"]);
         let enter = a.take(&["enter", "anim"]).unwrap_or_else(|| "pop".into());
         let caps = a.take(&["caps"]);
         let opts = Self::analysis_opts(a, &["lang", "model"]);
-        let l = self.relocate(&id)?;
-        let it = self.item_at(l).clone();
-        let mid = it.src.clone().ok_or_else(|| anyhow!("{id} has no media"))?;
-        let res = self.env.analyze(self.p, &mid, "transcript", &opts)?;
-        let sp = it.speed();
-        let (src_a, src_b) = (it.src_in, it.src_in + it.dur * sp);
-        let mut words: Vec<(String, f64, f64)> = vec![];
-        for seg in res["segments"].as_array().cloned().unwrap_or_default() {
-            let ws = seg["words"].as_array().cloned().unwrap_or_default();
-            if ws.is_empty() {
-                // segment-level only: spread words evenly
-                let text = seg["text"].as_str().unwrap_or("").trim().to_string();
-                let (s, e) = (seg["s"].as_f64().unwrap_or(0.0), seg["e"].as_f64().unwrap_or(0.0));
-                let toks: Vec<&str> = text.split_whitespace().collect();
-                let n = toks.len().max(1) as f64;
-                for (i, w) in toks.iter().enumerate() {
-                    let ws = s + (e - s) * i as f64 / n;
-                    words.push((w.to_string(), ws, ws + (e - s) / n));
-                }
-            } else {
-                for w in ws {
-                    let t = w["w"].as_str().unwrap_or("").trim().to_string();
-                    if t.is_empty() {
-                        continue;
+        // every clip with speech (after autocut a talk is many clips), words in timeline time
+        let mut all: Vec<(String, f64, f64)> = vec![];
+        let ids = self.targets(&spec)?;
+        for id in &ids {
+            let l = self.relocate(id)?;
+            let it = self.item_at(l).clone();
+            let Some(mid) = it.src.clone() else { continue };
+            if !self.p.media(&mid).is_some_and(|m| m.has_audio) || it.kind != ItemKind::Clip {
+                continue;
+            }
+            let res = self.env.analyze(self.p, &mid, "transcript", &opts)?;
+            let sp = it.speed();
+            let (src_a, src_b) = (it.src_in, it.src_in + it.dur * sp);
+            let mut words: Vec<(String, f64, f64)> = vec![];
+            for seg in res["segments"].as_array().cloned().unwrap_or_default() {
+                let ws = seg["words"].as_array().cloned().unwrap_or_default();
+                if ws.is_empty() {
+                    // segment-level only: spread words evenly
+                    let text = seg["text"].as_str().unwrap_or("").trim().to_string();
+                    let (s, e) = (seg["s"].as_f64().unwrap_or(0.0), seg["e"].as_f64().unwrap_or(0.0));
+                    let toks: Vec<&str> = text.split_whitespace().collect();
+                    let n = toks.len().max(1) as f64;
+                    for (i, w) in toks.iter().enumerate() {
+                        let ws = s + (e - s) * i as f64 / n;
+                        words.push((w.to_string(), ws, ws + (e - s) / n));
                     }
-                    words.push((t, w["s"].as_f64().unwrap_or(0.0), w["e"].as_f64().unwrap_or(0.0)));
+                } else {
+                    for w in ws {
+                        let t = w["w"].as_str().unwrap_or("").trim().to_string();
+                        if t.is_empty() {
+                            continue;
+                        }
+                        words.push((t, w["s"].as_f64().unwrap_or(0.0), w["e"].as_f64().unwrap_or(0.0)));
+                    }
                 }
             }
+            all.extend(
+                words
+                    .into_iter()
+                    .filter(|(_, s, e)| *e > src_a && *s < src_b)
+                    .map(|(w, s, e)| (w, it.start + (s.max(src_a) - src_a) / sp, it.start + (e.min(src_b) - src_a) / sp)),
+            );
         }
-        let words: Vec<(String, f64, f64)> = words
-            .into_iter()
-            .filter(|(_, s, e)| *e > src_a && *s < src_b)
-            .map(|(w, s, e)| (w, it.start + (s.max(src_a) - src_a) / sp, it.start + (e.min(src_b) - src_a) / sp))
-            .collect();
+        all.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
+        let words = all;
         if words.is_empty() {
-            bail!("no transcribed words inside {id}'s range");
+            bail!("no transcribed words inside {spec}");
         }
         // group into phrases: N words, break on punctuation or long pauses
         let mut phrases: Vec<Vec<(String, f64, f64)>> = vec![];
@@ -286,13 +326,27 @@ impl<'a> Exec<'a> {
                 self.pick_track_above(TrackKind::Video, s, e)
             }
         };
-        let style_props: Vec<(String, String)> = match style.to_ascii_lowercase().as_str() {
+        let base_px = base_size.parse::<f64>().unwrap_or(72.0);
+        let mut style_props: Vec<(String, String)> = match style.to_ascii_lowercase().as_str() {
+            "punch" | "hormozi" | "impact" => vec![
+                ("size".into(), fmt_num((base_px * 1.15).round())),
+                ("weight".into(), "black".into()),
+                ("stroke".into(), "#000000".into()),
+                ("strokeW".into(), fmt_num((base_px * 0.16).round())),
+                ("shadow".into(), "#000000b0".into()),
+                ("shadowY".into(), fmt_num((base_px * 0.06).round())),
+                ("shadowBlur".into(), fmt_num((base_px * 0.12).round())),
+                ("caps".into(), caps.clone().unwrap_or_else(|| "1".into())),
+            ],
             "bold" | "tiktok" | "karaoke" => vec![("weight".into(), "black".into()), ("stroke".into(), "#000000".into()), ("strokeW".into(), fmt_num(base_size.parse::<f64>().unwrap_or(72.0) * 0.11)), ("caps".into(), caps.clone().unwrap_or_else(|| "1".into()))],
             "box" | "boxed" => vec![("weight".into(), "bold".into()), ("bg".into(), "#000000b3".into()), ("bgMode".into(), "line".into())],
             "minimal" | "clean" => vec![("weight".into(), "medium".into()), ("shadow".into(), "#000000aa".into())],
             "neon" => vec![("weight".into(), "bold".into()), ("shadow".into(), hl.clone()), ("shadowY".into(), "0".into()), ("shadowBlur".into(), "24".into())],
-            other => bail!("unknown caption style '{other}' (bold box minimal neon karaoke)"),
+            other => bail!("unknown caption style '{other}' (punch bold box minimal neon karaoke)"),
         };
+        if let Some(f) = &self.p.brand.font {
+            style_props.push(("font".into(), f.clone()));
+        }
         let karaoke = !matches!(style.to_ascii_lowercase().as_str(), "minimal" | "clean");
         let n = phrases.len();
         let ci = self.ci();
@@ -312,7 +366,8 @@ impl<'a> Exec<'a> {
             item.text = Some(text);
             let iid = item.id.clone();
             self.place(item, &tid, Mode::Overwrite)?;
-            let mut props = vec![("size".to_string(), base_size.clone()), ("pos".to_string(), pos.clone()), ("boxW".to_string(), fmt_num(cw * 0.86))];
+            // vertical: narrow enough to stay clear of the app's side buttons
+            let mut props = vec![("size".to_string(), base_size.clone()), ("pos".to_string(), pos.clone()), ("boxW".to_string(), fmt_num(cw * if vertical { 0.66 } else { 0.86 }))];
             props.extend(style_props.iter().cloned());
             self.apply_props(&iid, &props)?;
             if karaoke {
@@ -325,7 +380,7 @@ impl<'a> Exec<'a> {
                 p.insert("times".into(), Anim::new(Val::S(times.join(","))));
                 p.insert("dur".into(), Anim::new(Val::N(0.06)));
                 p.insert("color".into(), Anim::new(Val::C(crate::model::value::Color::parse(&hl)?)));
-                p.insert("scale".into(), Anim::new(Val::N(1.06)));
+                p.insert("scale".into(), Anim::new(Val::N(if punch { 1.18 } else { 1.06 })));
                 itm.anims.push(Effect { id: xid, kind: "hl".into(), on: true, props: p });
             }
             if enter != "none" {
@@ -382,7 +437,7 @@ impl<'a> Exec<'a> {
         let (beats, bpm, _, _, _) = self.beat_times(&key, every)?;
         let ci = self.ci();
         for (i, b) in beats.iter().enumerate() {
-            self.p.comps[ci].markers.push(Marker { t: *b, name: format!("b{}", i + 1), color: None });
+            self.p.comps[ci].markers.push(Marker::new(*b, format!("b{}", i + 1)));
         }
         self.p.comps[ci].markers.sort_by(|x, y| x.t.partial_cmp(&y.t).unwrap());
         self.note(format!("+{} beat marker(s) @{} BPM (named b1, b2 ...; use @b4 as a time)", beats.len(), fmt_num(bpm.round())));

@@ -21,6 +21,7 @@ pub mod ops;
 pub mod render;
 pub mod server;
 pub mod setup;
+pub mod sfx;
 pub mod tunnel;
 
 use anyhow::{bail, Context, Result};
@@ -94,7 +95,7 @@ enum Cmd {
         out: Option<String>,
         #[arg(short, long, default_value = "mp4")]
         preset: String,
-        /// Time range a-b in seconds
+        /// Time range a-b in seconds, or `work` for the work area
         #[arg(long)]
         range: Option<String>,
         #[arg(long, default_value_t = 1.0)]
@@ -270,11 +271,12 @@ fn real_main() -> Result<()> {
         Cmd::Render { project, out, preset, range, scale, comp, hw } => {
             let eng = load_engine()?;
             eng.open(&project)?;
+            let comp = comp.unwrap_or_default();
             let (t0, t1) = match range {
-                Some(r) => parse_range(&r)?,
+                Some(r) => eng.render_range(&comp, &r)?,
                 None => (0.0, 0.0),
             };
-            let opts = render::encode::RenderOpts { comp: comp.unwrap_or_default(), t0, t1, preset, out: out.map(PathBuf::from).unwrap_or_default(), scale, hw };
+            let opts = render::encode::RenderOpts { comp, t0, t1, preset, out: out.map(PathBuf::from).unwrap_or_default(), scale, hw };
             let job = eng.start_render(opts)?;
             let mut last = String::new();
             loop {

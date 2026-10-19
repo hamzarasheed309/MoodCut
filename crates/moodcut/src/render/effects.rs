@@ -52,7 +52,11 @@ pub fn margin(e: &Effect, ev: &Ev, scale: f32) -> f32 {
     let p = &e.props;
     let m = match def.name {
         "blur" => pe.f(p, "radius") * 1.6,
-        "glow" => pe.f(p, "radius") * 1.6,
+        "glow" | "lensblur" => pe.f(p, "radius") * 1.6,
+        "outerglow" => pe.f(p, "size") * 2.0,
+        "ripple" => pe.f(p, "amp"),
+        "turbulence" => pe.f(p, "amount"),
+        "choke" => (-pe.f(p, "amount")).max(0.0) + pe.f(p, "soft") * 1.6,
         "shadow" => pe.f(p, "distance") + pe.f(p, "blur") * 1.6,
         "stroke" => pe.f(p, "width") + 2.0,
         "dirblur" => pe.f(p, "length"),
@@ -64,7 +68,7 @@ pub fn margin(e: &Effect, ev: &Ev, scale: f32) -> f32 {
     m.max(0.0) * scale
 }
 
-fn lut1(f: impl Fn(f32) -> f32) -> [u8; 256] {
+pub(crate) fn lut1(f: impl Fn(f32) -> f32) -> [u8; 256] {
     let mut l = [0u8; 256];
     for (i, v) in l.iter_mut().enumerate() {
         *v = (f(i as f32 / 255.0).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -73,16 +77,16 @@ fn lut1(f: impl Fn(f32) -> f32) -> [u8; 256] {
 }
 
 #[inline]
-fn luma(r: f32, g: f32, b: f32) -> f32 {
+pub(crate) fn luma(r: f32, g: f32, b: f32) -> f32 {
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
-fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a).max(1e-6)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+pub(crate) fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let mx = r.max(g).max(b);
     let mn = r.min(g).min(b);
     let l = (mx + mn) / 2.0;
@@ -101,7 +105,7 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h / 6.0, s, l)
 }
 
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+pub(crate) fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     if s <= 0.0 {
         return (l, l, l);
     }
@@ -170,7 +174,7 @@ fn curve_lut(spec: &str) -> Option<[u8; 256]> {
 }
 
 /// Remaps pixels: f maps destination pixel center -> source position (buffer coords).
-fn remap(pm: &mut Pixmap, f: impl Fn(f32, f32) -> (f32, f32) + Sync) {
+pub(crate) fn remap(pm: &mut Pixmap, f: impl Fn(f32, f32) -> (f32, f32) + Sync) {
     let (w, h) = (pm.width() as i32, pm.height() as i32);
     let src = pm.data().to_vec();
     pm.data_mut().par_chunks_mut(w as usize * 4).enumerate().for_each(|(y, row)| {
@@ -194,7 +198,7 @@ fn shift(pm: &Pixmap, dx: i32, dy: i32) -> Pixmap {
     out
 }
 
-fn dilate_alpha(alpha: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
+pub(crate) fn dilate_alpha(alpha: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
     if r == 0 {
         return alpha.to_vec();
     }
@@ -223,7 +227,7 @@ fn dilate_alpha(alpha: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
     out
 }
 
-fn hash2(x: u32, y: u32, s: u64) -> u32 {
+pub(crate) fn hash2(x: u32, y: u32, s: u64) -> u32 {
     let mut h = (x as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (y as u64).wrapping_mul(0xC2B2AE3D27D4EB4F) ^ s;
     h ^= h >> 31;
     h = h.wrapping_mul(0xBF58476D1CE4E5B9);
@@ -296,6 +300,9 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
     }
     let ev = params_ev(cx, def);
     let p = &e.props;
+    if super::fx_color::apply(def.name, &ev, p, lb.pm.make_mut()) || super::fx_distort::apply(def.name, &ev, p, lb, cx) || super::fx_stylize::apply(def.name, &ev, p, lb, cx) {
+        return;
+    }
     let s = cx.scale;
     let (ox, oy) = (lb.x, lb.y);
     let (ow, oh) = (cx.out_w as f32, cx.out_h as f32);
@@ -478,14 +485,22 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
             }
             let (ccx, ccy) = (ev.f(p, "cx") * ow - ox as f32, ev.f(p, "cy") * oh - oy as f32);
             let n = 24;
+            let spin = ev.str(p, "type") == "spin";
             let src = pm.data().to_vec();
             pm.data_mut().par_chunks_mut(w as usize * 4).enumerate().for_each(|(y, row)| {
                 for x in 0..w as usize {
                     let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
                     let mut acc = [0f32; 4];
                     for k in 0..n {
-                        let t = 1.0 - amt * k as f32 / (n - 1) as f32;
-                        let sm = sample(&src, w, h, ccx + (px - ccx) * t, ccy + (py - ccy) * t);
+                        let f = k as f32 / (n - 1) as f32;
+                        let sm = if spin {
+                            let (sn, cs) = ((f - 0.5) * amt * std::f32::consts::FRAC_PI_3).sin_cos();
+                            let (dx, dy) = (px - ccx, py - ccy);
+                            sample(&src, w, h, ccx + dx * cs - dy * sn, ccy + dx * sn + dy * cs)
+                        } else {
+                            let t = 1.0 - amt * f;
+                            sample(&src, w, h, ccx + (px - ccx) * t, ccy + (py - ccy) * t)
+                        };
                         for c in 0..4 {
                             acc[c] += sm[c];
                         }

@@ -1,68 +1,9 @@
-import { useEffect, useRef, useState } from "preact/hooks";
-import { catalog, comp, mediaById, playhead, run, selectedItem } from "../store";
+import { useEffect, useState } from "preact/hooks";
+import { easeSelected, gotoKey } from "../actions";
+import { catalog, comp, mediaById, playhead, run, selectedItem, selection, setPlayhead } from "../store";
 import type { Anim, Effect, Item, PDef, Val } from "../types";
 import { fmtNum, isAnimated, kindColor, q, staticVal, valToScript } from "../util";
-
-/** Number field: drag horizontally to scrub, click to type. */
-export function NumField({ value, onCommit, step = 0.1, min, max }: { value: number; onCommit: (v: number) => void; step?: number; min?: number | null; max?: number | null }) {
-  const [text, setText] = useState(fmtNum(value));
-  const [editing, setEditing] = useState(false);
-  const drag = useRef<{ x: number; v: number; moved: boolean } | null>(null);
-  const live = useRef(value);
-  useEffect(() => {
-    if (!editing && !drag.current) setText(fmtNum(value));
-  }, [value, editing]);
-  const lim = (v: number) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
-  return (
-    <input
-      class="num"
-      value={text}
-      readOnly={!editing}
-      onPointerDown={(e) => {
-        if (editing) return;
-        drag.current = { x: e.clientX, v: value, moved: false };
-        live.current = value;
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
-      }}
-      onPointerMove={(e) => {
-        const d = drag.current;
-        if (!d) return;
-        const dx = e.clientX - d.x;
-        if (Math.abs(dx) > 2) d.moved = true;
-        if (!d.moved) return;
-        const mult = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
-        live.current = lim(d.v + dx * step * mult);
-        setText(fmtNum(live.current));
-      }}
-      onPointerUp={(e) => {
-        const d = drag.current;
-        drag.current = null;
-        if (!d) return;
-        if (d.moved) onCommit(live.current);
-        else {
-          setEditing(true);
-          (e.target as HTMLInputElement).select();
-        }
-      }}
-      onInput={(e) => setText((e.target as HTMLInputElement).value)}
-      onBlur={() => {
-        if (!editing) return;
-        setEditing(false);
-        const v = parseFloat(text);
-        if (isFinite(v) && v !== value) onCommit(lim(v));
-        else setText(fmtNum(value));
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        if (e.key === "Escape") {
-          setText(fmtNum(value));
-          setEditing(false);
-        }
-        e.stopPropagation();
-      }}
-    />
-  );
-}
+import { NumField, TextField } from "./Controls";
 
 function stepFor(p: PDef): number {
   if (p.max !== null && p.min !== null && p.max - p.min <= 2) return 0.01;
@@ -117,6 +58,12 @@ function PropRow({ p, a, target, item }: { p: PDef; a: Anim | undefined; target:
       <label>{p.name}</label>
       <div class="ctl">{ctl}</div>
       {p.anim ? (
+        <span class="kf-nav">
+          {animated && target === item.id && (
+            <button class="kf" title="Previous keyframe" onClick={() => gotoKey(-1, p.name)}>
+              ‹
+            </button>
+          )}
         <button
           class={"kf" + (animated ? " on" : "")}
           title={animated ? "Add keyframe at playhead (right-click: clear animation)" : "Add keyframe at playhead"}
@@ -128,6 +75,12 @@ function PropRow({ p, a, target, item }: { p: PDef; a: Anim | undefined; target:
         >
           {animated ? "◆" : "◇"}
         </button>
+          {animated && target === item.id && (
+            <button class="kf" title="Next keyframe" onClick={() => gotoKey(1, p.name)}>
+              ›
+            </button>
+          )}
+        </span>
       ) : (
         <span />
       )}
@@ -205,6 +158,157 @@ function SubList({ item, list, prefixVerb, defs, title, addOptions, addCmd }: { 
   );
 }
 
+const ALIGN: [string, string, string][] = [
+  ["left", "⇤", "Align left edges"],
+  ["hcenter", "↔", "Align horizontal centers"],
+  ["right", "⇥", "Align right edges"],
+  ["top", "⤒", "Align top edges"],
+  ["vcenter", "↕", "Align vertical centers"],
+  ["bottom", "⤓", "Align bottom edges"],
+];
+
+/** After Effects Align panel: to the composition, the title-safe area, or the selection. */
+function AlignGroup() {
+  return (
+    <Group title="Align & Distribute" open={false}>
+      <AlignControls />
+    </Group>
+  );
+}
+
+/** The Align panel on its own. */
+export function AlignPanel() {
+  if (!selection.value.length) return <div class="empty">Select layers to align them to the composition, the title-safe area or each other.</div>;
+  return (
+    <div class="scroll">
+      <div class="group-b" style={{ paddingTop: "10px" }}>
+        <AlignControls />
+      </div>
+    </div>
+  );
+}
+
+function AlignControls() {
+  const [to, setTo] = useState("comp");
+  const ids = selection.value.join(",");
+  const n = selection.value.length;
+  const at = () => fmtNum(playhead.peek(), 4);
+  return (
+    <>
+      <div class="row">
+        <label>align to</label>
+        <div class="ctl">
+          <select value={to} onChange={(e) => setTo((e.target as HTMLSelectElement).value)}>
+            <option value="comp">composition</option>
+            <option value="safe">title safe</option>
+            <option value="sel" disabled={n < 2}>
+              selection
+            </option>
+          </select>
+        </div>
+        <span />
+      </div>
+      <div class="btn-row">
+        {ALIGN.map(([k, icon, tip]) => (
+          <button key={k} class="btn sm" title={tip} onClick={() => run(`align ${ids} ${k} to=${to === "sel" && n < 2 ? "comp" : to} at=${at()}`, true)}>
+            {icon}
+          </button>
+        ))}
+        <button class="btn sm" title="Center in the frame" onClick={() => run(`align ${ids} center to=${to === "sel" && n < 2 ? "comp" : to} at=${at()}`, true)}>
+          ⊕
+        </button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" disabled={n < 3} title="Distribute horizontally (3+ layers)" onClick={() => run(`distribute ${ids} h`, true)}>
+          ⇹ distribute H
+        </button>
+        <button class="btn sm" disabled={n < 3} title="Distribute vertically (3+ layers)" onClick={() => run(`distribute ${ids} v`, true)}>
+          ⇳ distribute V
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** Character panel (After Effects): the selected text layer's content and type settings. */
+export function CharacterPanel() {
+  const sel = selectedItem.value;
+  const cat = catalog.value;
+  const it = sel?.item;
+  const [text, setText] = useState("");
+  useEffect(() => setText(it?.text || ""), [it?.id, it?.text]);
+  if (!it || it.kind !== "text" || !cat) return <div class="empty">Select a text layer to set its font, size, tracking, color and stroke.</div>;
+  return (
+    <div class="scroll">
+      <div class="group-b" style={{ paddingTop: "10px" }}>
+        <textarea rows={3} style={{ width: "100%" }} value={text} onInput={(e) => setText((e.target as HTMLTextAreaElement).value)} onBlur={() => text !== it.text && run(`set ${it.id} text=${q(text)}`, true)} onKeyDown={(e) => e.stopPropagation()} />
+        {cat.props.text.map((p) => (
+          <PropRow key={p.name} p={p} a={it.props?.[p.name]} target={it.id} item={it} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Keyframe Assistant: easing, reverse, sequence layers, and keyframe navigation (J / K). */
+function KeyframeGroup({ item }: { item: Item }) {
+  const ids = selection.value.join(",");
+  const n = selection.value.length;
+  const keyed = Object.values(item.props || {}).some(isAnimated) || (item.fx || []).some((e) => Object.values(e.props || {}).some(isAnimated));
+  return (
+    <Group title="Keyframe Assistant" open={false}>
+      <div class="btn-row">
+        <button class="btn sm" title="Previous keyframe (J)" onClick={() => gotoKey(-1)}>
+          ◀ key
+        </button>
+        <button class="btn sm" title="Next keyframe (K)" onClick={() => gotoKey(1)}>
+          key ▶
+        </button>
+        <button class="btn sm" title="Go to the layer's in point" onClick={() => setPlayhead(item.start)}>
+          in
+        </button>
+        <button class="btn sm" title="Go to the layer's out point" onClick={() => setPlayhead(item.start + item.dur - 1e-3)}>
+          out
+        </button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" disabled={!keyed} title="Easy Ease (F9)" onClick={() => easeSelected("easy")}>
+          Easy Ease
+        </button>
+        <button class="btn sm" disabled={!keyed} title="Easy Ease In (Shift+F9)" onClick={() => easeSelected("easeIn")}>
+          In
+        </button>
+        <button class="btn sm" disabled={!keyed} title="Easy Ease Out (Ctrl+Shift+F9)" onClick={() => easeSelected("easeOut")}>
+          Out
+        </button>
+        <button class="btn sm" disabled={!keyed} title="Linear interpolation" onClick={() => easeSelected("linear")}>
+          Linear
+        </button>
+        <button class="btn sm" disabled={!keyed} title="Hold (toggle) keyframes" onClick={() => easeSelected("hold")}>
+          Hold
+        </button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" disabled={!keyed} title="Time-reverse keyframes" onClick={() => run(`kf ${item.id} all reverse`, true)}>
+          Reverse
+        </button>
+        <button class="btn sm" title="Bake expressions and loops into keyframes" onClick={() => run(`kf ${item.id} all bake`, true)}>
+          Bake
+        </button>
+        <button class="btn sm" disabled={!keyed} title="Remove every keyframe" onClick={() => run(`kf ${item.id} all clear`, true)}>
+          Clear
+        </button>
+        <button class="btn sm" disabled={n < 2} title="Sequence layers: one after the other" onClick={() => run(`stagger ${ids} seq`, true)}>
+          Sequence
+        </button>
+        <button class="btn sm" disabled={n < 2} title="Offset each layer by 0.1s" onClick={() => run(`stagger ${ids} by=0.1`, true)}>
+          Stagger
+        </button>
+      </div>
+    </Group>
+  );
+}
+
 function CompSettings() {
   const c = comp.value;
   if (!c) return null;
@@ -222,7 +326,7 @@ function CompSettings() {
         <div class="row">
           <label>name</label>
           <div class="ctl">
-            <input value={c.name} onChange={(e) => run(`comp set ${c.id} name=${q((e.target as HTMLInputElement).value)}`, true)} onKeyDown={(e) => e.stopPropagation()} />
+            <TextField value={c.name} onCommit={(v) => run(`comp set ${c.id} name=${q(v)}`, true)} />
           </div>
           <span />
         </div>
@@ -300,7 +404,7 @@ export function Inspector() {
   if (!sel || !it || !cat) return <CompSettings />;
   const media = it.src ? mediaById.value.get(it.src) : undefined;
   const audioOnly = media?.kind === "audio";
-  const kindProps: Record<string, string> = { clip: "clip", text: "text", solid: "solid", comp: "comp" };
+  const kindProps: Record<string, string> = { clip: "clip", text: "text", solid: "solid", comp: "comp", camera: "camera" };
   const own = cat.props[kindProps[it.kind]] || [];
   const layer = cat.props.layer;
   const audioNames = new Set(["vol", "pan", "mute", "fadeIn", "fadeOut"]);
@@ -335,12 +439,19 @@ export function Inspector() {
         <span class="kind-badge" style={{ background: kindColor(it.kind, sel.track.kind) }}>
           {audioOnly ? "audio" : it.kind}
         </span>
-        <input style={{ flex: 1 }} value={it.name || ""} placeholder={it.id} onChange={(e) => run(`name ${it.id} ${q((e.target as HTMLInputElement).value || "-")}`, true)} onKeyDown={(e) => e.stopPropagation()} />
+        <TextField key={it.id} style={{ flex: 1 }} value={it.name || ""} placeholder={it.id} onCommit={(v) => run(`name ${it.id} ${q(v || "-")}`, true)} />
         <span class="badge">
           {it.id} · {sel.track.id}
         </span>
       </div>
       <Group title="Timing">
+        <div class="row">
+          <label>enabled</label>
+          <div class="ctl">
+            <input type="checkbox" checked={!it.off} title="Disable to hide the clip without deleting it (Shift+E)" onChange={() => run(`set ${it.id} off=${it.off ? 0 : 1}`, true)} />
+          </div>
+          <span />
+        </div>
         <div class="row">
           <label>start</label>
           <div class="ctl">
@@ -392,8 +503,10 @@ export function Inspector() {
           ))}
         </Group>
       )}
+      {!audioOnly && <AlignGroup />}
+      {!audioOnly && <KeyframeGroup item={it} />}
       {it.kind !== "text" && ownVisual.length > 0 && !audioOnly && (
-        <Group title={it.kind === "clip" ? "Clip" : it.kind === "solid" ? "Solid" : "Nested comp"}>
+        <Group title={it.kind === "clip" ? "Clip" : it.kind === "solid" ? "Solid" : it.kind === "camera" ? "Camera" : "Nested comp"}>
           {ownVisual.map((p) => (
             <PropRow key={p.name} p={p} a={it.props?.[p.name]} target={it.id} item={it} />
           ))}

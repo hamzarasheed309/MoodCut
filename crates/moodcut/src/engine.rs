@@ -100,6 +100,10 @@ pub struct Engine {
     pub(crate) probes: Mutex<HashMap<String, Media>>,
     /// Library thumbnails / filmstrip frames.
     pub(crate) thumbs: Mutex<HashMap<String, Arc<resvg::tiny_skia::Pixmap>>>,
+    /// The editor window's selection and playhead, sent over its WebSocket.
+    ui: RwLock<ops::Ui>,
+    /// Editor windows connected right now (the UI state only counts while one is).
+    pub gui_clients: std::sync::atomic::AtomicUsize,
 }
 
 pub struct EditOutcome {
@@ -121,6 +125,20 @@ impl<'a> Env for EnvImpl<'a> {
         let m = p.media(media).ok_or_else(|| anyhow!("unknown media {media}"))?;
         self.eng.analysis_for(m, kind, opts)
     }
+    fn ui(&self) -> ops::Ui {
+        self.eng.ui()
+    }
+    fn sfx(&self, kind: &str, dur: f64, pitch: f64, seed: u64) -> Result<Media> {
+        let k = crate::sfx::kind(kind).ok_or_else(|| anyhow!("unknown sound effect '{kind}'"))?;
+        // next to the project's graphics (or in the data folder until it is saved)
+        let gdir = crate::gfx::graphics_dir(self.eng.st.read().path.as_deref());
+        let dir = gdir.parent().map(|d| d.join("sfx")).unwrap_or_else(|| gdir.join("sfx"));
+        let path = dir.join(crate::sfx::file_name(k, dur, pitch, seed));
+        if !path.exists() {
+            crate::sfx::write_wav(&path, &crate::sfx::synth(k, dur, pitch, seed))?;
+        }
+        self.eng.probe_cached(&path.to_string_lossy())
+    }
 }
 
 impl Engine {
@@ -140,6 +158,8 @@ impl Engine {
             roots: RwLock::new(None),
             probes: Mutex::new(HashMap::new()),
             thumbs: Mutex::new(HashMap::new()),
+            ui: RwLock::new(ops::Ui::default()),
+            gui_clients: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -292,6 +312,61 @@ impl Engine {
     pub fn history(&self) -> Vec<String> {
         let s = self.st.read();
         s.undo.iter().rev().take(30).map(|(_, l)| l.clone()).collect()
+    }
+
+    /// Undo labels (newest first) and redo labels (next first), for the History panel.
+    pub fn history_both(&self, n: usize) -> (Vec<String>, Vec<String>) {
+        let s = self.st.read();
+        (s.undo.iter().rev().take(n).map(|(_, l)| l.clone()).collect(), s.redo.iter().rev().take(n).map(|(_, l)| l.clone()).collect())
+    }
+
+    /// A render range: `a-b` seconds, or `work` for the comp's work area.
+    pub fn render_range(&self, comp: &str, r: &str) -> Result<(f64, f64)> {
+        let r = r.trim();
+        if matches!(r.to_ascii_lowercase().as_str(), "work" | "workarea" | "inout") {
+            let s = self.st.read();
+            let cid = if comp.is_empty() { s.active.clone() } else { comp.to_string() };
+            let c = s.p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?;
+            return c.work.ok_or_else(|| anyhow!("{} has no work area (set one with `workarea <in> <out>`)", c.id));
+        }
+        let (x, y) = r.split_once('-').ok_or_else(|| anyhow!("range must be a-b (seconds) or work"))?;
+        Ok((x.trim().parse()?, y.trim().parse()?))
+    }
+
+    /// What the person is doing in the editor (empty when no editor window is open).
+    pub fn ui(&self) -> ops::Ui {
+        if self.gui_clients.load(Ordering::Relaxed) == 0 {
+            return ops::Ui::default();
+        }
+        self.ui.read().clone()
+    }
+
+    pub fn set_ui(&self, ui: ops::Ui) {
+        *self.ui.write() = ui;
+    }
+
+    /// A scope (waveform, parade, vectorscope, histogram, or `all` with the frame)
+    /// of the frame at `t`, and its exposure / color summary.
+    pub fn scope(&self, comp: Option<&str>, t: f64, kind: &str, w: u32, h: u32) -> Result<(resvg::tiny_skia::Pixmap, String)> {
+        use crate::render::scopes;
+        let frame = self.frame(comp, t, 640, true)?;
+        let summary = scopes::summary(&frame);
+        if kind != "all" {
+            return Ok((scopes::render(&frame, kind, w, h)?, summary));
+        }
+        let (cw, ch) = (w / 2, h / 2);
+        let mut sheet = resvg::tiny_skia::Pixmap::new(cw * 2, ch * 2).ok_or_else(|| anyhow!("bad scope size"))?;
+        let k = (cw as f32 / frame.width() as f32).min(ch as f32 / frame.height() as f32);
+        let mut cell = resvg::tiny_skia::Pixmap::new(cw, ch).unwrap();
+        cell.fill(resvg::tiny_skia::Color::from_rgba8(12, 12, 16, 255));
+        let (fw, fh) = (frame.width() as f32 * k, frame.height() as f32 * k);
+        let m = resvg::tiny_skia::Transform::from_translate((cw as f32 - fw) / 2.0, (ch as f32 - fh) / 2.0).pre_scale(k, k);
+        cell.draw_pixmap(0, 0, frame.as_ref(), &resvg::tiny_skia::PixmapPaint { quality: resvg::tiny_skia::FilterQuality::Bilinear, ..Default::default() }, m, None);
+        let cells = [cell, scopes::render(&frame, "waveform", cw, ch)?, scopes::render(&frame, "vectorscope", cw, ch)?, scopes::render(&frame, "parade", cw, ch)?];
+        for (i, c) in cells.iter().enumerate() {
+            crate::render::pixel::blit(&mut sheet, c, (i as u32 % 2 * cw) as i32, (i as u32 / 2 * ch) as i32);
+        }
+        Ok((sheet, summary))
     }
 
     pub fn new_project(&self, name: &str, w: u32, h: u32, fps: f64, path: Option<PathBuf>) -> Result<String> {

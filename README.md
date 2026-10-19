@@ -19,18 +19,36 @@ Every click in the GUI goes through the same engine, so the AI always sees what 
 
 ## What it can do
 
-**Editing (Premiere-style)**: multi-track timeline, ripple/insert/overwrite, razor, trim, slip, slide, speed
-ramps and reverse, freeze frames, time remapping, frame-blend/optical-flow slow motion, nested sequences,
-24 transitions (plus FFmpeg's xfade set), Lumetri-style grading with 15 looks and `.cube` LUTs, blur-fill for
-portrait footage in landscape edits, audio gain automation, crossfades, sidechain ducking, measured loudness
-normalization (hits the LUFS target exactly) and a limiter, 15 audio effects, and markers.
+**Editing (Premiere-style)**: multi-track timeline with the Premiere tools (selection, track select forward,
+ripple and rolling edit, rate stretch, razor, slip, slide), a Source monitor with In/Out and insert/overwrite,
+lift/extract over a work area, swap, paste attributes, speed ramps and reverse, freeze frames, time remapping,
+frame-blend/optical-flow slow motion, nested sequences, 35 transitions (plus FFmpeg's xfade set), Lumetri color
+(basic correction, 15 looks, RGB and hue/saturation curves, color wheels, HSL secondary, `.cube` LUTs) with
+waveform, parade, vectorscope and histogram scopes, blur-fill for portrait footage in landscape edits,
+Essential Sound (dialogue / music / effects / ambience), an audio track mixer, gain automation, crossfades,
+sidechain ducking, measured loudness normalization (hits the LUFS target exactly) and a limiter, 32 audio
+effects, and markers with colors, durations and comments.
 
 **Motion design (After Effects-style)**: keyframes on every property with 30+ easing curves and custom béziers,
-keyframe loops, expressions (`wiggle`, `linear`, `ease`, `random`, `noise`…), parenting, 2.5D layers (X/Y
-rotation and depth with perspective), corner pin, motion blur, masks (feather, expand, modes), track mattes,
-adjustment layers, shape layers with trim paths and repeaters, per-character text animators, 49 video effects
-(glow, blur, chroma key, wave warp, glitch, light leaks…), 50+ animation presets and 15 editable motion graphics
-templates (lower thirds, kinetic titles, counters, bar charts, callouts, progress bars…).
+a keyframe assistant (Easy Ease, reverse, bake, sequence layers), expressions (`wiggle`, `linear`, `ease`,
+`random`, `noise`…), parenting and null objects, 3D layers seen through cameras (two-node or one-node, with
+push-in, orbit, truck and shake moves) and depth-sorted, the Align panel, a transform gizmo in the monitor,
+corner pin, motion blur, masks (feather, expand, modes), track mattes, 32 blend modes, adjustment layers, shape
+layers with trim paths and repeaters, per-character text animators, 91 video effects (glow, blurs, chroma key,
+wave warp, turbulent displace, linear/radial/venetian-blind wipes, echo and posterize time, lens flare,
+glitch, light leaks…), 50+ animation presets and 15 editable motion graphics templates (lower thirds, kinetic
+titles, counters, bar charts, callouts, progress bars…).
+
+**Produced, not assembled**: the finishing that separates a professional video from a cut-together one is built
+in and named in the AI's guidance. Sound design comes from 13 synthesized effects (whoosh, swish, riser, reverse
+swell, downlifter, hit, sub boom, pop, click, ding, glitch, typing, shutter), each a slightly different variation and
+placed so its peak lands on the cut, title or beat (`sfx whoosh on=transitions`, `sfx riser at=@drop`). Speed ramps
+remap time with eased ramps (`speedramp V1 at=3 to=4x`), punch-ins alternate framing on jump cuts (`punchin V1`),
+J and L cuts let sound lead picture, a brand kit gives every title, caption, shape and HTML graphic the same font and
+colors (`brand bold` or the client's own), there are 24 looks (Kodak and Fuji film, bleach bypass, commercial,
+night, pastel…), punchy creator-style captions, and slam, wipe, whip and glitch entrances. `check target=reels`
+(or tiktok, shorts, youtube) knows each platform's UI zones and flags weak hooks, slow pacing, static shots, linear
+easing, too many transition types, silent titles, inconsistent type and missing captions.
 
 **HTML motion graphics**: the AI (or you) designs a title, lower third, chart or full-screen animation as
 HTML/CSS/JS, the same way Claude builds web artifacts. MoodCut renders it frame by frame in headless Edge/Chrome
@@ -118,13 +136,49 @@ it runs the engine itself and serves the editor at `http://127.0.0.1:7878`.
 
 ### Ready-made prompts
 
-MoodCut also offers MCP prompts that clients show as slash commands or prompt pickers: **edit-folder** (a folder
-of footage to a finished video), **talking-head**, **social-cutdown** (vertical versions), **motion-graphic** and
-**review** (check an edit and fix it). Each one runs the full workflow below with your arguments.
+MoodCut also offers MCP prompts that clients show as slash commands or prompt pickers: **reel** (Instagram Reels,
+TikTok or Shorts), **youtube-video**, **promo** (launch film or ad with kinetic type), **montage** (cut to music),
+**edit-folder** (a folder of footage to a finished video), **talking-head**, **social-cutdown** (vertical versions),
+**motion-graphic**, **color-grade** and **review** (check an edit and fix it). Each one runs the full workflow below
+with your arguments.
+
+## The editor
+
+The window is built from dockable panels like Premiere Pro and After Effects. Pick a workspace from the top bar
+(**Assembly, Editing, Color, Effects, Audio, Motion, Graphics, AI**) or arrange your own: drag a panel's tab onto
+another tab bar to group it, onto the edge of a panel to split it, or anywhere else to float it in its own window;
+drag the dividers to resize, press <kbd>`</kbd> to maximize the panel you're working in, and reopen anything from
+the **Window** menu. Each workspace remembers its arrangement (Window → Reset to saved layout restores it), and on a
+narrow window the panels collapse into one column of tabs.
+
+Every control writes a MoodCut Script line through the same engine the AI uses, so each action is undoable, shows
+up in History, and is something the AI can do too.
+
+| Panel / tool | What it does | Script it sends |
+| --- | --- | --- |
+| Tools: Selection (V), Track Select Forward (A), Ripple (B), Rolling (N), Rate Stretch (R), Razor (C), Slip (Y), Slide (U), Hand (H), Zoom (Z) | timeline editing | `move`, `trim … ripple`, `roll`, `fit`, `cut`, `slip`, `slide` |
+| Type (T), Shape / Mask (G) | click or drag in the Program monitor | `text … pos=`, `shape rect …`, Alt: `mask <id> rect …` |
+| Program monitor | drag a layer to move it, corners to scale, the handle to rotate (keyed when animated); safe guides; scopes | `nudge <id> pos=…`, `preview scope=` |
+| Source monitor | preview media, mark In / Out, Insert (`,`) or Overwrite (`.`) into the targeted track | `add m1[2-5] V1 at=… mode=insert` |
+| Lumetri Color | basic correction, looks, split toning, curves, hue/sat curves, color wheels, HSL secondary, vignette | `color`, `fx … curves`, `fx … colorwheels` |
+| Audio | Essential Sound tags; mixer with pan, faders, mute/solo, track and master effects, loudness target, peak meter | `sound`, `track set`, `master`, `afx` |
+| Effect Controls | every property and effect with keyframe navigation, Align & Distribute, Keyframe Assistant | `set`, `kf`, `fx`, `align`, `ease`, `stagger` |
+| Markers / History | colored markers with durations and comments; click any step to go back | `marker set`, `undo 3` |
+| Effects & Presets | effects, transitions, animations, titles, looks, audio effects and sound FX, applied to the selection or at the playhead | `fx`, `tr`, `anim`, `title`, `sfx whoosh at=…` |
+| Brand Kit, Character, Align | the brand's font and colors with presets; type settings of the selected text; After Effects' Align panel | `brand bold`, `set t3 tracking=-2`, `align t3 left to=safe` |
+
+Shortcuts follow Premiere Pro and After Effects: Space, I / O (work area, or In / Out in the Source monitor),
+`;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+←/→ nudge clips a frame, Ctrl+arrows
+nudge position, Up / Down edit points, Shift+M next marker, J / K keyframes, F9 Easy Ease, Shift+E enable,
+`[` `]` and Alt+`[` `]` move or trim layers to the playhead, Ctrl+C / Ctrl+V / Ctrl+Alt+V (paste attributes),
+S snapping, X mark clip, Ctrl+Shift+C precompose.
+
+The AI sees the editor too: `sel` and `playhead` in a script mean your selection and playhead, so "grade what I
+selected" becomes `color sel cinematic` and "a title here" becomes `text 'Hi' at=playhead`.
 
 ## How the AI edits
 
-MoodCut exposes **10 tools** whose definitions total about 8.7 KB (~2,200 tokens), so connecting it costs little context:
+MoodCut exposes **10 tools** whose definitions total about 10.9 KB (~2,700 tokens), so connecting it costs little context:
 
 | Tool | Purpose |
 | --- | --- |
@@ -169,6 +223,28 @@ A1: -
 Errors name the line and suggest fixes (`unknown animation 'type'. Did you mean 'typeOut' or 'typewriter'?`),
 and a failed script changes nothing. Times can be seconds, timecode, frames, markers (`@drop`) or expressions
 like `c3.end+0.5`, and `$` refers to the item just created, so scripts rarely need a round trip to look up ids.
+
+### Editing like a senior editor
+
+Generic output comes from defaults, so the AI is given an editor's and motion designer's judgment as rules it can
+act on. `help('style')` covers the hook, pacing per platform, where to cut, motivated transitions, speed, sound
+design, color, typography, easing, layout and the tells of generic work, each mapped to the command that does it;
+`help('platforms')` has the specs and UI safe zones of Reels, TikTok, Shorts, YouTube, feeds, ads and broadcast;
+`help('recipes')` has complete scripts for a creator Reel, a YouTube talking head, a cinematic montage, a product
+promo with kinetic type, a podcast clip, a documentary and a tutorial (a test runs every one against the engine).
+Then `check` reviews the result the way a finishing editor would. On a Reel built from a talking head:
+
+```text
+check s2 'Reel' 1080x1920@30 15.26s: 0 error(s), 2 warning(s), 1 note(s), 1 craft note(s)
+4 shots (avg 3.81s, 12 cuts/min) · 1 text · 15 captions · mix -14 LUFS / -3.2 dBTP
+N1 c4 (m6 talk.mp4) ends the mix without a fade (abrupt cut-off)
+   fix: fade c4 out=1 audio
+C1 pacing: average shot 3.81s is slow for Reels (aim 0.8-2 s)
+   try: autocut silence V1 ; punchin V1
+```
+
+Fixes (`fix:`) can be applied in one undoable step; craft notes (`try:`) are creative calls the AI makes itself and
+are never applied automatically.
 
 ### Motion graphics as HTML
 

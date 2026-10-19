@@ -47,6 +47,38 @@ pub struct Project {
     /// Cached analysis results keyed by "<media>:<kind>".
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub analysis: BTreeMap<String, serde_json::Value>,
+    /// Brand kit used as the default look of titles, captions, shapes and HTML graphics.
+    #[serde(default, skip_serializing_if = "Brand::is_empty")]
+    pub brand: Brand,
+}
+
+/// Brand kit: the fonts and colors new titles, captions, shapes and graphics use unless told otherwise,
+/// so a whole video shares one consistent design.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Brand {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// Title weight (100-900 or bold, black...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<String>,
+    /// Main brand color: cards, bars, backgrounds of graphics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<String>,
+    /// Highlight color: accents, lines, the active caption word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    /// Text color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Dark color for backgrounds and text boxes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dark: Option<String>,
+}
+
+impl Brand {
+    pub fn is_empty(&self) -> bool {
+        *self == Brand::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +131,12 @@ pub struct Media {
     pub note: String,
 }
 
+impl Marker {
+    pub fn new(t: f64, name: impl Into<String>) -> Marker {
+        Marker { t, name: name.into(), color: None, dur: 0.0, note: String::new() }
+    }
+}
+
 impl Media {
     pub fn is_visual(&self) -> bool {
         matches!(self.kind, MediaKind::Video | MediaKind::Image | MediaKind::Svg)
@@ -115,6 +153,12 @@ pub struct Marker {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Span markers (Premiere marker duration), seconds.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dur: f64,
+    /// Marker comment.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -151,6 +195,9 @@ pub struct Comp {
     /// Motion blur shutter angle in degrees (for layers with mblur on).
     #[serde(default = "default_shutter")]
     pub shutter: f64,
+    /// Work area / sequence in-out (seconds): default range for lift, extract and `render range=work`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<(f64, f64)>,
 }
 
 fn default_bg() -> Color {
@@ -270,6 +317,10 @@ pub enum ItemKind {
     Adjust,
     /// Nested composition (precomp).
     Comp,
+    /// Null object: invisible, used as a parent or control layer.
+    Null,
+    /// Camera: views the comp's 3D layers (the topmost active camera wins).
+    Camera,
 }
 
 impl ItemKind {
@@ -281,6 +332,8 @@ impl ItemKind {
             ItemKind::Solid => "o",
             ItemKind::Adjust => "j",
             ItemKind::Comp => "n",
+            ItemKind::Null => "l",
+            ItemKind::Camera => "k",
         }
     }
     pub fn name(&self) -> &'static str {
@@ -291,7 +344,14 @@ impl ItemKind {
             ItemKind::Solid => "solid",
             ItemKind::Adjust => "adjust",
             ItemKind::Comp => "comp",
+            ItemKind::Null => "null",
+            ItemKind::Camera => "camera",
         }
+    }
+
+    /// Layers that are never drawn (they only drive other layers).
+    pub fn is_invisible(&self) -> bool {
+        matches!(self, ItemKind::Null | ItemKind::Camera)
     }
 }
 
@@ -473,6 +533,7 @@ impl Comp {
             markers: vec![],
             master: Master::default(),
             shutter: 180.0,
+            work: None,
         }
     }
 
@@ -560,6 +621,7 @@ impl Project {
             mseq: 0,
             cseq: 0,
             analysis: BTreeMap::new(),
+            brand: Brand::default(),
         };
         let id = p.next_comp_id();
         p.comps.push(Comp::new(&id, "Main", w, h, fps));

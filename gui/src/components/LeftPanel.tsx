@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
-import { activeId, catalog, graphicEditor, importPaths, pickFiles, playhead, project, run, selection, toast } from "../store";
+import { showPanel } from "../dock";
+import { activeId, catalog, graphicEditor, importPaths, monitorTab, pickFiles, playhead, project, run, selection, sourceIn, sourceMedia, sourceOut, sourceT, toast } from "../store";
 import type { Media } from "../types";
 import { fmtNum } from "../util";
 
@@ -7,9 +8,19 @@ function MediaCard({ m }: { m: Media }) {
   const add = () => run(`add ${m.id} at=${fmtNum(playhead.value, 4)}`);
   return (
     <div
-      class="bin-item"
       draggable
-      title={`${m.path}${m.note ? "\n" + m.note : ""}${m.tags?.length ? "\n#" + m.tags.join(" #") : ""}\nDouble-click: add at playhead · drag onto the timeline`}
+      class={"bin-item" + (sourceMedia.value === m.id ? " open" : "")}
+      title={`${m.path}${m.note ? "\n" + m.note : ""}${m.tags?.length ? "\n#" + m.tags.join(" #") : ""}\nClick: open in the Source monitor · double-click: add at playhead · drag onto the timeline`}
+      onClick={() => {
+        if (sourceMedia.value !== m.id) {
+          sourceMedia.value = m.id;
+          sourceT.value = 0;
+          sourceIn.value = null;
+          sourceOut.value = null;
+        }
+        monitorTab.value = "source";
+        showPanel("source");
+      }}
       onDragStart={(e) => {
         e.dataTransfer!.setData("text/moodcut-media", m.id);
         e.dataTransfer!.effectAllowed = "copy";
@@ -37,7 +48,8 @@ function MediaCard({ m }: { m: Media }) {
 
 const KINDS = ["all", "video", "audio", "image", "html"] as const;
 
-function ProjectTab() {
+/** Project panel: the media bin and compositions. */
+export function ProjectPanel() {
   const p = project.value;
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<(typeof KINDS)[number]>("all");
@@ -109,7 +121,8 @@ function ProjectTab() {
   );
 }
 
-function LibraryTab() {
+/** Effects & Presets: effects, transitions, animations, titles, looks, audio effects, sound FX, generators. */
+export function EffectsPanel() {
   const cat = catalog.value;
   const [q, setQ] = useState("");
   const [sec, setSec] = useState("effects");
@@ -123,22 +136,27 @@ function LibraryTab() {
     return true;
   };
   const match = (s: string) => !q || s.toLowerCase().includes(q.toLowerCase());
-  const at = fmtNum(playhead.value, 4);
+  const at = () => fmtNum(playhead.peek(), 4);
   const secs: Record<string, { name: string; desc: string; cat?: string; act: () => void }[]> = {
     effects: cat.effects.map((e) => ({ name: e.name, desc: e.desc, cat: e.cat, act: () => need("an effect") && run(`fx ${selection.value.join(",")} ${e.name}`) })),
     transitions: cat.transitions.map((t) => ({ name: t.name, desc: t.desc, act: () => need("a transition") && run(`tr ${target} ${t.name} 0.6`) })),
     animations: [...cat.anims, ...cat.text_anims.map((a) => ({ ...a, desc: "text: " + a.desc }))].map((a) => ({ name: a.name, desc: a.desc, act: () => need("an animation") && run(`anim ${selection.value.join(",")} ${a.name.split("|")[0]}`) })),
-    titles: cat.templates.map((t) => ({ name: t.name, desc: `${t.desc} · ${t.params}`, act: () => run(`title ${t.name} at=${at}`) })),
+    titles: cat.templates.map((t) => ({ name: t.name, desc: `${t.desc} · ${t.params}`, act: () => run(`title ${t.name} at=${at()}`) })),
     color: cat.colors.map((c) => ({ name: c.name, desc: c.desc, act: () => need("a grade") && run(`color ${selection.value.join(",")} ${c.name}`) })),
     audio: cat.audio_effects.map((e) => ({ name: e.name, desc: e.desc, act: () => need("an audio effect") && run(`afx ${target} ${e.name}`) })),
+    "sound fx": cat.sfx.map((x) => ({ name: x.name, desc: `${x.desc} · lands ${x.sync <= 0 ? "on" : x.sync >= 1 ? "ending at" : "peaking at"} the playhead`, act: () => run(`sfx ${x.name} at=${at()}`) })),
     generate: [
-      { name: "Text", desc: "Title text at the playhead", act: () => run(`text 'Your text' at=${at} dur=3 style=title enter=fadeUp exit=fadeDown`) },
-      { name: "Rectangle", desc: "Shape layer", act: () => run(`shape rect w=500 h=120 radius=20 fill=#8b7cf6 at=${at} dur=3`) },
-      { name: "Circle", desc: "Shape layer", act: () => run(`shape ellipse w=240 fill=#ec4899 at=${at} dur=3 enter=popIn`) },
-      { name: "Star", desc: "Shape layer", act: () => run(`shape star fill=#fbbf24 at=${at} dur=3 enter=spinIn`) },
-      { name: "Color matte", desc: "Full-frame solid", act: () => run(`solid #111111 at=${at} dur=3`) },
-      { name: "Gradient matte", desc: "Full-frame gradient", act: () => run(`solid #1b1464 color2=#ff5f6d at=${at} dur=3`) },
-      { name: "Adjustment layer", desc: "Effects apply to everything below", act: () => run(`adjust at=${at} dur=5`) },
+      { name: "Text", desc: "Title text at the playhead", act: () => run(`text 'Your text' at=${at()} dur=3 style=title enter=fadeUp exit=fadeDown`) },
+      { name: "Rectangle", desc: "Shape layer", act: () => run(`shape rect w=500 h=120 radius=20 fill=#8b7cf6 at=${at()} dur=3`) },
+      { name: "Circle", desc: "Shape layer", act: () => run(`shape ellipse w=240 fill=#ec4899 at=${at()} dur=3 enter=popIn`) },
+      { name: "Star", desc: "Shape layer", act: () => run(`shape star fill=#fbbf24 at=${at()} dur=3 enter=spinIn`) },
+      { name: "Color matte", desc: "Full-frame solid", act: () => run(`solid #111111 at=${at()} dur=3`) },
+      { name: "Gradient matte", desc: "Full-frame gradient", act: () => run(`solid #1b1464 color2=#ff5f6d at=${at()} dur=3`) },
+      { name: "Adjustment layer", desc: "Effects apply to everything below", act: () => run(`adjust at=${at()} dur=5`) },
+      { name: "Null object", desc: "Invisible layer to parent the selection to (Ctrl+Alt+Shift+Y)", act: () => run(`null at=${at()} dur=5${selection.value.length ? ` children=${selection.value.join(",")}` : ""}`) },
+      { name: "Camera", desc: "3D camera: layers with z / rx / ry or 3d=1 are seen through it", act: () => run(`camera at=${at()} dur=5`) },
+      { name: "Camera push-in", desc: "Slow dolly in; the selection becomes 3D for parallax", act: () => run(`camera at=${at()} dur=5 move=pushin amount=300${selection.value.length ? ` layers=${selection.value.join(",")}` : ""}`) },
+      { name: "Camera orbit", desc: "Orbit around the point of interest", act: () => run(`camera at=${at()} dur=5 move=orbit amount=30${selection.value.length ? ` layers=${selection.value.join(",")}` : ""}`) },
     ],
   };
   const list = secs[sec].filter((x) => match(x.name) || match(x.desc));
@@ -166,23 +184,6 @@ function LibraryTab() {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-export function LeftPanel() {
-  const [tab, setTab] = useState<"project" | "library">("project");
-  return (
-    <div class="panel left">
-      <div class="tabs">
-        <div class={"tab" + (tab === "project" ? " active" : "")} onClick={() => setTab("project")}>
-          Project
-        </div>
-        <div class={"tab" + (tab === "library" ? " active" : "")} onClick={() => setTab("library")}>
-          Library
-        </div>
-      </div>
-      {tab === "project" ? <ProjectTab /> : <LibraryTab />}
     </div>
   );
 }

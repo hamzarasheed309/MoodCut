@@ -84,8 +84,13 @@ use T::*;
 
 pub const BLEND_MODES: &[&str] = &[
     "normal", "multiply", "screen", "overlay", "darken", "lighten", "colordodge", "colorburn", "hardlight", "softlight", "difference",
-    "exclusion", "hue", "saturation", "color", "luminosity", "add",
+    "exclusion", "hue", "saturation", "color", "luminosity", "add", "subtract", "divide", "linearburn", "lineardodge", "linearlight",
+    "vividlight", "pinlight", "hardmix", "darkercolor", "lightercolor", "dissolve", "stencilalpha", "stencilluma", "silhouettealpha",
+    "silhouetteluma",
 ];
+
+/// Timeline label colors (Premiere/AE labels); organizing only.
+pub const LABELS: &[&str] = &["none", "red", "orange", "yellow", "green", "aqua", "blue", "violet", "pink", "gray"];
 
 pub static LAYER: &[P] = &[
     p!("pos", Vec2, Center, -INF, INF, U::Px, "Position in comp pixels (accepts center, top, bottom-left, 50%,80% ...)", ["position", "p", "xy"]),
@@ -99,6 +104,8 @@ pub static LAYER: &[P] = &[
     p!("skew", Num, N(0.0), -85.0, 85.0, U::Deg, "Horizontal skew in degrees"),
     ps!("blend", Enum(BLEND_MODES), S("normal"), "Blend mode", ["mode"]),
     ps!("mblur", Bool, B(false), "Motion blur for animated transforms", ["motionblur"]),
+    ps!("3d", Bool, B(false), "3D layer: seen through the comp camera even without rotation or depth", ["threed", "layer3d"]),
+    ps!("label", Enum(LABELS), S("none"), "Label color in the timeline (organizing only)"),
 ];
 
 pub static CLIP: &[P] = &[
@@ -172,6 +179,14 @@ pub static SOLID: &[P] = &[
     p!("radius", Num, N(0.0), 0.0, 100000.0, U::Px, "Corner radius", ["round", "corner"]),
 ];
 
+/// Camera layer (uses the layer's pos, z, rx, ry, rot as its position and orientation).
+pub static CAMERA: &[P] = &[
+    p!("zoom", Num, N(0.0), 0.0, 100000.0, U::Px, "Focal length in px (0 = default: 0.926 x comp width, like a 50mm lens)", ["focal"]),
+    p!("poi", Vec2, Center, -INF, INF, U::Px, "Point of interest the camera aims at (two-node camera)", ["target", "lookat"]),
+    p!("poiZ", Num, N(0.0), -INF, INF, U::Px, "Depth of the point of interest"),
+    ps!("aim", Bool, B(true), "Aim at the point of interest (off: one-node camera aimed with rx/ry/rot)"),
+];
+
 pub static NONE: &[P] = &[];
 
 pub fn item_props(kind: ItemKind) -> &'static [P] {
@@ -180,7 +195,8 @@ pub fn item_props(kind: ItemKind) -> &'static [P] {
         ItemKind::Text => TEXT,
         ItemKind::Solid => SOLID,
         ItemKind::Comp => NESTED,
-        ItemKind::Shape | ItemKind::Adjust => NONE,
+        ItemKind::Camera => CAMERA,
+        ItemKind::Shape | ItemKind::Adjust | ItemKind::Null => NONE,
     }
 }
 
@@ -411,8 +427,85 @@ pub static EFFECTS: &[EffectDef] = &[
     ]),
     fx!("posterize", [], Native, "color", "Reduce color levels", [p!("levels", Num, N(6.0), 2.0, 64.0, U::None, "Levels per channel")]),
     fx!("threshold", [], Native, "color", "Black/white threshold", [p!("level", Num, N(0.5), 0.0, 1.0, U::Frac, "Threshold")]),
+    fx!("colorwheels", ["wheels", "liftgammagain", "colorbalance", "threeway"], Native, "color", "Lumetri color wheels: tint shadows / midtones / highlights (color alpha = strength) and shift their brightness", [
+        p!("shadows", Color, C("none"), -INF, INF, U::None, "Shadow (lift) tint, e.g. #2a6cff40", ["lift"]),
+        p!("midtones", Color, C("none"), -INF, INF, U::None, "Midtone (gamma) tint", ["mids", "gamma"]),
+        p!("highlights", Color, C("none"), -INF, INF, U::None, "Highlight (gain) tint", ["gain"]),
+        p!("shadowsL", Num, N(0.0), -100.0, 100.0, U::None, "Shadow brightness (lift)", ["liftl"]),
+        p!("midtonesL", Num, N(0.0), -100.0, 100.0, U::None, "Midtone brightness (gamma)", ["gammal", "midsl"]),
+        p!("highlightsL", Num, N(0.0), -100.0, 100.0, U::None, "Highlight brightness (gain)", ["gainl"]),
+    ]),
+    fx!("channelmixer", ["mixer", "channels"], Native, "color", "Channel mixer: each output channel as % of the input red, green and blue", [
+        p!("rr", Num, N(100.0), -200.0, 200.0, U::None, "Red from red %"),
+        p!("rg", Num, N(0.0), -200.0, 200.0, U::None, "Red from green %"),
+        p!("rb", Num, N(0.0), -200.0, 200.0, U::None, "Red from blue %"),
+        p!("gr", Num, N(0.0), -200.0, 200.0, U::None, "Green from red %"),
+        p!("gg", Num, N(100.0), -200.0, 200.0, U::None, "Green from green %"),
+        p!("gb", Num, N(0.0), -200.0, 200.0, U::None, "Green from blue %"),
+        p!("br", Num, N(0.0), -200.0, 200.0, U::None, "Blue from red %"),
+        p!("bg", Num, N(0.0), -200.0, 200.0, U::None, "Blue from green %"),
+        p!("bb", Num, N(100.0), -200.0, 200.0, U::None, "Blue from blue %"),
+        ps!("mono", Bool, B(false), "Monochrome: the red row drives all channels (custom black & white)"),
+    ]),
+    fx!("leavecolor", ["colorpass", "keepcolor", "colorsplash"], Native, "color", "Leave color: keep one color, desaturate everything else", [
+        p!("color", Color, C("#e02020"), -INF, INF, U::None, "Color to keep"),
+        p!("tolerance", Num, N(0.1), 0.0, 1.0, U::Frac, "Hue tolerance"),
+        p!("soft", Num, N(0.08), 0.0, 1.0, U::Frac, "Edge softness"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Desaturation of the other colors"),
+    ]),
+    fx!("changecolor", ["changetocolor", "colorreplace", "replacecolor"], Native, "color", "Change one color to another", [
+        p!("from", Color, C("#e02020"), -INF, INF, U::None, "Color to change"),
+        p!("to", Color, C("#2060ff"), -INF, INF, U::None, "New color"),
+        p!("tolerance", Num, N(0.1), 0.0, 1.0, U::Frac, "Hue tolerance"),
+        p!("soft", Num, N(0.08), 0.0, 1.0, U::Frac, "Edge softness"),
+        ps!("mode", Enum(&["hue", "color"]), S("hue"), "hue: new hue and saturation, shading kept; color: replace the color"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount"),
+    ]),
+    fx!("secondary", ["hslsecondary", "hsl2", "qualifier", "selectivecolor"], Native, "color", "Lumetri HSL secondary: key a hue / saturation / luma range and correct only that range", [
+        p!("hue", Num, N(25.0), -INF, INF, U::Deg, "Key hue center (0 red, 25 skin, 60 yellow, 120 green, 210 sky, 270 purple)"),
+        p!("hueRange", Num, N(30.0), 0.0, 180.0, U::Deg, "Hue range (+/- degrees)"),
+        p!("satMin", Num, N(0.1), 0.0, 1.0, U::Frac, "Minimum saturation keyed"),
+        p!("lumMin", Num, N(0.05), 0.0, 1.0, U::Frac, "Minimum luma keyed"),
+        p!("lumMax", Num, N(0.95), 0.0, 1.0, U::Frac, "Maximum luma keyed"),
+        p!("soft", Num, N(0.15), 0.0, 1.0, U::Frac, "Key softness"),
+        p!("shift", Num, N(0.0), -180.0, 180.0, U::Deg, "Hue shift of the keyed range"),
+        p!("sat", Num, N(1.0), 0.0, 4.0, U::Mult, "Saturation of the keyed range"),
+        p!("light", Num, N(0.0), -1.0, 1.0, U::None, "Lightness of the keyed range"),
+        p!("temp", Num, N(0.0), -100.0, 100.0, U::None, "Temperature of the keyed range"),
+        p!("tint", Num, N(0.0), -100.0, 100.0, U::None, "Tint of the keyed range"),
+        ps!("show", Bool, B(false), "Show the key as a gray matte (to check the selection)", ["showmask"]),
+        ps!("invert", Bool, B(false), "Correct everything except the keyed range"),
+    ]),
+    fx!("huecurves", ["huesatcurves", "huevssat", "hslcurves"], Native, "color", "Lumetri hue/saturation curves. Each point 'x,y[,width]' adds a smooth bump: x = position 0..1 (hue or luma), y = change -1..1", [
+        ps!("hueSat", Str, S(""), "Hue vs saturation, e.g. '0.33,-0.6' mutes greens, '0.58,0.4' boosts sky blue"),
+        ps!("hueHue", Str, S(""), "Hue vs hue (y=0.1 rotates by 36 degrees)"),
+        ps!("hueLuma", Str, S(""), "Hue vs luma, e.g. '0.6,-0.3' darkens blue sky"),
+        ps!("lumaSat", Str, S(""), "Luma vs saturation, e.g. '0.05,-1' removes color from the blacks"),
+        ps!("satSat", Str, S(""), "Saturation vs saturation"),
+    ]),
+    fx!("photofilter", ["filter", "warmingfilter", "coolingfilter"], Native, "color", "Photo filter: tint as with a colored lens filter", [
+        p!("color", Color, C("#ec8a00"), -INF, INF, U::None, "Filter color (warming #ec8a00, cooling #006dff)"),
+        p!("density", Num, N(0.25), 0.0, 1.0, U::Frac, "Density"),
+        ps!("preserve", Bool, B(true), "Preserve luminosity"),
+    ]),
+    fx!("tritone", [], Native, "color", "Map shadows, midtones and highlights to three colors", [
+        p!("shadows", Color, C("#0b0b1a"), -INF, INF, U::None, "Shadow color"),
+        p!("midtones", Color, C("#7f6a4f"), -INF, INF, U::None, "Midtone color"),
+        p!("highlights", Color, C("#fff6e5"), -INF, INF, U::None, "Highlight color"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount"),
+    ]),
+    fx!("autolevels", ["autocontrast", "autocolor", "autotone", "autocorrect"], Native, "color", "Auto levels: stretch every frame to the full range (perchannel=1 also removes color casts)", [
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount"),
+        p!("clip", Num, N(0.005), 0.0, 0.2, U::Frac, "Fraction clipped at black and at white"),
+        ps!("perchannel", Bool, B(false), "Per channel (auto color)"),
+    ]),
+    fx!("legalize", ["videolimiter", "broadcastsafe", "legal"], Native, "color", "Video limiter: keep levels inside the broadcast-legal range", [
+        p!("min", Num, N(0.0627), 0.0, 0.5, U::Frac, "Lowest level (16/255)"),
+        p!("max", Num, N(0.9216), 0.5, 1.0, U::Frac, "Highest level (235/255)"),
+        ps!("mode", Enum(&["compress", "clip"]), S("compress"), "compress: rescale the full range; clip: cut off what's outside"),
+    ]),
     // ---- blur & sharpen
-    fx!("blur", ["gaussian", "gaussianblur"], Native, "blur", "Gaussian blur", [
+    fx!("blur", ["gaussian", "gaussianblur", "boxblur", "fastblur"], Native, "blur", "Gaussian blur", [
         p!("radius", Num, N(10.0), 0.0, 500.0, U::Px, "Blur radius", ["r", "amount"]),
         ps!("dir", Enum(&["both", "h", "v"]), S("both"), "Blur direction"),
     ]),
@@ -420,10 +513,28 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("angle", Num, N(0.0), -INF, INF, U::Deg, "Direction"),
         p!("length", Num, N(30.0), 0.0, 1000.0, U::Px, "Blur length"),
     ]),
-    fx!("zoomblur", ["radialblur"], Native, "blur", "Radial zoom blur", [
-        p!("amount", Num, N(0.15), 0.0, 1.0, U::None, "Strength"),
+    fx!("zoomblur", ["radialblur", "spinblur"], Native, "blur", "Radial blur: zoom (streaks from a center) or spin (rotational)", [
+        p!("amount", Num, N(0.15), 0.0, 1.0, U::None, "Strength (spin: 1 = 60 degrees)"),
         p!("cx", Num, N(0.5), -INF, INF, U::Frac, "Center X (fraction of frame)"),
         p!("cy", Num, N(0.5), -INF, INF, U::Frac, "Center Y (fraction of frame)"),
+        ps!("type", Enum(&["zoom", "spin"]), S("zoom"), "Blur type"),
+    ]),
+    fx!("tiltshift", ["miniature"], Native, "blur", "Tilt-shift: a sharp band with blur above and below (miniature look)", [
+        p!("center", Num, N(0.55), -INF, INF, U::Frac, "Band center (fraction of frame height)"),
+        p!("width", Num, N(0.12), 0.0, 2.0, U::Frac, "Sharp band half-height (fraction of frame height)"),
+        p!("soft", Num, N(0.25), 0.001, 2.0, U::Frac, "Distance to full blur"),
+        p!("radius", Num, N(18.0), 0.0, 500.0, U::Px, "Blur radius"),
+        p!("angle", Num, N(0.0), -INF, INF, U::Deg, "Band angle"),
+    ]),
+    fx!("smooth", ["surfaceblur", "skinsmooth", "beauty", "bilateral", "smartblur"], Native, "blur", "Edge-preserving blur (skin smoothing, clean surfaces)", [
+        p!("radius", Num, N(6.0), 0.0, 100.0, U::Px, "Radius"),
+        p!("threshold", Num, N(0.08), 0.001, 1.0, U::Frac, "Edge threshold (lower keeps more detail)"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount"),
+    ]),
+    fx!("lensblur", ["bokeh", "defocus", "camerablur", "cameralensblur"], Native, "blur", "Camera lens blur with blooming bokeh highlights", [
+        p!("radius", Num, N(12.0), 0.0, 300.0, U::Px, "Blur radius"),
+        p!("bright", Num, N(1.5), 0.0, 10.0, U::None, "Highlight bloom"),
+        p!("threshold", Num, N(0.75), 0.0, 1.0, U::Frac, "Highlight threshold"),
     ]),
     fx!("sharpen", ["unsharp"], Native, "blur", "Unsharp mask sharpening", [
         p!("amount", Num, N(1.0), 0.0, 5.0, U::None, "Amount"),
@@ -476,6 +587,50 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("ratio", Num, N(2.39), 1.0, 4.0, U::None, "Target aspect ratio"),
         p!("color", Color, C("#000000"), -INF, INF, U::None, "Bar color"),
     ]),
+    fx!("findedges", ["edges", "sobel", "edgedetect"], Native, "stylize", "Find edges (line-drawing look)", [
+        ps!("invert", Bool, B(true), "Dark lines on white (off: bright lines on black)"),
+        p!("strength", Num, N(1.0), 0.0, 10.0, U::None, "Edge strength"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Blend with the original"),
+    ]),
+    fx!("emboss", ["relief"], Native, "stylize", "Emboss", [
+        p!("angle", Num, N(135.0), -INF, INF, U::Deg, "Light direction"),
+        p!("relief", Num, N(2.0), 0.0, 50.0, U::Px, "Relief depth"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Blend with the original"),
+        ps!("color", Bool, B(false), "Keep the original colors (color emboss)"),
+    ]),
+    fx!("halftone", ["colorhalftone", "dots", "comic"], Native, "stylize", "Halftone dots (print / comic look)", [
+        p!("size", Num, N(10.0), 2.0, 200.0, U::Px, "Dot spacing"),
+        p!("angle", Num, N(45.0), -INF, INF, U::Deg, "Screen angle"),
+        ps!("mono", Bool, B(true), "Black dots on white (off: colored dots per channel)"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount"),
+    ]),
+    fx!("strobe", ["strobelight", "flashing"], Native, "stylize", "Strobe light", [
+        p!("color", Color, C("#ffffff"), -INF, INF, U::None, "Flash color"),
+        p!("freq", Num, N(4.0), 0.01, 60.0, U::Hz, "Flashes per second"),
+        p!("duty", Num, N(0.25), 0.01, 1.0, U::Frac, "Flash length (fraction of a period)"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Strength"),
+        ps!("mode", Enum(&["flash", "hide"]), S("flash"), "flash: color over the layer; hide: the layer blinks off"),
+    ]),
+    fx!("bevel", ["bevelalpha", "bevelemboss"], Native, "stylize", "Bevel the layer's edges (text, logos)", [
+        p!("depth", Num, N(6.0), 0.0, 200.0, U::Px, "Edge thickness"),
+        p!("angle", Num, N(135.0), -INF, INF, U::Deg, "Light angle"),
+        p!("intensity", Num, N(0.6), 0.0, 1.0, U::Frac, "Light intensity"),
+        p!("light", Color, C("#ffffff"), -INF, INF, U::None, "Highlight color"),
+        p!("dark", Color, C("#000000"), -INF, INF, U::None, "Shadow color"),
+    ]),
+    fx!("innershadow", [], Native, "stylize", "Inner shadow inside the layer's edges", [
+        p!("color", Color, C("#000000"), -INF, INF, U::None, "Shadow color"),
+        p!("opacity", Num, N(0.6), 0.0, 1.0, U::Frac, "Opacity"),
+        p!("angle", Num, N(135.0), -INF, INF, U::Deg, "Light angle"),
+        p!("distance", Num, N(8.0), 0.0, 500.0, U::Px, "Distance"),
+        p!("blur", Num, N(10.0), 0.0, 500.0, U::Px, "Softness"),
+    ]),
+    fx!("outerglow", ["alphaglow", "halo", "neonglow"], Native, "stylize", "Colored glow around the layer's alpha (neon text, logo halos)", [
+        p!("color", Color, C("#ffdd55"), -INF, INF, U::None, "Glow color"),
+        p!("opacity", Num, N(0.8), 0.0, 1.0, U::Frac, "Opacity"),
+        p!("size", Num, N(20.0), 0.0, 500.0, U::Px, "Glow size"),
+        p!("spread", Num, N(0.1), 0.0, 1.0, U::Frac, "Spread (harder glow)"),
+    ]),
     fx!("gradient", ["ramp", "gradientramp"], Native, "generate", "Gradient overlay (blends over layer content)", [
         p!("c1", Color, C("#000000"), -INF, INF, U::None, "Start color"),
         p!("c2", Color, C("#ffffff"), -INF, INF, U::None, "End color"),
@@ -487,6 +642,46 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("color", Color, C("#ff7a18"), -INF, INF, U::None, "Leak color"),
         p!("amount", Num, N(0.6), 0.0, 1.0, U::Frac, "Strength"),
         p!("speed", Num, N(0.25), 0.0, 5.0, U::None, "Drift speed"),
+    ]),
+    fx!("fourcolor", ["4color", "fourcolorgradient"], Native, "generate", "Four-color corner gradient over the layer (apply to a solid for a background)", [
+        p!("tl", Color, C("#ff3b6b"), -INF, INF, U::None, "Top-left color"),
+        p!("tr", Color, C("#ffb020"), -INF, INF, U::None, "Top-right color"),
+        p!("bl", Color, C("#3b5bff"), -INF, INF, U::None, "Bottom-left color"),
+        p!("br", Color, C("#20d0a0"), -INF, INF, U::None, "Bottom-right color"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Opacity"),
+    ]),
+    fx!("checker", ["checkerboard"], Native, "generate", "Checkerboard pattern over the layer", [
+        p!("size", Num, N(64.0), 1.0, 5000.0, U::Px, "Square size"),
+        p!("c1", Color, C("#ffffff"), -INF, INF, U::None, "First color"),
+        p!("c2", Color, C("#000000"), -INF, INF, U::None, "Second color"),
+        p!("offset", Vec2, V(0.0, 0.0), -INF, INF, U::None, "Pattern offset (px)"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Opacity"),
+    ]),
+    fx!("grid", ["gridlines"], Native, "generate", "Grid lines over the layer", [
+        p!("spacing", Num, N(80.0), 2.0, 5000.0, U::Px, "Cell size"),
+        p!("width", Num, N(2.0), 0.0, 200.0, U::Px, "Line width"),
+        p!("color", Color, C("#ffffff80"), -INF, INF, U::None, "Line color"),
+        p!("offset", Vec2, V(0.0, 0.0), -INF, INF, U::None, "Grid offset (px)"),
+    ]),
+    fx!("fractal", ["fractalnoise", "clouds", "noisetexture"], Native, "generate", "Fractal noise texture over the layer (smoke, clouds, animated backgrounds; apply to a solid)", [
+        p!("scale", Num, N(240.0), 1.0, 10000.0, U::Px, "Noise size"),
+        p!("complexity", Num, N(5.0), 1.0, 10.0, U::None, "Detail octaves"),
+        p!("contrast", Num, N(1.0), 0.0, 10.0, U::None, "Contrast"),
+        p!("brightness", Num, N(0.0), -1.0, 1.0, U::None, "Brightness"),
+        p!("speed", Num, N(0.3), -50.0, 50.0, U::None, "Evolution per second"),
+        ps!("type", Enum(&["smooth", "turbulent", "ridged"]), S("smooth"), "Noise type"),
+        p!("c1", Color, C("#000000"), -INF, INF, U::None, "Dark color"),
+        p!("c2", Color, C("#ffffff"), -INF, INF, U::None, "Bright color"),
+        p!("offset", Vec2, V(0.0, 0.0), -INF, INF, U::None, "Scroll (px, animate to drift)"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Opacity"),
+    ]),
+    fx!("lensflare", ["flare"], Native, "generate", "Lens flare, screen-blended over the layer (use on footage or an adjustment layer)", [
+        p!("pos", Vec2, V(0.0, 0.0), -INF, INF, U::Px, "Flare center (comp px; default upper right)", ["center"]),
+        p!("brightness", Num, N(1.0), 0.0, 5.0, U::None, "Brightness"),
+        p!("color", Color, C("#ffd7a0"), -INF, INF, U::None, "Tint"),
+        p!("rays", Num, N(10.0), 0.0, 64.0, U::None, "Number of rays"),
+        p!("streak", Num, N(0.6), 0.0, 2.0, U::None, "Anamorphic streak"),
+        p!("ghosts", Num, N(0.5), 0.0, 2.0, U::None, "Ghost circles toward the frame center"),
     ]),
     // ---- distort
     fx!("wave", ["wavewarp"], Native, "distort", "Wave warp", [
@@ -526,6 +721,51 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("br", Vec2, V(1920.0, 1080.0), -INF, INF, U::Px, "Bottom-right corner"),
         p!("bl", Vec2, V(0.0, 1080.0), -INF, INF, U::Px, "Bottom-left corner"),
     ]),
+    fx!("transform", ["xform"], Native, "distort", "Transform inside the effect stack (applies after the effects above it: shakes and pulses on top of motion)", [
+        p!("offset", Vec2, V(0.0, 0.0), -INF, INF, U::None, "Position offset (px)", ["pos", "position"]),
+        p!("scale", Vec2, V(1.0, 1.0), -100.0, 100.0, U::Mult, "Scale"),
+        p!("rot", Num, N(0.0), -INF, INF, U::Deg, "Rotation", ["rotation"]),
+        p!("skew", Num, N(0.0), -85.0, 85.0, U::Deg, "Skew"),
+        p!("anchor", Vec2, V(0.5, 0.5), -INF, INF, U::Frac, "Pivot as a fraction of the layer's box"),
+        p!("opacity", Num, N(1.0), 0.0, 1.0, U::Frac, "Opacity"),
+    ]),
+    fx!("offset", ["wrap", "scroll"], Native, "distort", "Offset: shift the image with wrap-around (seamless scrolling)", [
+        p!("x", Num, N(0.0), -INF, INF, U::Px, "Horizontal shift"),
+        p!("y", Num, N(0.0), -INF, INF, U::Px, "Vertical shift"),
+        p!("blend", Num, N(0.0), 0.0, 1.0, U::Frac, "Blend with the original"),
+    ]),
+    fx!("polar", ["polarcoordinates", "littleplanet"], Native, "distort", "Polar coordinates (rect to polar = 'little planet', or back)", [
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Interpolation"),
+        ps!("mode", Enum(&["topolar", "torect"]), S("topolar"), "Conversion"),
+    ]),
+    fx!("ripple", ["waterripple", "rings"], Native, "distort", "Concentric ripples", [
+        p!("amp", Num, N(8.0), 0.0, 500.0, U::Px, "Amplitude"),
+        p!("length", Num, N(60.0), 1.0, 5000.0, U::Px, "Wavelength"),
+        p!("speed", Num, N(1.0), -50.0, 50.0, U::Hz, "Speed"),
+        p!("radius", Num, N(0.8), 0.0, 4.0, U::Frac, "Fade-out radius (fraction of frame height)"),
+        p!("cx", Num, N(0.5), -INF, INF, U::Frac, "Center X"),
+        p!("cy", Num, N(0.5), -INF, INF, U::Frac, "Center Y"),
+    ]),
+    fx!("lens", ["lensdistortion", "barrel", "optics", "opticscompensation", "lenscorrection"], Native, "distort", "Lens distortion: barrel (+) or pincushion (-); negative removes action-cam curvature", [
+        p!("amount", Num, N(0.25), -1.0, 1.0, U::None, "Curvature"),
+        p!("zoom", Num, N(1.0), 0.1, 10.0, U::Mult, "Zoom (hide the edges)"),
+        p!("cx", Num, N(0.5), -INF, INF, U::Frac, "Center X"),
+        p!("cy", Num, N(0.5), -INF, INF, U::Frac, "Center Y"),
+    ]),
+    fx!("turbulence", ["turbulentdisplace", "displace", "warpnoise"], Native, "distort", "Turbulent displace: organic wobble, heat haze, liquid", [
+        p!("amount", Num, N(20.0), 0.0, 1000.0, U::Px, "Displacement"),
+        p!("size", Num, N(120.0), 1.0, 5000.0, U::Px, "Noise size"),
+        p!("complexity", Num, N(3.0), 1.0, 8.0, U::None, "Detail octaves"),
+        p!("speed", Num, N(0.5), -50.0, 50.0, U::None, "Evolution per second"),
+    ]),
+    fx!("tile", ["motiontile", "repeat"], Native, "distort", "Motion tile: repeat the layer to fill a larger area (mirror for seamless edges)", [
+        p!("outW", Num, N(3.0), 1.0, 20.0, U::Mult, "Output width (x the layer's width)"),
+        p!("outH", Num, N(3.0), 1.0, 20.0, U::Mult, "Output height (x the layer's height)"),
+        p!("tileW", Num, N(1.0), 0.05, 10.0, U::Frac, "Tile width (fraction of the layer)"),
+        p!("tileH", Num, N(1.0), 0.05, 10.0, U::Frac, "Tile height (fraction of the layer)"),
+        ps!("mirror", Bool, B(false), "Mirror edges"),
+        p!("phase", Vec2, V(0.0, 0.0), -INF, INF, U::None, "Scroll the tiles (px)"),
+    ]),
     // ---- keying
     fx!("chromakey", ["greenscreen", "keylight", "key"], Native, "keying", "Remove a key color (green screen)", [
         p!("color", Color, C("#00ff00"), -INF, INF, U::None, "Key color"),
@@ -537,6 +777,59 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("threshold", Num, N(0.1), 0.0, 1.0, U::Frac, "Luma threshold"),
         p!("smooth", Num, N(0.1), 0.0, 1.0, U::Frac, "Softness"),
         ps!("invert", Bool, B(false), "Key out bright areas instead"),
+    ]),
+    fx!("choke", ["matterchoke", "simplechoker", "erode", "mattechoker"], Native, "keying", "Matte choker: shrink (+) or spread (-) the alpha edge after a key", [
+        p!("amount", Num, N(2.0), -100.0, 100.0, U::Px, "Choke amount"),
+        p!("soft", Num, N(1.0), 0.0, 100.0, U::Px, "Edge softness"),
+    ]),
+    fx!("spill", ["spillsuppress", "despill", "spillsuppressor"], Native, "keying", "Spill suppressor: remove green/blue spill from edges after a key", [
+        p!("color", Color, C("#00ff00"), -INF, INF, U::None, "Key color"),
+        p!("amount", Num, N(0.7), 0.0, 1.0, U::Frac, "Suppression"),
+    ]),
+    // ---- transition effects (animate completion 0 -> 100, any layer)
+    fx!("linearwipe", [], Native, "transition", "Linear wipe: hides the layer along a line (animate completion 0->100)", [
+        p!("completion", Num, N(0.0), 0.0, 100.0, U::Pct, "Transition completion %"),
+        p!("angle", Num, N(90.0), -INF, INF, U::Deg, "Wipe angle (90 = from the left)"),
+        p!("feather", Num, N(0.0), 0.0, 5000.0, U::Px, "Edge feather"),
+    ]),
+    fx!("radialwipe", ["clockwipefx"], Native, "transition", "Radial wipe: clock-hand reveal around a center", [
+        p!("completion", Num, N(0.0), 0.0, 100.0, U::Pct, "Transition completion %"),
+        p!("start", Num, N(0.0), -INF, INF, U::Deg, "Start angle (0 = 12 o'clock)"),
+        p!("cx", Num, N(0.5), -INF, INF, U::Frac, "Center X"),
+        p!("cy", Num, N(0.5), -INF, INF, U::Frac, "Center Y"),
+        ps!("dir", Enum(&["cw", "ccw", "both"]), S("cw"), "Direction"),
+        p!("feather", Num, N(0.0), 0.0, 180.0, U::Deg, "Edge feather (degrees)"),
+    ]),
+    fx!("iriswipe", ["circlewipe"], Native, "transition", "Iris wipe: a circle closes onto the center (invert opens from the center)", [
+        p!("completion", Num, N(0.0), 0.0, 100.0, U::Pct, "Transition completion %"),
+        p!("cx", Num, N(0.5), -INF, INF, U::Frac, "Center X"),
+        p!("cy", Num, N(0.5), -INF, INF, U::Frac, "Center Y"),
+        p!("feather", Num, N(0.0), 0.0, 5000.0, U::Px, "Edge feather"),
+        ps!("invert", Bool, B(false), "Hide from the center outward"),
+    ]),
+    fx!("blockdissolve", ["dissolveblocks"], Native, "transition", "Block dissolve: the layer disappears in random blocks", [
+        p!("completion", Num, N(0.0), 0.0, 100.0, U::Pct, "Transition completion %"),
+        p!("size", Num, N(16.0), 1.0, 2000.0, U::Px, "Block size"),
+        p!("soft", Num, N(0.0), 0.0, 1.0, U::Frac, "Softness"),
+    ]),
+    fx!("venetianblinds", ["blindsfx", "stripes"], Native, "transition", "Venetian blinds wipe", [
+        p!("completion", Num, N(0.0), 0.0, 100.0, U::Pct, "Transition completion %"),
+        p!("angle", Num, N(0.0), -INF, INF, U::Deg, "Stripe angle"),
+        p!("width", Num, N(40.0), 1.0, 5000.0, U::Px, "Stripe width"),
+        p!("feather", Num, N(0.0), 0.0, 500.0, U::Px, "Edge feather"),
+    ]),
+    fx!("gradientwipe", ["lumawipefx"], Native, "transition", "Gradient wipe: dark areas disappear first (by the layer's own luminance)", [
+        p!("completion", Num, N(0.0), 0.0, 100.0, U::Pct, "Transition completion %"),
+        p!("soft", Num, N(0.1), 0.0, 1.0, U::Frac, "Softness"),
+        ps!("invert", Bool, B(false), "Bright areas first"),
+    ]),
+    // ---- time (evaluated by the compositor)
+    fx!("posterizetime", ["framerate", "choppy", "stutter", "lowfps"], Native, "time", "Posterize time: the layer updates at a lower frame rate (stop-motion look)", [ps!("fps", Num, N(12.0), "Frame rate")]),
+    fx!("echo", ["trails", "timeecho", "ghosting"], Native, "time", "Echo: trails of the layer's earlier frames", [
+        ps!("time", Num, N(0.05), "Seconds between echoes (negative = future frames)"),
+        ps!("count", Num, N(4.0), "Number of echoes (1-16)"),
+        ps!("decay", Num, N(0.6), "Opacity multiplier per echo"),
+        ps!("mode", Enum(&["behind", "front", "add", "screen"]), S("behind"), "How the echoes combine"),
     ]),
     // ---- ffmpeg-engine (decode-time, media clips only)
     fx!("denoise", ["hqdn3d"], Ff, "ffmpeg", "Video denoise (FFmpeg hqdn3d)", [ps!("strength", Num, N(4.0), "Strength 0-20")]),
@@ -571,6 +864,33 @@ pub static AUDIO_EFFECTS: &[EffectDef] = &[
     fx!("deess", ["deesser"], Audio, "audio", "De-esser", [ps!("amount", Num, N(0.5), "Intensity 0-1")]),
     fx!("voice", ["enhance", "voiceenhance", "podcast"], Audio, "audio", "Voice enhancement chain (HPF + denoise + compress + presence)", [ps!("amount", Num, N(1.0), "Intensity 0-1")]),
     fx!("telephone", ["phone", "radio"], Audio, "audio", "Telephone / radio band-pass", []),
+    fx!("peq", ["parametric", "parametriceq", "eq3"], Audio, "audio", "Parametric EQ: three bell bands (freq Hz, gain dB, q)", [
+        ps!("f1", Num, N(200.0), "Band 1 frequency Hz"),
+        ps!("g1", Num, N(0.0), "Band 1 gain dB"),
+        ps!("q1", Num, N(1.0), "Band 1 width (Q)"),
+        ps!("f2", Num, N(1000.0), "Band 2 frequency Hz"),
+        ps!("g2", Num, N(0.0), "Band 2 gain dB"),
+        ps!("q2", Num, N(1.0), "Band 2 width (Q)"),
+        ps!("f3", Num, N(5000.0), "Band 3 frequency Hz"),
+        ps!("g3", Num, N(0.0), "Band 3 gain dB"),
+        ps!("q3", Num, N(1.0), "Band 3 width (Q)"),
+    ]),
+    fx!("bassboost", ["bass", "lowshelf"], Audio, "audio", "Bass boost (low shelf)", [ps!("gain", Num, N(6.0), "Gain dB"), ps!("freq", Num, N(120.0), "Shelf frequency Hz")]),
+    fx!("gain", ["amplify", "volume"], Audio, "audio", "Static gain stage", [ps!("db", Num, N(0.0), "Gain dB")]),
+    fx!("chorus", [], Audio, "audio", "Chorus (thicker, doubled sound)", [ps!("depth", Num, N(0.5), "Depth 0-1"), ps!("mix", Num, N(0.5), "Wet amount 0-1")]),
+    fx!("flanger", [], Audio, "audio", "Flanger (jet sweep)", [ps!("depth", Num, N(2.0), "Sweep depth ms"), ps!("speed", Num, N(0.5), "Sweep speed Hz")]),
+    fx!("phaser", [], Audio, "audio", "Phaser", [ps!("speed", Num, N(0.5), "Speed Hz"), ps!("decay", Num, N(0.4), "Feedback 0-0.99")]),
+    fx!("tremolo", [], Audio, "audio", "Tremolo (volume wobble)", [ps!("freq", Num, N(5.0), "Rate Hz"), ps!("depth", Num, N(0.5), "Depth 0-1")]),
+    fx!("vibrato", [], Audio, "audio", "Vibrato (pitch wobble)", [ps!("freq", Num, N(5.0), "Rate Hz"), ps!("depth", Num, N(0.5), "Depth 0-1")]),
+    fx!("distortion", ["overdrive", "saturate", "softclip"], Audio, "audio", "Distortion / saturation", [ps!("amount", Num, N(0.5), "Drive 0-1")]),
+    fx!("bitcrush", ["crusher", "lofi"], Audio, "audio", "Bit crusher (lo-fi)", [ps!("bits", Num, N(8.0), "Bit depth 1-16"), ps!("downsample", Num, N(1.0), "Sample-rate reduction factor 1-250")]),
+    fx!("widen", ["stereowiden", "extrastereo", "wide"], Audio, "audio", "Stereo widener (1 = unchanged, 0 = mono)", [ps!("amount", Num, N(1.6), "Width 0-4")]),
+    fx!("mono", ["tomono", "downmix"], Audio, "audio", "Sum to mono (both channels)", []),
+    fx!("swap", ["swapchannels", "channelswap"], Audio, "audio", "Swap left and right channels", []),
+    fx!("dehum", ["humremove", "hum"], Audio, "audio", "Remove mains hum (notches at the hum frequency and its harmonics)", [ps!("freq", Num, N(50.0), "Hum frequency: 50 (Europe/Asia) or 60 (Americas)"), ps!("harmonics", Num, N(4.0), "Harmonics to notch 1-8")]),
+    fx!("declick", ["declicker", "crackle"], Audio, "audio", "Remove clicks and crackle", []),
+    fx!("exciter", ["presence", "brilliance"], Audio, "audio", "Harmonic exciter (adds brightness and presence)", [ps!("amount", Num, N(1.0), "Amount 0-10"), ps!("freq", Num, N(7500.0), "Above this frequency Hz")]),
+    fx!("autogain", ["dynaudnorm", "leveler", "levelling", "speechnorm"], Audio, "audio", "Dynamic leveler: evens out loud and quiet passages", [ps!("strength", Num, N(0.5), "Strength 0-1")]),
     fx!("ff", ["ffmpeg", "af"], Audio, "audio", "Raw FFmpeg audio filter chain", [ps!("filter", Str, S(""), "Filter chain e.g. 'aecho=0.8:0.9:500:0.3'", ["f", "chain"])]),
 ];
 
@@ -626,6 +946,17 @@ pub static TRANSITIONS: &[TransDef] = &[
     tr!("pixelate", ["pixelize", "mosaic"], "Pixelate out and in", [ps!("size", Num, N(60.0), "Max block size px")]),
     tr!("luma", ["lumawipe"], "Luminance-based wipe", [ps!("soft", Num, N(0.1), "Softness"), ps!("invert", Bool, B(false), "Bright areas first")]),
     tr!("flip", ["cardflip", "flip3d"], "3D card flip", [ps!("dir", Enum(&["h", "v"]), S("h"), "Flip axis")]),
+    tr!("cube", ["cubespin", "cube3d"], "3D cube spin: both clips are faces of a turning cube", [ps!("dir", Enum(DIRS), S("left"), "Direction the cube turns toward")]),
+    tr!("blocks", ["blockdissolve", "randomblocks"], "Random blocks dissolve", [ps!("size", Num, N(48.0), "Block size px")]),
+    tr!("checker", ["checkerwipe", "checkerboard"], "Checkerboard wipe", [ps!("count", Num, N(8.0), "Squares across")]),
+    tr!("inset", ["boxwipe", "corner"], "Inset: incoming clip grows from a corner", [ps!("dir", Enum(&["tl", "tr", "bl", "br", "center"]), S("tl"), "Corner it grows from"), ps!("soft", Num, N(0.0), "Edge softness 0-1")]),
+    tr!("irisbox", ["boxiris"], "Box iris from the center", [ps!("soft", Num, N(0.03), "Edge softness")]),
+    tr!("iriscross", ["crossiris", "plus"], "Cross-shaped iris from the center", [ps!("soft", Num, N(0.03), "Edge softness")]),
+    tr!("band", ["bandwipe", "bands"], "Band wipe: alternating bands slide in from both sides", [ps!("count", Num, N(8.0), "Number of bands"), ps!("dir", Enum(&["h", "v"]), S("h"), "Band orientation")]),
+    tr!("filmdissolve", ["film", "gammadissolve"], "Film dissolve (linear-light, smoother highlights)", []),
+    tr!("additive", ["additivedissolve", "burnin"], "Additive dissolve: both images add up at the middle", []),
+    tr!("leak", ["lightleak", "leakwipe"], "Dissolve through a burst of light leaks", [ps!("color", Color, C("#ff7a18"), "Leak color")]),
+    tr!("burn", ["filmburn", "fire"], "Film burn: the image burns away in noisy, glowing patches", [ps!("color", Color, C("#ff6a00"), "Burn glow color"), ps!("soft", Num, N(0.08), "Edge softness")]),
 ];
 
 pub fn transition(name: &str) -> Option<(&'static TransDef, Vec<(&'static str, Val)>)> {
@@ -880,6 +1211,29 @@ mod tests {
         assert_eq!(parse_val(w, "black", CX).unwrap(), Val::N(900.0));
         let blend = find(LAYER, "blend").unwrap();
         assert!(parse_val(blend, "scren", CX).unwrap_err().to_string().contains("screen"));
+    }
+
+    #[test]
+    fn names_and_aliases_are_unique() {
+        for (what, names) in [
+            ("effect", EFFECTS.iter().flat_map(|e| std::iter::once(e.name).chain(e.alias.iter().copied())).collect::<Vec<_>>()),
+            ("audio effect", AUDIO_EFFECTS.iter().flat_map(|e| std::iter::once(e.name).chain(e.alias.iter().copied())).collect()),
+            ("transition", TRANSITIONS.iter().flat_map(|t| std::iter::once(t.name).chain(t.alias.iter().copied())).collect()),
+        ] {
+            let mut seen = std::collections::HashSet::new();
+            for n in names {
+                assert_eq!(n, n.to_ascii_lowercase().replace(['-', '_'], ""), "{what} name '{n}' must be normalized");
+                assert!(seen.insert(n), "{what} name or alias '{n}' is used twice");
+            }
+        }
+        for e in EFFECTS.iter().chain(AUDIO_EFFECTS) {
+            let mut seen = std::collections::HashSet::new();
+            for p in e.params {
+                for n in std::iter::once(p.name).chain(p.alias.iter().copied()) {
+                    assert!(seen.insert(n.to_ascii_lowercase()), "{}: param name or alias '{n}' is used twice", e.name);
+                }
+            }
+        }
     }
 
     #[test]

@@ -115,3 +115,103 @@ pub fn project(p: (f64, f64, f64), cw: f64, ch: f64) -> (f64, f64) {
     let k = zoom / (p.2 + zoom).max(1.0);
     (cw / 2.0 + (p.0 - cw / 2.0) * k, ch / 2.0 + (p.1 - ch / 2.0) * k)
 }
+
+type V3 = (f64, f64, f64);
+
+fn sub(a: V3, b: V3) -> V3 {
+    (a.0 - b.0, a.1 - b.1, a.2 - b.2)
+}
+fn dot(a: V3, b: V3) -> f64 {
+    a.0 * b.0 + a.1 * b.1 + a.2 * b.2
+}
+fn cross(a: V3, b: V3) -> V3 {
+    (a.1 * b.2 - a.2 * b.1, a.2 * b.0 - a.0 * b.2, a.0 * b.1 - a.1 * b.0)
+}
+fn norm(a: V3) -> V3 {
+    let l = dot(a, a).sqrt().max(1e-12);
+    (a.0 / l, a.1 / l, a.2 / l)
+}
+
+/// A comp camera (x right, y down, z into the screen, like After Effects):
+/// position, orthonormal basis (right, down, forward) and focal length in px.
+#[derive(Clone, Copy, Debug)]
+pub struct Cam {
+    pub pos: V3,
+    pub right: V3,
+    pub down: V3,
+    pub fwd: V3,
+    pub zoom: f64,
+    pub cw: f64,
+    pub ch: f64,
+}
+
+impl Cam {
+    /// The default camera: centered, `zoom` px in front of z = 0, looking straight in.
+    pub fn default_for(cw: f64, ch: f64) -> Cam {
+        let zoom = cw * 0.926;
+        Cam { pos: (cw / 2.0, ch / 2.0, -zoom), right: (1.0, 0.0, 0.0), down: (0.0, 1.0, 0.0), fwd: (0.0, 0.0, 1.0), zoom, cw, ch }
+    }
+
+    /// A camera at `pos` aimed at `poi` (two-node), or looking down +z when
+    /// `poi` is None (one-node), then turned by its own rx / ry / rz.
+    pub fn new(pos: V3, poi: Option<V3>, rx: f64, ry: f64, rz: f64, zoom: f64, cw: f64, ch: f64) -> Cam {
+        let (mut right, mut down, mut fwd) = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0));
+        if let Some(t) = poi {
+            let f = sub(t, pos);
+            if dot(f, f) > 1e-9 {
+                fwd = norm(f);
+                let r = cross((0.0, 1.0, 0.0), fwd);
+                // looking straight up or down: keep the previous right vector
+                right = if dot(r, r) > 1e-9 { norm(r) } else { (1.0, 0.0, 0.0) };
+                down = cross(fwd, right);
+            }
+        }
+        if rx.abs() > 1e-9 || ry.abs() > 1e-9 || rz.abs() > 1e-9 {
+            // the camera's own orientation, applied in its local frame
+            let rot = |v: V3| {
+                let l = rotate3(v, rx, ry, rz);
+                (right.0 * l.0 + down.0 * l.1 + fwd.0 * l.2, right.1 * l.0 + down.1 * l.1 + fwd.1 * l.2, right.2 * l.0 + down.2 * l.1 + fwd.2 * l.2)
+            };
+            let (r, d, f) = (rot((1.0, 0.0, 0.0)), rot((0.0, 1.0, 0.0)), rot((0.0, 0.0, 1.0)));
+            (right, down, fwd) = (r, d, f);
+        }
+        Cam { pos, right, down, fwd, zoom: zoom.max(1.0), cw, ch }
+    }
+
+    /// Distance along the view axis (bigger = farther away).
+    pub fn depth(&self, p: V3) -> f64 {
+        dot(sub(p, self.pos), self.fwd)
+    }
+
+    /// Screen position of a world point, or None behind (or at) the camera.
+    pub fn project(&self, p: V3) -> Option<(f64, f64)> {
+        let v = sub(p, self.pos);
+        let z = dot(v, self.fwd);
+        if z < 1.0 {
+            return None;
+        }
+        let k = self.zoom / z;
+        Some((self.cw / 2.0 + dot(v, self.right) * k, self.ch / 2.0 + dot(v, self.down) * k))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_camera_matches_the_fixed_projection() {
+        let c = Cam::default_for(1920.0, 1080.0);
+        for p in [(100.0, 200.0, 0.0), (960.0, 540.0, 500.0), (1500.0, 90.0, -300.0)] {
+            let a = project(p, 1920.0, 1080.0);
+            let b = c.project(p).unwrap();
+            assert!((a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6, "{a:?} {b:?}");
+        }
+        // a two-node camera looking at the comp center from the default spot is the same camera
+        let t = Cam::new((960.0, 540.0, -1777.92), Some((960.0, 540.0, 0.0)), 0.0, 0.0, 0.0, 1777.92, 1920.0, 1080.0);
+        let b = t.project((100.0, 200.0, 0.0)).unwrap();
+        let a = project((100.0, 200.0, 0.0), 1920.0, 1080.0);
+        assert!((a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3);
+        assert!(c.project((0.0, 0.0, -2000.0)).is_none(), "behind the camera");
+    }
+}

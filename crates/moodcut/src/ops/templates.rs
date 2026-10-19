@@ -104,6 +104,14 @@ impl<'a> Exec<'a> {
         if !pos_main.is_empty() && !p.contains_key("text") {
             p.insert("text".into(), pos_main.join(" "));
         }
+        // the brand kit's accent and font, for templates that take them
+        let accepts = TEMPLATES.iter().find(|t| t.0 == canon).map(|t| t.1).unwrap_or("");
+        if let (Some(c), true) = (&self.p.brand.accent, accepts.contains("color=")) {
+            p.entry("color".into()).or_insert_with(|| c.clone());
+        }
+        if let (Some(f), true) = (&self.p.brand.font, accepts.contains("font=")) {
+            p.entry("font".into()).or_insert_with(|| f.clone());
+        }
         let (cw, ch, fps) = (self.comp().w as f64, self.comp().h as f64, self.comp().fps);
         let overlay = OVERLAYS.contains(&canon);
         let overlay_track = match (&track, overlay) {

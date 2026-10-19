@@ -1,4 +1,4 @@
-import { computed, signal } from "@preact/signals";
+import { computed, effect, signal } from "@preact/signals";
 import type { Catalog, Comp, Item, Job, LogEntry, Media, Project, Track } from "./types";
 
 export const project = signal<Project | null>(null);
@@ -12,9 +12,25 @@ export const ffVersion = signal("");
 export const selection = signal<string[]>([]);
 export const playhead = signal(0);
 export const playing = signal(false);
+/** The playhead while paused, -1 while playing: for views that only update when the picture is still
+ * (frame loads, the transform gizmo, scopes), so playback doesn't re-render them every frame. */
+export const pausedPlayhead = computed(() => (playing.value ? -1 : playhead.value));
 export const zoom = signal(80); // px per second
 export const scrollX = signal(0);
-export const tool = signal<"select" | "razor">("select");
+/** Premiere / After Effects tools (see the Tools panel). */
+export type Tool = "select" | "track" | "ripple" | "roll" | "rate" | "razor" | "slip" | "slide" | "hand" | "zoom" | "type" | "shape";
+export const tool = signal<Tool>("select");
+export const shapeKind = signal<"rect" | "ellipse">("rect");
+export const snapping = signal(true);
+/** Item copied with Ctrl+C (Ctrl+V pastes a copy, Ctrl+Alt+V pastes its attributes). */
+export const clipboard = signal<string | null>(null);
+/** Source monitor: media shown, its time and in/out marks. */
+export const sourceMedia = signal<string | null>(null);
+export const sourceT = signal(0);
+export const sourceIn = signal<number | null>(null);
+export const sourceOut = signal<number | null>(null);
+export const monitorTab = signal<"program" | "source">("program");
+export const history = signal<{ undo: string[]; redo: string[] }>({ undo: [], redo: [] });
 export const catalog = signal<Catalog | null>(null);
 export const logs = signal<LogEntry[]>([]);
 export const jobs = signal<Job[]>([]);
@@ -72,7 +88,27 @@ async function j<T>(url: string, init?: RequestInit): Promise<T> {
   return r.json();
 }
 
-export async function refresh() {
+/** Runs `fn` once at a time: calls during a run share it and trigger exactly one more run afterwards,
+ * so an edit's reply and its WebSocket notice cost one state fetch, and the result is never stale. */
+function coalesce(fn: () => Promise<void>): () => Promise<void> {
+  let running: Promise<void> | null = null;
+  let again = false;
+  return () => {
+    if (running) {
+      again = true;
+      return running;
+    }
+    running = (async () => {
+      do {
+        again = false;
+        await fn();
+      } while (again);
+    })().finally(() => (running = null));
+    return running;
+  };
+}
+
+export const refresh = coalesce(async () => {
   const s = await j<any>("/api/state");
   project.value = s.project;
   rev.value = s.rev;
@@ -85,11 +121,15 @@ export async function refresh() {
   // drop selections that no longer exist
   const sel = selection.value.filter((id) => findItem(id));
   if (sel.length !== selection.value.length) selection.value = sel;
-}
+});
 
-export async function refreshLogs() {
+export const refreshLogs = coalesce(async () => {
   logs.value = await j<LogEntry[]>("/api/log");
-}
+});
+
+export const refreshHistory = coalesce(async () => {
+  history.value = await j<{ undo: string[]; redo: string[] }>("/api/history");
+});
 
 export async function refreshJobs() {
   jobs.value = await j<Job[]>("/api/jobs");
@@ -102,7 +142,13 @@ export async function run(script: string, quiet = false): Promise<{ ok: boolean;
   else if (!quiet && r.log?.length) toast(r.log.slice(0, 3).join("  ·  "));
   await refresh();
   refreshLogs();
+  refreshHistory();
   return r;
+}
+
+/** Ids created by a script run (the `+id` lines of its log). */
+export function createdIds(log: string[] | undefined): string[] {
+  return (log || []).map((l) => /^\+([a-z]\d+)\b/.exec(l)?.[1]).filter((x): x is string => !!x);
 }
 
 export async function project_(body: any) {
@@ -135,10 +181,29 @@ export async function loadCatalog() {
 }
 
 let wsOpened = false;
+let socket: WebSocket | null = null;
+let uiTimer: number | undefined;
+
+/** Tells the engine what is selected and where the playhead is, so AI scripts can say `sel` and `playhead`. */
+function sendUi() {
+  if (uiTimer) clearTimeout(uiTimer);
+  uiTimer = window.setTimeout(() => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ kind: "ui", ui: { selection: selection.value, playhead: +playhead.value.toFixed(4), comp: activeId.value } }));
+  }, 150);
+}
+
+effect(() => {
+  void selection.value;
+  void playhead.value;
+  void activeId.value;
+  sendUi();
+});
 
 export function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/api/ws`);
+  socket = ws;
   ws.onopen = () => {
     // after a reconnect (MoodCut restarted, laptop woke up) reload everything
     if (wsOpened) {
@@ -148,6 +213,7 @@ export function connectWS() {
     }
     wsOpened = true;
     connected.value = true;
+    sendUi();
   };
   ws.onmessage = (ev) => {
     try {
@@ -155,6 +221,7 @@ export function connectWS() {
       if (e.kind === "changed" && e.rev !== rev.value) {
         refresh();
         refreshLogs();
+        refreshHistory();
         if (e.source === "mcp") aiPulse.value++;
       } else if (e.kind === "setup") {
         refresh();
