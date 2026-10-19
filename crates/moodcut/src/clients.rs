@@ -151,10 +151,9 @@ fn servers_key(format: Format) -> &'static str {
     }
 }
 
-/// Removes `//` and `/* */` comments and trailing commas outside strings, so
-/// JSONC files (VS Code, hand-edited configs) can be read.
-pub fn strip_jsonc(s: &str) -> String {
-    let b: Vec<char> = s.trim_start_matches('\u{feff}').chars().collect();
+/// Walks JSON text outside strings: `f(chars, i)` returns how many chars to
+/// skip (0 = keep the char at `i`). Strings are copied untouched.
+fn scan_json(b: &[char], mut f: impl FnMut(&[char], usize) -> usize) -> String {
     let mut out = String::with_capacity(b.len());
     let (mut i, mut in_str) = (0, false);
     while i < b.len() {
@@ -166,48 +165,53 @@ pub fn strip_jsonc(s: &str) -> String {
                 i += 2;
                 continue;
             }
-            if c == '"' {
-                in_str = false;
-            }
+            in_str = c != '"';
             i += 1;
             continue;
         }
-        match c {
-            '"' => {
-                in_str = true;
-                out.push(c);
-                i += 1;
-            }
-            '/' if b.get(i + 1) == Some(&'/') => {
-                while i < b.len() && b[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '/' if b.get(i + 1) == Some(&'*') => {
-                i += 2;
-                while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
-                    i += 1;
-                }
-                i += 2;
-            }
-            ',' => {
-                // drop it when only whitespace/comments lead to } or ]
-                let mut j = i + 1;
-                while j < b.len() && b[j].is_whitespace() {
-                    j += 1;
-                }
-                if !matches!(b.get(j), Some('}') | Some(']')) {
-                    out.push(c);
-                }
-                i += 1;
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
+        if c == '"' {
+            in_str = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let skip = f(b, i);
+        if skip == 0 {
+            out.push(c);
+            i += 1;
+        } else {
+            i += skip;
         }
     }
     out
+}
+
+/// Removes `//` and `/* */` comments outside strings.
+fn strip_comments(s: &str) -> String {
+    let b: Vec<char> = s.trim_start_matches('\u{feff}').chars().collect();
+    scan_json(&b, |b, i| match (b[i], b.get(i + 1)) {
+        ('/', Some('/')) => b[i..].iter().position(|c| *c == '\n').unwrap_or(b.len() - i),
+        ('/', Some('*')) => b[i + 2..].windows(2).position(|w| w == ['*', '/']).map(|p| p + 4).unwrap_or(b.len() - i),
+        _ => 0,
+    })
+}
+
+/// Removes `//` and `/* */` comments, then trailing commas, outside strings, so
+/// JSONC files (VS Code, hand-edited configs) can be read.
+pub fn strip_jsonc(s: &str) -> String {
+    let b: Vec<char> = strip_comments(s).chars().collect();
+    scan_json(&b, |b, i| {
+        if b[i] != ',' {
+            return 0;
+        }
+        let next = b[i + 1..].iter().find(|c| !c.is_whitespace());
+        usize::from(matches!(next, Some('}') | Some(']')))
+    })
+}
+
+/// True when the file has comments (they can't be kept when MoodCut rewrites it).
+fn has_comments(text: &str) -> bool {
+    strip_comments(text).trim() != text.trim_start_matches('\u{feff}').trim()
 }
 
 /// Reads a JSON(C) config. Missing or empty file = `{}`. Unreadable = error (never overwritten).
@@ -227,22 +231,33 @@ fn read_json(path: &Path) -> Result<Value> {
     Ok(v)
 }
 
-/// Writes atomically, keeping a one-time backup of the original next to it.
-fn write_file(path: &Path, text: &str) -> Result<()> {
+/// Writes atomically next to the real file (following a symlink), with the
+/// original's permissions, keeping a backup of the original beside it: made
+/// once, or refreshed when `fresh_backup` (the rewrite loses something, e.g. comments).
+fn write_file(path: &Path, text: &str, fresh_backup: bool) -> Result<PathBuf> {
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => std::fs::canonicalize(path).with_context(|| format!("following the link {}", path.display()))?,
+        _ => path.to_path_buf(),
+    };
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
     }
-    if path.is_file() {
-        let bak = path.with_extension(format!("{}.moodcut-backup", path.extension().and_then(|e| e.to_str()).unwrap_or("bak")));
-        if !bak.exists() {
-            let _ = std::fs::copy(path, &bak);
-        }
+    let bak = path.with_extension(format!("{}.moodcut-backup", path.extension().and_then(|e| e.to_str()).unwrap_or("bak")));
+    let original = std::fs::metadata(&path).ok();
+    if original.is_some() && (fresh_backup || !bak.exists()) {
+        std::fs::copy(&path, &bak).with_context(|| format!("backing up {}", path.display()))?;
     }
     let tmp = path.with_extension("moodcut-tmp");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).or_else(|_| std::fs::write(path, text)).with_context(|| format!("writing {}", path.display()))?;
-    let _ = std::fs::remove_file(&tmp);
-    Ok(())
+    if let Some(m) = &original {
+        // a private config (e.g. 0600 with tokens in it) stays private
+        let _ = std::fs::set_permissions(&tmp, m.permissions());
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("writing {}", path.display()));
+    }
+    Ok(bak)
 }
 
 fn json_registered(path: &Path, format: Format) -> Option<String> {
@@ -250,7 +265,8 @@ fn json_registered(path: &Path, format: Format) -> Option<String> {
     v.get(servers_key(format))?.get(NAME)?.get("command")?.as_str().map(|s| s.to_string())
 }
 
-fn json_set(path: &Path, format: Format, exe: Option<&str>) -> Result<bool> {
+/// Adds, updates or removes MoodCut's entry. Returns (changed, note for the user).
+fn json_set(path: &Path, format: Format, exe: Option<&str>) -> Result<(bool, Option<String>)> {
     let mut v = read_json(path).map_err(|e| {
         let snippet = exe.map(|x| format!("\nAdd this under \"{}\" yourself:\n  \"{NAME}\": {}", servers_key(format), entry(format, x))).unwrap_or_default();
         anyhow!("{e:#}; left it unchanged.{snippet}")
@@ -260,24 +276,40 @@ fn json_set(path: &Path, format: Format, exe: Option<&str>) -> Result<bool> {
     match exe {
         Some(x) => {
             let servers = obj.entry(key).or_insert_with(|| Value::Object(Map::new()));
-            if !servers.is_object() {
-                bail!("\"{key}\" in {} isn't an object; left it unchanged", path.display());
+            let Some(servers) = servers.as_object_mut() else { bail!("\"{key}\" in {} isn't an object; left it unchanged", path.display()) };
+            let fresh = entry(format, x);
+            match servers.get_mut(NAME).and_then(|e| e.as_object_mut()) {
+                // update command/args in place: settings the user added (env, timeouts) stay
+                Some(cur) => {
+                    let mut changed = false;
+                    for (k, val) in fresh.as_object().unwrap() {
+                        if cur.get(k) != Some(val) {
+                            cur.insert(k.clone(), val.clone());
+                            changed = true;
+                        }
+                    }
+                    if cur.remove("url").is_some() {
+                        changed = true;
+                    }
+                    if !changed {
+                        return Ok((false, None));
+                    }
+                }
+                None => {
+                    servers.insert(NAME.into(), fresh);
+                }
             }
-            let new = entry(format, x);
-            if servers.get(NAME) == Some(&new) {
-                return Ok(false);
-            }
-            servers.as_object_mut().unwrap().insert(NAME.into(), new);
         }
         None => {
-            let Some(servers) = obj.get_mut(key).and_then(|s| s.as_object_mut()) else { return Ok(false) };
+            let Some(servers) = obj.get_mut(key).and_then(|s| s.as_object_mut()) else { return Ok((false, None)) };
             if servers.remove(NAME).is_none() {
-                return Ok(false);
+                return Ok((false, None));
             }
         }
     }
-    write_file(path, &(serde_json::to_string_pretty(&v)? + "\n"))?;
-    Ok(true)
+    let comments = std::fs::read_to_string(path).map(|t| has_comments(&t)).unwrap_or(false);
+    let bak = write_file(path, &(serde_json::to_string_pretty(&v)? + "\n"), comments)?;
+    Ok((true, comments.then(|| format!("comments in the file couldn't be kept; the original is saved as {}", bak.display()))))
 }
 
 /// TOML literal string (no escapes needed for Windows paths).
@@ -289,49 +321,104 @@ fn toml_str(s: &str) -> String {
     }
 }
 
-/// The `[mcp_servers.moodcut]` table's line range in a Codex config.
+/// The `[mcp_servers.moodcut]` table's line range in a Codex config, with its
+/// sub-tables (`[mcp_servers.moodcut.env]`).
 fn toml_table(text: &str) -> Option<(usize, usize)> {
     let lines: Vec<&str> = text.lines().collect();
-    let start = lines.iter().position(|l| {
-        let t = l.trim();
-        t == format!("[mcp_servers.{NAME}]") || t == format!("[mcp_servers.\"{NAME}\"]")
-    })?;
-    let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| l.trim_start().starts_with('[')).map(|(i, _)| i).unwrap_or(lines.len());
+    let is_head = |t: &str| t == format!("[mcp_servers.{NAME}]") || t == format!("[mcp_servers.\"{NAME}\"]");
+    let is_sub = |t: &str| t.starts_with(&format!("[mcp_servers.{NAME}.")) || t.starts_with(&format!("[mcp_servers.\"{NAME}\"."));
+    let start = lines.iter().position(|l| is_head(l.trim()))?;
+    let end = lines.iter().enumerate().skip(start + 1).find(|(_, l)| {
+        let t = l.trim_start();
+        t.starts_with('[') && !is_sub(t.trim())
+    }).map(|(i, _)| i).unwrap_or(lines.len());
     Some((start, end))
+}
+
+/// A TOML string value (basic "..." with escapes, or literal '...').
+fn toml_unquote(v: &str) -> String {
+    let v = v.trim();
+    if let Some(inner) = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+        let mut out = String::new();
+        let mut it = inner.chars();
+        while let Some(c) = it.next() {
+            if c == '\\' {
+                match it.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some(o) => out.push(o),
+                    None => {}
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    } else {
+        v.trim_matches('\'').to_string()
+    }
+}
+
+/// Reads config.toml; only a missing file counts as empty (anything unreadable is left alone).
+fn read_toml_text(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(t) => Ok(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("can't read {}; left it unchanged", path.display())),
+    }
 }
 
 fn toml_registered(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let (a, b) = toml_table(&text)?;
-    text.lines().skip(a + 1).take(b - a - 1).find_map(|l| l.trim().strip_prefix("command").map(|r| r.trim_start_matches([' ', '=']).trim().trim_matches(['\'', '"']).to_string()))
+    text.lines().skip(a + 1).take(b - a - 1).take_while(|l| !l.trim_start().starts_with('[')).find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        (k.trim() == "command").then(|| toml_unquote(v))
+    })
 }
 
-fn toml_set(path: &Path, exe: Option<&str>) -> Result<bool> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+fn toml_set(path: &Path, exe: Option<&str>) -> Result<(bool, Option<String>)> {
+    let text = read_toml_text(path).map_err(|e| {
+        let snippet = exe.map(|x| format!("\nAdd this to it yourself:\n[mcp_servers.{NAME}]\ncommand = {}\nargs = ['mcp']", toml_str(x))).unwrap_or_default();
+        anyhow!("{e:#}{snippet}")
+    })?;
     let mut lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
-    if let Some((a, b)) = toml_table(&text) {
-        // drop trailing blank lines of the old table too
-        lines.drain(a..b);
-    } else if exe.is_none() {
-        return Ok(false);
-    }
-    if let Some(x) = exe {
-        while lines.last().is_some_and(|l| l.trim().is_empty()) {
-            lines.pop();
+    match (toml_table(&text), exe) {
+        (Some((a, b)), None) => {
+            lines.drain(a..b);
         }
-        if !lines.is_empty() {
-            lines.push(String::new());
+        (None, None) => return Ok((false, None)),
+        (Some((a, b)), Some(x)) => {
+            // rewrite command/args in the table's own keys; other keys and sub-tables stay
+            let own_end = (a + 1..b).find(|i| lines[*i].trim_start().starts_with('[')).unwrap_or(b);
+            let set = |key: &str, val: String, lines: &mut Vec<String>| {
+                let line = format!("{key} = {val}");
+                match (a + 1..own_end).find(|i| lines[*i].split_once('=').is_some_and(|(k, _)| k.trim() == key)) {
+                    Some(i) => lines[i] = line,
+                    None => lines.insert(a + 1, line),
+                }
+            };
+            set("args", "['mcp']".into(), &mut lines);
+            set("command", toml_str(x), &mut lines);
         }
-        lines.push(format!("[mcp_servers.{NAME}]"));
-        lines.push(format!("command = {}", toml_str(x)));
-        lines.push("args = ['mcp']".into());
+        (None, Some(x)) => {
+            while lines.last().is_some_and(|l| l.trim().is_empty()) {
+                lines.pop();
+            }
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push(format!("[mcp_servers.{NAME}]"));
+            lines.push(format!("command = {}", toml_str(x)));
+            lines.push("args = ['mcp']".into());
+        }
     }
     let new = lines.join("\n") + "\n";
     if new == text {
-        return Ok(false);
+        return Ok((false, None));
     }
-    write_file(path, &new)?;
-    Ok(true)
+    write_file(path, &new, false)?;
+    Ok((true, None))
 }
 
 /// Status of one client on this computer.
@@ -410,21 +497,27 @@ pub fn apply(c: &'static Client, remove: bool) -> Result<String> {
         paths.truncate(1);
     }
     let mut changed = vec![];
+    let mut notes = vec![];
     for p in &paths {
-        let did = match c.format {
+        let (did, note) = match c.format {
             Format::CodexToml => toml_set(p, exe.as_deref())?,
             f => json_set(p, f, exe.as_deref())?,
         };
         if did {
             changed.push(p.display().to_string());
         }
+        notes.extend(note);
     }
-    Ok(match (remove, changed.is_empty()) {
+    let mut msg = match (remove, changed.is_empty()) {
         (true, true) => format!("{}: wasn't registered", c.name),
         (true, false) => format!("{}: removed from {}", c.name, changed.join(", ")),
         (false, true) => format!("{}: already registered ({})", c.name, paths[0].display()),
         (false, false) => format!("{}: registered in {} ({})", c.name, changed.join(", "), c.after),
-    })
+    };
+    for n in notes {
+        msg.push_str(&format!("; {n}"));
+    }
+    Ok(msg)
 }
 
 #[cfg(test)]
@@ -446,14 +539,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("cfg.json");
         std::fs::write(&f, "{\"mcpServers\": {\"other\": {\"command\": \"x\"}}, \"theme\": \"dark\",}").unwrap();
-        assert!(json_set(&f, Format::McpServers, Some("C:\\Tools\\moodcut.exe")).unwrap());
+        assert!(json_set(&f, Format::McpServers, Some("C:\\Tools\\moodcut.exe")).unwrap().0);
         let v = read_json(&f).unwrap();
         assert_eq!(v["mcpServers"]["other"]["command"], "x");
         assert_eq!(v["mcpServers"]["moodcut"]["args"], json!(["mcp"]));
         assert_eq!(v["theme"], "dark");
         assert!(dir.join("cfg.json.moodcut-backup").is_file(), "original kept");
-        assert!(!json_set(&f, Format::McpServers, Some("C:\\Tools\\moodcut.exe")).unwrap(), "second run changes nothing");
-        assert!(json_set(&f, Format::McpServers, None).unwrap());
+        assert!(!json_set(&f, Format::McpServers, Some("C:\\Tools\\moodcut.exe")).unwrap().0, "second run changes nothing");
+        assert!(json_set(&f, Format::McpServers, None).unwrap().0);
         assert!(read_json(&f).unwrap()["mcpServers"].get("moodcut").is_none());
         // a file that isn't JSON is never overwritten
         let bad = dir.join("bad.json");
@@ -464,12 +557,62 @@ mod tests {
         // codex toml
         let t = dir.join("config.toml");
         std::fs::write(&t, "model = 'o4'\n\n[mcp_servers.other]\ncommand = 'x'\n").unwrap();
-        assert!(toml_set(&t, Some("C:\\Tools\\moodcut.exe")).unwrap());
+        assert!(toml_set(&t, Some("C:\\Tools\\moodcut.exe")).unwrap().0);
         assert_eq!(toml_registered(&t).as_deref(), Some("C:\\Tools\\moodcut.exe"));
-        assert!(!toml_set(&t, Some("C:\\Tools\\moodcut.exe")).unwrap());
-        assert!(toml_set(&t, None).unwrap());
+        assert!(!toml_set(&t, Some("C:\\Tools\\moodcut.exe")).unwrap().0);
+        assert!(toml_set(&t, None).unwrap().0);
         let text = std::fs::read_to_string(&t).unwrap();
         assert!(text.contains("[mcp_servers.other]") && !text.contains(NAME), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keeps_user_settings_permissions_and_links() {
+        let dir = std::env::temp_dir().join(format!("moodcut-clients2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // env the user added to MoodCut's entry survives a re-register (e.g. an upgrade)
+        let f = dir.join("c.json");
+        std::fs::write(&f, r#"{"mcpServers": {"moodcut": {"command": "old.exe", "args": ["mcp"], "env": {"MOODCUT_FFMPEG": "C:\\ff"}}}}"#).unwrap();
+        assert!(json_set(&f, Format::McpServers, Some("new.exe")).unwrap().0);
+        let v = read_json(&f).unwrap();
+        assert_eq!(v["mcpServers"]["moodcut"]["command"], "new.exe");
+        assert_eq!(v["mcpServers"]["moodcut"]["env"]["MOODCUT_FFMPEG"], "C:\\ff");
+        // a trailing comma before a comment, and comments are reported (the original is kept)
+        let j = dir.join("mcp.json");
+        std::fs::write(&j, "{\n \"servers\": {\"a\": {\"command\": \"x\"}, // \"b\": {}\n },\n}").unwrap();
+        let (did, note) = json_set(&j, Format::VsCode, Some("m.exe")).unwrap();
+        assert!(did && note.unwrap().contains("moodcut-backup"));
+        assert!(std::fs::read_to_string(dir.join("mcp.json.moodcut-backup")).unwrap().contains("// \"b\""));
+        // Codex: sub-tables go with the table, other keys stay, escaped paths read back
+        let t = dir.join("config.toml");
+        std::fs::write(&t, "[mcp_servers.moodcut]\ncommand = 'old'\nargs = ['mcp']\nstartup_timeout_sec = 60\n\n[mcp_servers.moodcut.env]\nA = '1'\n\n[other]\nx = 1\n").unwrap();
+        assert!(toml_set(&t, Some("C:\\Users\\O'Brien\\moodcut.exe")).unwrap().0);
+        let text = std::fs::read_to_string(&t).unwrap();
+        assert!(text.contains("startup_timeout_sec = 60") && text.contains("[mcp_servers.moodcut.env]"), "{text}");
+        assert_eq!(toml_registered(&t).as_deref(), Some("C:\\Users\\O'Brien\\moodcut.exe"));
+        assert!(toml_set(&t, None).unwrap().0);
+        let text = std::fs::read_to_string(&t).unwrap();
+        assert!(!text.contains("moodcut") && text.contains("[other]"), "{text}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // a private file stays private, and a symlinked config keeps its link
+            let real = dir.join("real.json");
+            std::fs::write(&real, "{}").unwrap();
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let link = dir.join("link.json");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(json_set(&link, Format::McpServers, Some("m")).unwrap().0);
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+            assert!(read_json(&real).unwrap()["mcpServers"]["moodcut"].is_object());
+            // an unreadable config.toml is left alone
+            let bad = dir.join("bad.toml");
+            std::fs::write(&bad, [0xffu8, 0xfe, 0x00, 0x41]).unwrap();
+            assert!(toml_set(&bad, Some("m")).is_err());
+            assert_eq!(std::fs::read(&bad).unwrap(), vec![0xffu8, 0xfe, 0x00, 0x41]);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -541,16 +541,23 @@ impl<'a> CompR<'a> {
                             alpha: m.alpha,
                             hw: self.rc.frames.hw,
                             src_dur: m.dur,
+                            start: 0.0,
                             interp: ev.str(&it.props, "interp"),
                         };
                         // previews decode the proxy when there is one (decode-time FFmpeg
                         // effects work in source pixels, so those clips keep the original)
+                        let mut shift = 0.0;
                         if self.rc.draft && spec.vf.is_empty() {
-                            if let Some(p) = self.rc.frames.proxies.as_ref().and_then(|px| px.for_preview(m, dw)) {
+                            if let Some((p, offset)) = self.rc.frames.proxies.as_ref().and_then(|px| px.for_preview(m, dw)) {
                                 spec.path = p;
+                                shift = offset;
                             }
                         }
-                        let st = Self::src_time(it, tl, ev, m.fps);
+                        // still images and graphics never have an offset; only probe real video
+                        if m.gfx.is_none() {
+                            spec.start = self.rc.frames.video_start(&spec.path);
+                        }
+                        let st = (Self::src_time(it, tl, ev, m.fps) - shift).max(0.0);
                         if it.props.get("hold").map(|a| a.v.bool()).unwrap_or(false) {
                             return Ok(Some(self.rc.frames.video_still(&spec, st)?));
                         }

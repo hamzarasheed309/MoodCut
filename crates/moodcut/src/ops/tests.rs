@@ -796,3 +796,44 @@ fn a_new_look_replaces_the_previous_one_but_keeps_manual_changes() {
     ok(&mut p, "color c1 none");
     assert!(fx(&p).is_empty(), "{:?}", fx(&p));
 }
+
+#[test]
+fn editing_a_missing_effect_is_an_error_not_a_crash() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\nfx c1 blur");
+    for line in ["fx c1.f9 up", "fx c1.f9 radius=3", "fx c1.f9 off", "fx c1.f9 del", "afx c1.a4 down"] {
+        let e = err(&mut p, line);
+        assert!(e.contains("has no"), "{line}: {e}");
+    }
+    assert!(err(&mut p, "fx c1.f9 up").contains("c1.f1 blur"), "names what is there");
+}
+
+#[test]
+fn bus_effect_ids_are_never_reused() {
+    let mut p = proj();
+    ok(&mut p, "import /m/song.mp3\nadd m1 A1 at=0\nafx A1 eq\nafx A1 compressor\nafx A1.a2 del\nafx A1 gain");
+    let ids: Vec<String> = p.comps[0].track("A1").unwrap().afx.iter().map(|e| e.id.clone()).collect();
+    assert_eq!(ids, vec!["a1", "a3"]);
+    ok(&mut p, "afx A1 clear\nafx A1 eq");
+    assert_eq!(p.comps[0].track("A1").unwrap().afx[0].id, "a4");
+    ok(&mut p, "afx master eq\nafx master.a1 del\nafx master eq");
+    assert_eq!(p.comps[0].master.afx[0].id, "a2");
+}
+
+#[test]
+fn a_look_only_takes_back_what_it_added() {
+    let mut p = proj();
+    // the user's own vignette and grain match musicvideo's values exactly
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\nfx c1 vignette amount=0.4\nfx c1 noise amount=0.04\ncolor c1 musicvideo");
+    ok(&mut p, "color c1 none");
+    let kinds: Vec<String> = p.item("c1").unwrap().fx.iter().map(|e| e.kind.clone()).collect();
+    assert_eq!(kinds, vec!["vignette", "noise"], "the user's effects stay");
+    // a hand-made value equal to the look's stays when the look changes
+    ok(&mut p, "fx c1 clear\ncolor c1 sat=0\ncolor c1 bw\ncolor c1 warm");
+    let lum = p.item("c1").unwrap().fx.iter().find(|e| e.kind == "lumetri").unwrap().clone();
+    assert_eq!(lum.props["sat"].v.num(), 0.0);
+    assert!(!lum.props.contains_key("contrast"), "bw's own contrast went with it");
+    // internal bookkeeping doesn't show in the AI's views
+    let view = super::outline::item_detail(&p, p.item("c1").unwrap());
+    assert!(!view.contains("_look"), "{view}");
+}

@@ -147,6 +147,31 @@ impl Ff {
         !self.tools().ffmpeg.as_os_str().is_empty()
     }
 
+    /// How far the first video stream starts after the file's start (camcorder
+    /// .MTS, files whose audio starts first); 0 when unknown.
+    pub fn video_start_offset(&self, path: &str) -> f64 {
+        if !self.available() {
+            return 0.0;
+        }
+        let out = command(&self.ffprobe_path())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=start_time:format=start_time", "-of", "json"])
+            .arg(path)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        let Ok(out) = out else { return 0.0 };
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        let num = |x: &serde_json::Value| x.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| x.as_f64());
+        match (num(&v["streams"][0]["start_time"]), num(&v["format"]["start_time"])) {
+            (Some(vs), Some(fs)) if vs > fs => vs - fs,
+            _ => 0.0,
+        }
+    }
+
+    pub fn ffprobe_path(&self) -> PathBuf {
+        self.tools().ffprobe.clone()
+    }
+
     pub fn ffmpeg_path(&self) -> PathBuf {
         self.tools().ffmpeg.clone()
     }

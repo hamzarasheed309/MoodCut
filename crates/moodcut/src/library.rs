@@ -478,10 +478,10 @@ impl Engine {
             MediaKind::Svg => self.frames.svg(&m.path, w, ((m.h as f32 / m.w.max(1) as f32) * w as f32).round().max(2.0) as u32)?,
             MediaKind::Video => {
                 // a proxy decodes 4K / HEVC posters and filmstrips many times faster
-                let src = self.proxies.for_preview(m, w).unwrap_or_else(|| m.path.clone());
+                let (src, shift) = self.proxies.for_preview(m, w).unwrap_or_else(|| (m.path.clone(), 0.0));
                 let (raw, _) = self.ff.run_capture(&[
                     "-ss".into(),
-                    format!("{:.3}", t.clamp(0.0, (m.dur - 0.05).max(0.0))),
+                    format!("{:.3}", (t.clamp(0.0, (m.dur - 0.05).max(0.0)) - shift).max(0.0)),
                     "-i".into(),
                     src,
                     "-frames:v".into(),
@@ -693,8 +693,10 @@ impl Engine {
                 let mut child = c.spawn().context("starting ffmpeg for the waveform")?;
                 let mut out = child.stdout.take().unwrap();
                 let mut peaks = Vec::with_capacity((m.dur.max(1.0) * PEAK_RATE as f64) as usize + 16);
+                let mut acc = PeakAcc::default();
                 let mut buf = vec![0u8; 80 * 1024];
-                let (mut carry, mut cur, mut n): (Option<u8>, u16, usize) = (None, 0, 0);
+                // a read can end mid-sample: keep the odd byte for the next one
+                let mut carry: Option<u8> = None;
                 loop {
                     let k = std::io::Read::read(&mut out, &mut buf)?;
                     if k == 0 {
@@ -702,29 +704,18 @@ impl Engine {
                     }
                     let mut i = 0;
                     if let Some(lo) = carry.take() {
-                        let s = i16::from_le_bytes([lo, buf[0]]);
-                        cur = cur.max(s.unsigned_abs());
-                        n += 1;
+                        acc.add(i16::from_le_bytes([lo, buf[0]]), &mut peaks);
                         i = 1;
                     }
                     while i + 1 < k {
-                        let s = i16::from_le_bytes([buf[i], buf[i + 1]]);
-                        cur = cur.max(s.unsigned_abs());
-                        n += 1;
-                        if n == 40 {
-                            peaks.push((cur.min(32767) as u32 * 255 / 32767) as u8);
-                            cur = 0;
-                            n = 0;
-                        }
+                        acc.add(i16::from_le_bytes([buf[i], buf[i + 1]]), &mut peaks);
                         i += 2;
                     }
                     if i < k {
                         carry = Some(buf[i]);
                     }
                 }
-                if n > 0 {
-                    peaks.push((cur.min(32767) as u32 * 255 / 32767) as u8);
-                }
+                acc.finish(&mut peaks);
                 let _ = child.wait();
                 if peaks.is_empty() {
                     bail!("no audio decoded from {}", m.name);
@@ -746,6 +737,29 @@ impl Engine {
         }
         g.insert(key, arc.clone());
         Ok(arc)
+    }
+}
+
+/// Folds 16-bit samples into peaks, one per 40 samples (1/200 s at 8 kHz).
+#[derive(Default)]
+struct PeakAcc {
+    cur: u16,
+    n: usize,
+}
+
+impl PeakAcc {
+    fn add(&mut self, s: i16, out: &mut Vec<u8>) {
+        self.cur = self.cur.max(s.unsigned_abs());
+        self.n += 1;
+        if self.n == 40 {
+            self.finish(out);
+        }
+    }
+    fn finish(&mut self, out: &mut Vec<u8>) {
+        if self.n > 0 {
+            out.push((self.cur.min(32767) as u32 * 255 / 32767) as u8);
+        }
+        *self = PeakAcc::default();
     }
 }
 
@@ -804,5 +818,18 @@ mod tests {
         assert!((0..50).all(|x| part.pixel(x, 10).unwrap().alpha() == 255));
         assert_eq!(hex_rgb("#e76c33"), Some((0xe7, 0x6c, 0x33)));
         assert_eq!(hex_rgb("nope"), None);
+    }
+
+    #[test]
+    fn peak_buckets_hold_40_samples_whatever_the_read_sizes() {
+        let mut out = vec![];
+        let mut acc = PeakAcc::default();
+        for i in 0..400 {
+            acc.add(if i % 40 == 39 { 32767 } else { 0 }, &mut out);
+        }
+        acc.add(100, &mut out);
+        acc.finish(&mut out);
+        assert_eq!(out.len(), 11);
+        assert!(out[..10].iter().all(|p| *p == 255) && out[10] == 0, "{out:?}");
     }
 }

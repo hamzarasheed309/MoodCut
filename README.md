@@ -128,9 +128,9 @@ Projects are plain JSON (`.mcut`) and autosave. Rendered graphics go next to the
 
 **AI apps on your computer: one click.** Open **Connect AI** in the editor: every AI app found on the PC is listed with a
 **Connect** button (or **Connect all**). From a terminal, `moodcut install-ai` does the same and `moodcut install-ai --list`
-shows what is connected. MoodCut merges itself into each app's settings without touching your other tools (comments and
-trailing commas in the file are fine), keeps a backup of the original, and leaves a file it can't read alone, printing the
-snippet to paste instead. Then restart the app and ask it to "use MoodCut".
+shows what is connected. MoodCut merges itself into each app's settings without touching your other tools or settings you added to its own
+entry (such as `env`), keeps the file's permissions and a backup of the original (refreshed when the file had comments,
+which a rewrite can't keep), and leaves a file it can't read alone, printing the snippet to paste instead. Then restart the app and ask it to "use MoodCut".
 
 | App | Where MoodCut registers |
 | --- | --- |
@@ -177,7 +177,7 @@ one connector URL for good.
 | --- | --- |
 | **Desktop AI apps** | **Connect AI** in the editor, or `moodcut install-ai` (see above) |
 | **Any MCP client over stdio** | command `moodcut`, arguments `mcp` |
-| **Any MCP client over HTTP** (Open WebUI, MCP Inspector, your own agent…) | `http://127.0.0.1:7878/mcp` (Streamable HTTP; browser tools on this computer are allowed) |
+| **Any MCP client over HTTP** (Open WebUI, MCP Inspector, your own agent…) | `http://127.0.0.1:7878/mcp` (Streamable HTTP; MCP Inspector's page is allowed from the browser, others via `MOODCUT_ALLOW_ORIGINS`) |
 
 `moodcut mcp` (stdio) attaches to the editor if it's already open, so AI edits appear live in the window; otherwise
 it runs the engine itself and serves the editor at `http://127.0.0.1:7878` (or the next free port).
@@ -384,7 +384,8 @@ moodcut render explainer.mcut
 Environment: `MOODCUT_FFMPEG` (folder with ffmpeg/ffprobe, or `none` to run without), `MOODCUT_HOME` (data
 folder, default `%APPDATA%\MoodCut`), `MOODCUT_BROWSER` (Edge/Chrome for HTML graphics), `MOODCUT_CLOUDFLARED`,
 `MOODCUT_WHISPER_BIN`, `MOODCUT_WHISPER_MODEL`, `MOODCUT_HWDEC=1` (hardware decoding for previews),
-`MOODCUT_BROWSER_GPU=1` (GPU for HTML graphics).
+`MOODCUT_BROWSER_GPU=1` (GPU for HTML graphics), `MOODCUT_ALLOW_ORIGINS` (extra local browser pages allowed to call
+`/mcp`, comma separated).
 
 Without FFmpeg, MoodCut still opens, edits projects and renders HTML graphics as PNG stills; anything that needs
 to decode or encode media explains how to install it, and the editor shows the one-click install.

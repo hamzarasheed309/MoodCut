@@ -63,6 +63,10 @@ pub fn random_token() -> String {
 }
 
 pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
+    // a long-running session: background proxies are welcome (the project's heavy footage too)
+    eng.proxies.set_active();
+    let media = eng.st.read().p.media.clone();
+    eng.proxies.request(&media, false);
     let mcp = Arc::new(Mcp::new(Ok(eng.clone())));
     let remote = if o.tunnel || o.public_url.is_some() { Some(o.token.clone().unwrap_or_else(crate::tunnel::persistent_token)) } else { o.token.clone() };
     let st: St = Arc::new(AppState {
@@ -204,8 +208,10 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
     if remote && st.token.is_none() && remote_tok.is_none() {
         return (StatusCode::FORBIDDEN, "remote access is off: start it with `moodcut connect` (or Connect AI > web link)").into_response();
     }
-    // browsers: only this app's own local pages may call it without a token;
-    // MCP also answers browser tools on this computer (MCP Inspector, local web clients)
+    // browsers: only this app's own local pages may call it without a token; MCP
+    // also answers allow-listed browser tools on this computer (MCP Inspector). Not
+    // every local page: HTML graphics render on a throwaway 127.0.0.1 port, and their
+    // scripts must never reach the editor.
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(|s| s.to_string());
     let mcp_path = path == "/mcp" || path.starts_with("/mcp/");
     let mut cors_origin: Option<String> = None;
@@ -214,7 +220,7 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
         let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
         let same_local = local_host(o_host) && o_host.eq_ignore_ascii_case(host);
         let token_given = matches(&st.token) || matches(&remote_tok);
-        let local_tool = mcp_path && !remote && local_host(o_host);
+        let local_tool = mcp_path && !remote && allowed_tool_origin(origin);
         if !same_local && !token_given && !local_tool {
             return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
         }
@@ -241,6 +247,22 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
         }
     }
     resp
+}
+
+/// Browser origins (besides the editor itself) allowed to call /mcp without a
+/// token: MCP Inspector's default page, and any listed in MOODCUT_ALLOW_ORIGINS
+/// (comma separated, e.g. `http://localhost:3000`). Only local hosts count.
+fn allowed_tool_origin(origin: &str) -> bool {
+    let o = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+    let host = o.split("://").nth(1).unwrap_or("");
+    if !local_host(host) {
+        return false;
+    }
+    let port = host.rsplit_once(':').map(|(_, p)| p).unwrap_or("");
+    if port == "6274" {
+        return true;
+    }
+    std::env::var("MOODCUT_ALLOW_ORIGINS").map(|v| v.split(',').any(|a| a.trim().trim_end_matches('/').eq_ignore_ascii_case(&o))).unwrap_or(false)
 }
 
 /// CORS headers for MCP requests from browser tools on this computer.
@@ -511,10 +533,18 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
     if let Some((b, mime)) = st.cache.lock().get(&key).cloned() {
         return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
-    // thumbnails are kept on disk too (like Premiere's media cache): reopening a big library is instant
-    let disk = crate::config::cache_dir().join("thumbs").join(format!("{:016x}.jpg", crate::render::eval::hash_str(&key)));
-    if let Ok(b) = tokio::fs::read(&disk).await {
-        st.cache.lock().insert(key, (b.clone(), "image/jpeg"));
+    // library and timeline thumbnails (small) are kept on disk too, like Premiere's media
+    // cache, so reopening a big library is instant; Source-monitor frames (any time, big) aren't
+    let disk = (w <= 320).then(|| crate::config::cache_dir().join("thumbs").join(format!("{:016x}.jpg", crate::render::eval::hash_str(&key))));
+    if let Some(Ok(b)) = match &disk {
+        Some(d) => Some(tokio::fs::read(d).await),
+        None => None,
+    } {
+        let mut c = st.cache.lock();
+        if c.len() > 2000 {
+            c.clear();
+        }
+        c.insert(key, (b.clone(), "image/jpeg"));
         return ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
     // a big library can request hundreds of thumbnails at once; decode a few at a time
@@ -527,10 +557,12 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
         let pm = eng.media_frame(&m, t, w)?;
         let pm = if m.alpha { crate::library::on_checker(&pm) } else { (*pm).clone() };
         let jpg = encode::encode_jpeg(&pm, 75)?;
-        if let Some(d) = disk.parent() {
-            let _ = std::fs::create_dir_all(d);
+        if let Some(disk) = &disk {
+            if let Some(d) = disk.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(disk, &jpg);
         }
-        let _ = std::fs::write(&disk, &jpg);
         Ok(jpg)
     })
     .await;
@@ -1224,6 +1256,16 @@ mod tests {
         assert!(c.get("f1").is_none(), "oldest evicted");
         c.clear();
         assert_eq!(c.bytes, 0);
+    }
+
+    #[test]
+    fn only_listed_local_browser_tools_may_call_mcp() {
+        assert!(allowed_tool_origin("http://localhost:6274"));
+        assert!(allowed_tool_origin("http://127.0.0.1:6274/"));
+        // an HTML graphic's throwaway page, other local pages and websites are refused
+        assert!(!allowed_tool_origin("http://127.0.0.1:53211"));
+        assert!(!allowed_tool_origin("http://localhost:3000"));
+        assert!(!allowed_tool_origin("https://evil.example:6274"));
     }
 
     #[test]

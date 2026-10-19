@@ -202,7 +202,14 @@ impl Mcp {
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(self.call(name, &args))
+                // a bug in one tool must never take the connection down with it
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.call(name, &args))) {
+                    Ok(r) => Ok(r),
+                    Err(e) => {
+                        let why = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned()).unwrap_or_else(|| "unknown error".into());
+                        Ok(err_result(format!("MoodCut hit an internal error in {name} ({why}); nothing was changed. Please report it; you can carry on.")))
+                    }
+                }
             }
             "resources/list" => Ok(json!({"resources": []})),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
@@ -314,8 +321,22 @@ impl Mcp {
             "proxy" | "proxies" => {
                 use crate::render::proxy::Mode;
                 let mut notes = vec![];
-                if let Some(m) = s(a, "mode") {
-                    let mode = Mode::parse(&m).ok_or_else(|| anyhow::anyhow!("mode must be auto, all or off"))?;
+                // check everything first, so a bad call changes nothing
+                let op = s(a, "op").map(|o| o.to_ascii_lowercase());
+                let ids_given = s(a, "ids").or_else(|| s(a, "q")).is_some();
+                if let Some(o) = op.as_deref() {
+                    if !matches!(o, "create" | "make" | "build" | "delete" | "del" | "remove" | "cancel" | "stop") {
+                        anyhow::bail!("unknown op '{o}' (create, delete, cancel)");
+                    }
+                    if matches!(o, "delete" | "del" | "remove") && !ids_given {
+                        anyhow::bail!("op=delete needs ids (e.g. ids=m3 or ids=all)");
+                    }
+                }
+                let mode = match s(a, "mode") {
+                    Some(m) => Some(Mode::parse(&m).ok_or_else(|| anyhow::anyhow!("mode must be auto, all or off"))?),
+                    None => None,
+                };
+                if let Some(mode) = mode {
                     eng.proxies.set_mode(mode);
                     notes.push(format!("new imports: {}", match mode { Mode::Off => "no proxies", Mode::Auto => "proxies for heavy footage", Mode::All => "proxies for every video" }));
                 }
@@ -324,21 +345,19 @@ impl Mcp {
                     notes.push(format!("previews use {}", if on { "proxies where ready" } else { "the original files" }));
                 }
                 let (p, ..) = eng.snapshot();
-                if let Some(spec) = s(a, "ids").or_else(|| s(a, "q")) {
+                if matches!(op.as_deref(), Some("cancel" | "stop")) {
+                    eng.proxies.cancel_all();
+                    notes.push("stopped making proxies (the queue is empty)".into());
+                } else if let Some(spec) = s(a, "ids").or_else(|| s(a, "q")) {
                     let ids = crate::library::select_media(&p, &spec)?;
                     let ms: Vec<crate::model::project::Media> = ids.iter().filter_map(|i| p.media(i).cloned()).collect();
-                    match s(a, "op").as_deref().unwrap_or("create") {
-                        "delete" | "del" | "remove" => notes.push(format!("deleted {} prox(ies)", eng.proxies.delete(&ms))),
-                        "create" | "make" | "build" => {
-                            let n = eng.proxies.request(&ms, true);
-                            let skipped = ms.iter().filter(|m| !crate::render::proxy::eligible(m)).count();
-                            notes.push(format!("queued {n} prox(ies){}", if skipped > 0 { format!(" ({skipped} skipped: not video, or with transparency)") } else { String::new() }));
-                        }
-                        other => anyhow::bail!("unknown op '{other}' (create, delete, cancel)"),
+                    if matches!(op.as_deref(), Some("delete" | "del" | "remove")) {
+                        notes.push(format!("deleted {} prox(ies)", eng.proxies.delete(&ms)));
+                    } else {
+                        let n = eng.proxies.request(&ms, true);
+                        let skipped = ms.iter().filter(|m| !crate::render::proxy::eligible(m)).count();
+                        notes.push(format!("queued {n} prox(ies){}", if skipped > 0 { format!(" ({skipped} skipped: not video, or with transparency)") } else { String::new() }));
                     }
-                } else if s(a, "op").as_deref() == Some("cancel") {
-                    eng.proxies.cancel_all();
-                    notes.push("cancelled the queued proxies".into());
                 }
                 notes.push(eng.proxies.summary(&p.media));
                 Ok(notes.join("\n"))

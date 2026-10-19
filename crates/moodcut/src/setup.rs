@@ -136,7 +136,9 @@ pub fn install_ffmpeg(progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
 }
 
 /// Unpacks an FFmpeg build archive (.zip / .tar.xz, as downloaded by the
-/// installer or by hand) and puts its ffmpeg + ffprobe into `dest`.
+/// installer or by hand), checks that its ffmpeg runs, and copies the files of
+/// its bin folder into `dest`. Nothing else in `dest` is touched, and a working
+/// FFmpeg there is only replaced once the new one is known to run.
 pub fn install_ffmpeg_archive(archive: &std::path::Path, dest: &std::path::Path, progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
     let tar = sys_tool("tar").context("tar is needed to unpack FFmpeg (built into Windows 10 and later)")?;
     let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -144,41 +146,40 @@ pub fn install_ffmpeg_archive(archive: &std::path::Path, dest: &std::path::Path,
         bail!("{} not found", archive.display());
     }
     progress(format!("unpacking {name}"));
-    let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| crate::config::ensure_data_dir().join("ffmpeg"));
-    std::fs::create_dir_all(&parent).with_context(|| format!("creating {}", parent.display()))?;
-    let out = parent.join(".unpack");
-    let _ = std::fs::remove_dir_all(&out);
-    std::fs::create_dir_all(&out)?;
-    let st = command(&tar).arg("-xf").arg(archive).arg("-C").arg(&out).stdout(Stdio::null()).stderr(Stdio::piped()).status().context("running tar")?;
-    if !st.success() {
-        let _ = std::fs::remove_dir_all(&out);
-        bail!("couldn't unpack {name}");
-    }
-    let Some(bin) = find_ffmpeg_bin(&out, 0) else {
-        let _ = std::fs::remove_dir_all(&out);
-        bail!("{name} has no ffmpeg/ffprobe");
-    };
-    let _ = std::fs::remove_dir_all(dest);
-    if std::fs::rename(&bin, dest).is_err() {
-        // different volume or locked: copy the files instead
-        std::fs::create_dir_all(dest)?;
+    let work = crate::config::cache_dir().join(format!("ffmpeg-unpack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work)?;
+    let result = (|| -> Result<PathBuf> {
+        let st = command(&tar).arg("-xf").arg(archive).arg("-C").arg(&work).stdout(Stdio::null()).stderr(Stdio::piped()).status().context("running tar")?;
+        if !st.success() {
+            bail!("couldn't unpack {name}");
+        }
+        let bin = find_ffmpeg_bin(&work, 0).ok_or_else(|| anyhow::anyhow!("{name} has no ffmpeg/ffprobe"))?;
+        // check the unpacked copy itself before it replaces anything
+        let exe = bin.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+        let out = command(&exe).arg("-version").stdout(Stdio::piped()).stderr(Stdio::null()).output().context("the unpacked FFmpeg doesn't run")?;
+        let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string();
+        if !out.status.success() || !first.starts_with("ffmpeg version") {
+            bail!("the FFmpeg in {name} doesn't run on this computer");
+        }
+        let version = first.split_whitespace().nth(2).unwrap_or("?").to_string();
+        std::fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
         for e in std::fs::read_dir(&bin)?.flatten() {
             if e.path().is_file() {
-                std::fs::copy(e.path(), dest.join(e.file_name()))?;
+                let to = dest.join(e.file_name());
+                std::fs::copy(e.path(), &to).with_context(|| format!("copying to {} (is FFmpeg in use?)", to.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755));
+                }
             }
         }
-    }
-    let _ = std::fs::remove_dir_all(&out);
-    // check the unpacked copy itself (another FFmpeg may come first on PATH)
-    let exe = dest.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
-    let out = command(&exe).arg("-version").stdout(Stdio::piped()).stderr(Stdio::null()).output().context("FFmpeg was unpacked but doesn't run")?;
-    let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string();
-    if !out.status.success() || !first.starts_with("ffmpeg version") {
-        bail!("FFmpeg was unpacked to {} but doesn't run", dest.display());
-    }
-    let version = first.split_whitespace().nth(2).unwrap_or("?").to_string();
-    progress(format!("FFmpeg {version} ready"));
-    Ok(dest.to_path_buf())
+        progress(format!("FFmpeg {version} ready"));
+        Ok(dest.to_path_buf())
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result
 }
 
 /// The folder in an unpacked archive that holds ffmpeg and ffprobe.

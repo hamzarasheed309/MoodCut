@@ -172,6 +172,13 @@ pub struct Master {
     pub limiter: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub afx: Vec<Effect>,
+    /// Last audio effect number used, so ids are never reused.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub afx_seq: u32,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -258,6 +265,9 @@ pub struct Track {
     /// Audio effects applied to the whole track bus.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub afx: Vec<Effect>,
+    /// Last audio effect number used, so ids are never reused.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub afx_seq: u32,
 }
 
 impl Track {
@@ -275,6 +285,7 @@ impl Track {
             pan: 0.0,
             duck: None,
             afx: vec![],
+            afx_seq: 0,
         }
     }
 

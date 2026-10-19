@@ -206,7 +206,10 @@ the graphics card:
   swaps the path in `raster()` for draft renders when a proxy is ready and at most 1.5x upscaled, except for clips with
   decode-time FFmpeg effects (deshake, deinterlace, custom filters), which work in source pixels. Modes: `auto` (heavy
   footage), `all`, `off`; the "Toggle Proxies" switch and the mode are kept in `<data>/settings.json`. A finished proxy
-  emits a `proxy` event so the editor reloads its frame.
+  emits a `proxy` event so the editor reloads its frame. Only long-running sessions (editor, `serve`, `mcp`) build proxies,
+  each into a per-process temporary file; a sidecar records how far the source's video starts after its container start
+  (camcorder `.MTS`), and proxy reads subtract it so proxy and original show the same frame. The decoder itself never
+  starts inside such a gap, because FFmpeg rebases the first frame after a seek to time 0.
 - **Playback resolution.** The monitor's *Auto* picks the smallest of Full, 1/2, 1/4, 1/8 that still covers the monitor's
   device pixels; paused frames are requested at the displayed size (never above the comp size).
 - **Dropped frames.** The preview stream measures render time against frame duration and repeats the last frame when it
@@ -324,8 +327,9 @@ including the renders.
 ## Security and remote access
 
 The server binds to `127.0.0.1` by default. Browser requests must come from the editor's own origin, so other
-websites can't drive it; the one exception is `/mcp` from pages served on this computer (any `localhost` port, such as MCP
-Inspector), which gets CORS headers, while `/api` stays same-origin. Request bodies can be up to 256 MB (HTML graphics
+websites can't drive it; the one exception is `/mcp` from allow-listed pages on this computer (MCP Inspector's default
+`localhost:6274`, plus `MOODCUT_ALLOW_ORIGINS`), which get CORS headers. Other local pages are refused on purpose: HTML
+graphics render on a throwaway `127.0.0.1` port, and their scripts must never reach the editor. `/api` stays same-origin. Request bodies can be up to 256 MB (HTML graphics
 with embedded images). A request counts as remote when it arrives through a proxy or tunnel (forwarding headers,
 or a `Host` that isn't local); remote requests need the secret token, either as a bearer header or in the URL
 path (`/mcp/<token>`, which is how web connectors carry it), and without a configured token remote access is off.

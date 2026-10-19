@@ -534,6 +534,13 @@ impl<'a> Exec<'a> {
         if let Some((id, k, sid)) = self.parse_sub(&spec) {
             let action = a.shift();
             let l = self.relocate(&id)?;
+            {
+                let list = sub_list(self.item_at(l), k);
+                if !list.iter().any(|e| e.id == sid) {
+                    let have: Vec<String> = list.iter().map(|e| format!("{id}.{} {}", e.id, e.kind)).collect();
+                    bail!("{id} has no {} {sid}{}", k.name(), if have.is_empty() { String::new() } else { format!(" (it has: {})", have.join(", ")) });
+                }
+            }
             match action.as_deref().map(|s| s.to_ascii_lowercase()) {
                 Some(ref s) if s == "del" || s == "rm" || s == "delete" || s == "remove" => {
                     sub_list_mut(self.item_mut_at(l), k).retain(|e| e.id != sid);
@@ -598,11 +605,18 @@ impl<'a> Exec<'a> {
 
     /// The effect list of an audio track or the master bus.
     fn bus_afx(&mut self, spec: &str) -> Result<&mut Vec<Effect>> {
+        Ok(self.bus(spec)?.0)
+    }
+
+    /// A bus's effect list and its id counter (ids are never reused, even after a delete).
+    fn bus(&mut self, spec: &str) -> Result<(&mut Vec<Effect>, &mut u32)> {
         let ci = self.ci();
         Ok(if spec.eq_ignore_ascii_case("master") {
-            &mut self.p.comps[ci].master.afx
+            let m = &mut self.p.comps[ci].master;
+            (&mut m.afx, &mut m.afx_seq)
         } else {
-            &mut self.p.comps[ci].track_mut(spec).ok_or_else(|| anyhow!("no track {spec}"))?.afx
+            let t = self.p.comps[ci].track_mut(spec).ok_or_else(|| anyhow!("no track {spec}"))?;
+            (&mut t.afx, &mut t.afx_seq)
         })
     }
 
@@ -623,9 +637,10 @@ impl<'a> Exec<'a> {
             let p = schema::find(def.params, &k).ok_or_else(|| unknown_prop(&def.params.iter().collect::<Vec<_>>(), &k, def.name))?;
             props.insert(p.name.to_string(), Anim::new(schema::clamp_val(p, schema::parse_val(p, &v, cx)?)));
         }
-        let list = self.bus_afx(spec)?;
-        // ids are never reused, even after a delete
-        let n = list.iter().filter_map(|e| e.id.strip_prefix('a').and_then(|x| x.parse::<u32>().ok())).max().unwrap_or(0) + 1;
+        let (list, seq) = self.bus(spec)?;
+        // ids are never reused, even after a delete (the counter remembers)
+        let n = list.iter().filter_map(|e| e.id.strip_prefix('a').and_then(|x| x.parse::<u32>().ok())).max().unwrap_or(0).max(*seq) + 1;
+        *seq = n;
         let fid = format!("a{n}");
         list.push(Effect { id: fid.clone(), kind: def.name.to_string(), on: true, props });
         self.note(format!("+{spec}.{fid} {}", def.name));
@@ -1069,6 +1084,8 @@ impl<'a> Exec<'a> {
                 Some(e) => e.id.clone(),
                 None => self.add_effect(&id, "lumetri", &[], false)?,
             };
+            let mut owned_keys: Option<String> = None;
+            let look_name = preset.as_ref().map(|p| p.to_ascii_lowercase());
             if let Some(p) = &preset {
                 let (lp, ex) = presets::color_preset(p).expect("checked above");
                 // a new look replaces the previous one; hand-made changes stay
@@ -1076,19 +1093,37 @@ impl<'a> Exec<'a> {
                 if !prev.is_empty() {
                     self.unapply_look(&id, &fid, &prev)?;
                 }
+                // the look owns only the values it actually changes: one that already
+                // matched (set by hand) stays the user's when the look goes
+                let cx = self.vctx();
+                let def = schema::effect("lumetri").ok_or_else(|| anyhow!("no lumetri effect"))?;
+                let l = self.relocate(&id)?;
+                let cur = self.item_at(l).fx.iter().find(|e| e.id == fid).cloned();
+                owned_keys = Some(lp.iter().filter(|(k, v)| !cur.as_ref().is_some_and(|e| Self::holds_preset_values(e, def, &[(k, v.clone())], cx))).map(|(k, _)| *k).collect::<Vec<_>>().join(","));
                 params.extend(lp.into_iter().map(|(k, v)| (k.to_string(), v.str())));
                 params.push(("look".into(), p.to_ascii_lowercase()));
                 extras = ex;
             }
             params.extend(kvs.iter().cloned());
-            self.set_sub(&Target { item: id.clone(), sub: Some((SubKind::Fx, fid)) }, &params)?;
+            self.set_sub(&Target { item: id.clone(), sub: Some((SubKind::Fx, fid.clone())) }, &params)?;
+            if let Some(keys) = owned_keys {
+                let l = self.relocate(&id)?;
+                if let Some(e) = self.item_mut_at(l).fx.iter_mut().find(|e| e.id == fid) {
+                    e.props.insert(LOOK_KEYS.into(), Anim::new(Val::S(keys)));
+                }
+            }
             for (ename, eparams) in extras {
                 let l = self.relocate(&id)?;
+                // an effect of that kind is already there (the user's): leave it, and don't claim it
                 if self.item_at(l).fx.iter().any(|e| e.kind == ename) {
                     continue;
                 }
                 let kv: Vec<(String, String)> = eparams.into_iter().map(|(k, v)| (k.to_string(), v.str())).collect();
                 let f = self.add_effect(&id, ename, &kv, false)?;
+                let l = self.relocate(&id)?;
+                if let (Some(e), Some(name)) = (self.item_mut_at(l).fx.iter_mut().find(|e| e.id == f), &look_name) {
+                    e.props.insert(LOOK_OWNER.into(), Anim::new(Val::S(name.clone())));
+                }
                 self.note(format!("+{id}.{f} {ename}"));
             }
         }
@@ -1105,34 +1140,40 @@ impl<'a> Exec<'a> {
         })
     }
 
-    /// Takes a previous look off the lumetri `fid` of `id`: its values go back to
-    /// the defaults where nobody changed them, and its untouched extra effects go.
+    /// Takes a previous look off the lumetri `fid` of `id`: the values it changed
+    /// go back to the defaults where nobody changed them since, and the extra
+    /// effects it added go too if untouched.
     fn unapply_look(&mut self, id: &str, fid: &str, look: &str) -> Result<()> {
         let Some((lp, _)) = presets::color_preset(look) else { return Ok(()) };
         let cx = self.vctx();
         let def = schema::effect("lumetri").ok_or_else(|| anyhow!("no lumetri effect"))?;
         let l = self.relocate(id)?;
         if let Some(e) = self.item_mut_at(l).fx.iter_mut().find(|e| e.id == fid) {
+            let owned: Option<Vec<String>> = e.props.get(LOOK_KEYS).map(|a| a.v.str().split(',').filter(|k| !k.is_empty()).map(|k| k.to_string()).collect());
             for (k, v) in &lp {
-                if Self::holds_preset_values(e, def, &[(k, v.clone())], cx) {
+                let mine = owned.as_ref().is_none_or(|o| o.iter().any(|x| x == k));
+                if mine && Self::holds_preset_values(e, def, &[(k, v.clone())], cx) {
                     e.props.remove(*k);
                 }
             }
             e.props.remove("look");
+            e.props.remove(LOOK_KEYS);
         }
         self.remove_look_extras(id, look)
     }
 
-    /// Removes the extra effects (vignette, grain, curves...) a look added, if unchanged.
+    /// Removes the extra effects (vignette, grain, curves...) that `look` added, if unchanged.
     fn remove_look_extras(&mut self, id: &str, look: &str) -> Result<()> {
         let Some((_, extras)) = presets::color_preset(look) else { return Ok(()) };
         let cx = self.vctx();
+        let look = look.to_ascii_lowercase();
         let l = self.relocate(id)?;
         let mut gone = vec![];
         for (ename, eparams) in &extras {
             let Some(def) = schema::effect(ename) else { continue };
             let it = self.item_at(l);
-            if let Some(e) = it.fx.iter().find(|e| e.kind == def.name && e.props.len() == eparams.len() && Self::holds_preset_values(e, def, eparams, cx)) {
+            let added_by_look = |e: &&Effect| e.props.get(LOOK_OWNER).is_some_and(|a| a.v.str() == look);
+            if let Some(e) = it.fx.iter().filter(added_by_look).find(|e| e.kind == def.name && e.props.len() == eparams.len() + 1 && Self::holds_preset_values(e, def, eparams, cx)) {
                 gone.push(e.id.clone());
             }
         }
@@ -1160,6 +1201,11 @@ impl<'a> Exec<'a> {
         Ok(())
     }
 }
+
+/// Internal effect props (not in any schema; renderers and panels ignore them):
+/// which lumetri values a color look changed, and which effects it added.
+pub(crate) const LOOK_KEYS: &str = "_lookkeys";
+pub(crate) const LOOK_OWNER: &str = "_look";
 
 pub(crate) fn truthy(v: &str) -> bool {
     !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")

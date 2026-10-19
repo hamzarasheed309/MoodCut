@@ -266,15 +266,31 @@ fn real_main() -> Result<()> {
                 return Ok(());
             }
             let port = server::free_port(port);
+            let project_path = project.as_ref().map(|p| std::fs::canonicalize(p).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| p.clone()));
             let eng = load_engine()?;
             if let Some(p) = project {
                 eng.open(&p)?;
             }
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move {
+            let r = rt.block_on(async move {
                 let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: true, tunnel: false, public_url: None };
                 server::serve(eng, opts).await
-            })
+            });
+            // started at the same moment as another MoodCut (two files opened at once):
+            // the other one got the port, so hand this file over to it
+            if let Err(e) = &r {
+                if e.to_string().contains("can't listen") {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    if let Some((p, _)) = server::find_instance(port) {
+                        if let Some(path) = &project_path {
+                            server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path}).to_string()), 3000);
+                        }
+                        server::open_window(&format!("http://127.0.0.1:{p}"));
+                        return Ok(());
+                    }
+                }
+            }
+            r
         }
         Cmd::Serve { port, host, token, public, allow, project } => {
             let eng = load_engine()?;
@@ -303,7 +319,8 @@ fn real_main() -> Result<()> {
                     None => serde_json::json!({"action": "start"}),
                 };
                 eprintln!("MoodCut is already open (port {p}); {} …", if url.is_some() { "setting its public address" } else { "starting a web link for it" });
-                let (_, text) = server::local_request(p, "POST", "/api/tunnel", Some(&body.to_string()), 3000).ok_or_else(|| anyhow::anyhow!("the open MoodCut didn't answer"))?;
+                // the first start may download cloudflared and wait up to 45 s for the tunnel
+                let (_, text) = server::local_request(p, "POST", "/api/tunnel", Some(&body.to_string()), 15000).ok_or_else(|| anyhow::anyhow!("the open MoodCut didn't answer"))?;
                 let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
                 let connector = v["connector"].as_str().ok_or_else(|| anyhow::anyhow!("{}", v["error"].as_str().unwrap_or("couldn't start the web link")))?;
                 println!("{}", tunnel::instructions(connector));

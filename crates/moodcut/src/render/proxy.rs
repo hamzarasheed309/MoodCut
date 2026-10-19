@@ -55,7 +55,9 @@ impl Mode {
 pub enum State {
     Queued,
     Building(f32),
-    Ready { path: String, w: u32, h: u32 },
+    /// `offset`: seconds the source's video starts after its container start;
+    /// the proxy's timeline starts with the video, so reads subtract it.
+    Ready { path: String, w: u32, h: u32, offset: f64 },
     Failed(String),
     /// Checked: there is no proxy (remembered so previews don't look on disk every frame).
     Absent,
@@ -64,6 +66,8 @@ pub enum State {
 struct Job {
     key: String,
     media: Media,
+    /// The cancel generation when the job was queued (a newer one means cancelled).
+    gen: u64,
 }
 
 pub struct Proxies {
@@ -76,7 +80,11 @@ pub struct Proxies {
     queue: Mutex<VecDeque<Job>>,
     wake: Condvar,
     worker: OnceLock<()>,
-    cancel: AtomicBool,
+    /// Bumped by cancel_all: jobs from an older generation stop.
+    cancel_gen: AtomicU64,
+    /// Proxies are made only by interactive sessions (editor, server, AI apps),
+    /// never by one-shot commands that would exit mid-build.
+    active: AtomicBool,
     /// Bumped whenever what previews show may change (a proxy finished, the toggle flipped).
     gen: AtomicU64,
     on_change: OnceLock<Box<dyn Fn(String) + Send + Sync>>,
@@ -96,7 +104,7 @@ pub fn heavy(m: &Media) -> bool {
     let px = m.w as u64 * m.h as u64;
     let codec = m.codec.to_ascii_lowercase();
     let hard_codec = ["hevc", "h265", "av1", "vp9", "prores", "dnxhd", "cfhd", "mjpeg2000", "jpeg2000"].iter().any(|c| codec.contains(c));
-    px > 1920 * 1088 || (hard_codec && px >= 1280 * 720) || (m.fps > 50.0 && px >= 1920 * 1080)
+    px > 1920 * 1088 || (hard_codec && px >= 1280 * 720) || (m.fps >= 49.9 && px >= 1920 * 1080)
 }
 
 /// Proxy frame size: the long edge capped at `PROXY_EDGE`, even dimensions.
@@ -121,7 +129,8 @@ impl Proxies {
             queue: Mutex::new(VecDeque::new()),
             wake: Condvar::new(),
             worker: OnceLock::new(),
-            cancel: AtomicBool::new(false),
+            cancel_gen: AtomicU64::new(0),
+            active: AtomicBool::new(false),
             gen: AtomicU64::new(0),
             on_change: OnceLock::new(),
         })
@@ -130,6 +139,22 @@ impl Proxies {
     /// Called with a short message whenever a proxy finishes or settings change.
     pub fn set_on_change(&self, f: Box<dyn Fn(String) + Send + Sync>) {
         let _ = self.on_change.set(f);
+    }
+
+    /// Lets this process make proxies (the editor, `serve`, `mcp`), and clears
+    /// half-written proxies left by a process that quit mid-build.
+    pub fn set_active(&self) {
+        if self.active.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if let Ok(rd) = std::fs::read_dir(&self.dir) {
+            for e in rd.flatten() {
+                let stale = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 600);
+                if e.file_name().to_string_lossy().ends_with(".part.mp4") && stale {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
     }
 
     fn changed(&self, msg: String) {
@@ -175,24 +200,37 @@ impl Proxies {
             return (!matches!(s, State::Absent)).then(|| s.clone());
         }
         let f = self.file(m);
-        let s = if eligible(m) && f.metadata().map(|x| x.len() > 1024).unwrap_or(false) {
-            let (w, h) = proxy_size(m);
-            State::Ready { path: f.to_string_lossy().to_string(), w, h }
-        } else {
-            State::Absent
+        // a proxy counts only with its timing sidecar (written last)
+        let offset = std::fs::read_to_string(f.with_extension("json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v["offset"].as_f64());
+        let s = match offset {
+            Some(offset) if eligible(m) && f.metadata().map(|x| x.len() > 1024).unwrap_or(false) => {
+                let (w, h) = proxy_size(m);
+                State::Ready { path: f.to_string_lossy().to_string(), w, h, offset }
+            }
+            _ => State::Absent,
         };
         self.state.lock().insert(k, s.clone());
         (!matches!(s, State::Absent)).then_some(s)
     }
 
-    /// The file previews should decode for `m` at `dw` px wide: the proxy when
-    /// proxies are on, one is ready and it's big enough (at most 1.5x upscaled).
-    pub fn for_preview(&self, m: &Media, dw: u32) -> Option<String> {
+    /// The file previews should decode for `m` at `dw` px wide, and the seconds to
+    /// subtract from source times when reading it: the proxy when proxies are on,
+    /// one is ready (and still on disk) and it's big enough (at most 1.5x upscaled).
+    pub fn for_preview(&self, m: &Media, dw: u32) -> Option<(String, f64)> {
         if !self.enabled() || !eligible(m) {
             return None;
         }
         match self.state(m)? {
-            State::Ready { path, w, .. } if dw as f64 <= w as f64 * 1.5 => Some(path),
+            State::Ready { path, w, offset, .. } if dw as f64 <= w as f64 * 1.5 => {
+                if Path::new(&path).is_file() {
+                    Some((path, offset))
+                } else {
+                    // deleted behind our back (cache cleared): back to the original
+                    self.state.lock().insert(key(m), State::Absent);
+                    self.changed(format!("proxy of {} is gone; previews use the original", m.name));
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -200,6 +238,9 @@ impl Proxies {
     /// Queues proxies: `force` makes one for any eligible video, otherwise the mode decides.
     /// Returns how many were queued.
     pub fn request(self: &Arc<Self>, media: &[Media], force: bool) -> usize {
+        if !self.active.load(Ordering::Relaxed) {
+            return 0;
+        }
         let mode = self.mode();
         let mut n = 0;
         for m in media {
@@ -212,11 +253,10 @@ impl Proxies {
             }
             let k = key(m);
             self.state.lock().insert(k.clone(), State::Queued);
-            self.queue.lock().push_back(Job { key: k, media: m.clone() });
+            self.queue.lock().push_back(Job { key: k, media: m.clone(), gen: self.cancel_gen.load(Ordering::Relaxed) });
             n += 1;
         }
         if n > 0 {
-            self.cancel.store(false, Ordering::Relaxed);
             self.start_worker();
             self.wake.notify_one();
         }
@@ -230,7 +270,11 @@ impl Proxies {
         for j in q.drain(..) {
             st.remove(&j.key);
         }
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn cancelled(&self, job: &Job) -> bool {
+        self.cancel_gen.load(Ordering::Relaxed) != job.gen
     }
 
     /// Deletes the proxies of these media (they are rebuilt only when asked or by the mode).
@@ -241,6 +285,7 @@ impl Proxies {
             if std::fs::remove_file(&f).is_ok() {
                 n += 1;
             }
+            let _ = std::fs::remove_file(f.with_extension("json"));
             self.state.lock().remove(&key(m));
         }
         if n > 0 {
@@ -301,7 +346,10 @@ impl Proxies {
                 }
                 q.pop_front().unwrap()
             };
-            self.cancel.store(false, Ordering::Relaxed);
+            if self.cancelled(&job) {
+                self.state.lock().remove(&job.key);
+                continue;
+            }
             let r = self.build(&job);
             let msg = match &r {
                 Ok(_) => format!("proxy ready for {}", job.media.name),
@@ -309,8 +357,7 @@ impl Proxies {
             };
             let st = match r {
                 Ok(s) => s,
-                Err(e) if self.cancel.load(Ordering::Relaxed) => {
-                    let _ = e;
+                Err(_) if self.cancelled(&job) => {
                     self.state.lock().remove(&job.key);
                     continue;
                 }
@@ -326,8 +373,10 @@ impl Proxies {
         self.ff.need()?;
         std::fs::create_dir_all(&self.dir)?;
         let out = self.file(m);
-        let part = out.with_extension("part.mp4");
+        // one name per process: two MoodCuts never write the same file
+        let part = out.with_extension(format!("{}.part.mp4", std::process::id()));
         let (w, h) = proxy_size(m);
+        let offset = self.ff.video_start_offset(&m.path);
         let codec: Vec<&str> = if self.ff.has_encoder("libx264") {
             vec!["-c:v", "libx264", "-preset", "veryfast", "-tune", "fastdecode", "-crf", "23", "-g", "15", "-bf", "0", "-pix_fmt", "yuv420p"]
         } else {
@@ -350,7 +399,7 @@ impl Proxies {
             });
             let out = BufReader::new(child.stdout.take().unwrap());
             for line in out.lines().map_while(Result::ok) {
-                if self.cancel.load(Ordering::Relaxed) {
+                if self.cancelled(job) {
                     let _ = child.kill();
                     break;
                 }
@@ -368,7 +417,7 @@ impl Proxies {
         if !ok && err.contains("fps_mode") {
             (ok, err) = attempt(&["-vsync", "passthrough"])?;
         }
-        if self.cancel.load(Ordering::Relaxed) {
+        if self.cancelled(job) {
             let _ = std::fs::remove_file(&part);
             anyhow::bail!("cancelled");
         }
@@ -378,7 +427,8 @@ impl Proxies {
             anyhow::bail!("{last}");
         }
         std::fs::rename(&part, &out)?;
-        Ok(State::Ready { path: out.to_string_lossy().to_string(), w, h })
+        std::fs::write(out.with_extension("json"), serde_json::json!({"offset": offset, "source": m.path}).to_string())?;
+        Ok(State::Ready { path: out.to_string_lossy().to_string(), w, h, offset })
     }
 }
 
@@ -397,6 +447,7 @@ mod tests {
         assert!(heavy(&media(1920, 1080, "h264", 60.0)));
         assert!(!heavy(&media(1920, 1080, "h264", 30.0)));
         assert!(!heavy(&media(1280, 720, "h264", 60.0)));
+        assert!(heavy(&media(1920, 1080, "h264", 50.0)), "PAL 1080p50 counts as high frame rate");
         assert_eq!(proxy_size(&media(3840, 2160, "h264", 30.0)), (1280, 720));
         assert_eq!(proxy_size(&media(2160, 3840, "h264", 30.0)), (720, 1280));
         assert_eq!(proxy_size(&media(1280, 720, "hevc", 30.0)), (1280, 720));

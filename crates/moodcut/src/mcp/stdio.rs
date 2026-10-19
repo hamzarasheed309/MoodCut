@@ -61,6 +61,7 @@ async fn write_line(stdout: &mut tokio::io::Stdout, v: &str) -> Result<()> {
 /// Starts MoodCut's own engine (with the web GUI on a free port), opening `path` if given.
 fn embedded(port: u16, with_http: bool, path: Option<&str>) -> Arc<Mcp> {
     let eng = Engine::new(Ff::find().unwrap_or_else(|_| Ff::missing()));
+    eng.proxies.set_active();
     if let Some(p) = path.filter(|p| std::path::Path::new(p).is_file()) {
         if let Err(e) = eng.open(p) {
             eprintln!("moodcut: couldn't reopen {p}: {e:#}");
@@ -88,7 +89,12 @@ async fn handle_embedded(mcp: &Arc<Mcp>, line: &str, stdout: &mut tokio::io::Std
         }
     };
     let m = mcp.clone();
-    let resp = tokio::task::spawn_blocking(move || m.handle(&msg)).await?;
+    let id = msg.get("id").cloned();
+    let resp = match tokio::task::spawn_blocking(move || m.handle(&msg)).await {
+        Ok(r) => r,
+        // keep serving: answer this request with an error instead of exiting
+        Err(e) => id.map(|id| serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": format!("internal error: {e}")}})),
+    };
     if let Some(r) = resp {
         write_line(stdout, &serde_json::to_string(&r)?).await?;
     }
@@ -137,8 +143,9 @@ pub async fn run(port: u16, with_http: bool) -> Result<()> {
                 // remember the open project, to carry on with it if the editor closes
                 if line.contains("\"tools/call\"") {
                     if let Ok(Ok((200, _, b))) = tokio::time::timeout(std::time::Duration::from_millis(500), local_http(p, "GET", "/api/ping", None, None)).await {
+                        // the editor's answer is the truth: null = an unsaved project
                         if let Ok(v) = serde_json::from_str::<Value>(&b) {
-                            target = Some((p, v["path"].as_str().map(|s| s.to_string()).or(last_path)));
+                            target = Some((p, v["path"].as_str().map(|s| s.to_string())));
                         }
                     }
                 }
