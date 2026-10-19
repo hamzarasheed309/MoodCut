@@ -1,6 +1,8 @@
 //! MCP stdio transport. If a MoodCut instance (GUI/server) is already running
 //! locally, stdio is proxied to it so edits show up live in the open editor;
-//! otherwise an embedded engine is started (plus the local web GUI).
+//! otherwise an embedded engine is started (plus the local web GUI). When the
+//! editor closes mid-conversation, the proxy switches to an embedded engine
+//! with the same project instead of failing, so the AI app never gets stuck.
 
 use super::Mcp;
 use crate::engine::Engine;
@@ -34,7 +36,7 @@ pub async fn local_http(port: u16, method: &str, path: &str, body: Option<&str>,
     Ok((status, headers, body))
 }
 
-fn dechunk(s: &str) -> String {
+pub fn dechunk(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
     loop {
@@ -49,87 +51,105 @@ fn dechunk(s: &str) -> String {
     out
 }
 
-async fn is_moodcut(port: u16) -> bool {
-    match tokio::time::timeout(std::time::Duration::from_millis(600), local_http(port, "GET", "/api/ping", None, None)).await {
-        Ok(Ok((200, _, body))) => body.contains("moodcut"),
-        _ => false,
+async fn write_line(stdout: &mut tokio::io::Stdout, v: &str) -> Result<()> {
+    stdout.write_all(v.trim().as_bytes()).await?;
+    stdout.write_all(b"\n").await?;
+    stdout.flush().await?;
+    Ok(())
+}
+
+/// Starts MoodCut's own engine (with the web GUI on a free port), opening `path` if given.
+fn embedded(port: u16, with_http: bool, path: Option<&str>) -> Arc<Mcp> {
+    let eng = Engine::new(Ff::find().unwrap_or_else(|_| Ff::missing()));
+    if let Some(p) = path.filter(|p| std::path::Path::new(p).is_file()) {
+        if let Err(e) = eng.open(p) {
+            eprintln!("moodcut: couldn't reopen {p}: {e:#}");
+        }
     }
+    if with_http {
+        let e2 = eng.clone();
+        let port = crate::server::free_port(port);
+        tokio::spawn(async move {
+            let opts = crate::server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: false, tunnel: false, public_url: None };
+            if let Err(err) = crate::server::serve(e2, opts).await {
+                eprintln!("moodcut: web GUI not started ({err})");
+            }
+        });
+    }
+    Arc::new(Mcp::new(Ok(eng)))
+}
+
+async fn handle_embedded(mcp: &Arc<Mcp>, line: &str, stdout: &mut tokio::io::Stdout) -> Result<()> {
+    let msg: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}});
+            return write_line(stdout, &err.to_string()).await;
+        }
+    };
+    let m = mcp.clone();
+    let resp = tokio::task::spawn_blocking(move || m.handle(&msg)).await?;
+    if let Some(r) = resp {
+        write_line(stdout, &serde_json::to_string(&r)?).await?;
+    }
+    Ok(())
 }
 
 pub async fn run(port: u16, with_http: bool) -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut lines = BufReader::new(stdin).lines();
     let mut stdout = tokio::io::stdout();
-    if is_moodcut(port).await {
-        eprintln!("moodcut: attached to running instance on port {port}");
-        let mut session: Option<String> = None;
-        while let Some(line) = lines.next_line().await? {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match local_http(port, "POST", "/mcp", Some(&line), session.as_deref()).await {
-                Ok((code, headers, body)) => {
-                    if let Some((_, v)) = headers.iter().find(|(k, _)| k == "mcp-session-id") {
-                        session = Some(v.clone());
-                    }
-                    if code == 202 || body.trim().is_empty() {
-                        continue;
-                    }
+    let found = tokio::task::spawn_blocking(move || crate::server::find_instance(port)).await.ok().flatten();
+    // proxying to an open editor until it goes away; then our own engine
+    let mut target: Option<(u16, Option<String>)> = found.map(|(p, v)| (p, v["path"].as_str().map(|s| s.to_string())));
+    let mut local: Option<Arc<Mcp>> = None;
+    match &target {
+        Some((p, _)) => eprintln!("moodcut: attached to the MoodCut editor on port {p}"),
+        None => local = Some(embedded(port, with_http, None)),
+    }
+    let mut session: Option<String> = None;
+    let mut first = true;
+    while let Some(raw) = lines.next_line().await? {
+        // a byte-order mark from some Windows shells would break the first message
+        let line = if first { raw.trim_start_matches('\u{feff}').to_string() } else { raw };
+        first = false;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(mcp) = &local {
+            handle_embedded(mcp, &line, &mut stdout).await?;
+            continue;
+        }
+        let (p, last_path) = target.clone().expect("proxy target");
+        match local_http(p, "POST", "/mcp", Some(&line), session.as_deref()).await {
+            Ok((code, headers, body)) => {
+                if let Some((_, v)) = headers.iter().find(|(k, _)| k == "mcp-session-id") {
+                    session = Some(v.clone());
+                }
+                if code != 202 && !body.trim().is_empty() {
                     let payload = if body.starts_with("event:") || body.starts_with("data:") {
                         body.lines().filter_map(|l| l.strip_prefix("data:")).map(|d| d.trim()).collect::<Vec<_>>().join("\n")
                     } else {
                         body
                     };
-                    stdout.write_all(payload.trim().as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
+                    write_line(&mut stdout, &payload).await?;
                 }
-                Err(e) => {
-                    // the GUI went away: answer with an error so the client isn't stuck
-                    if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                        if let Some(id) = v.get("id") {
-                            let err = serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": format!("MoodCut window closed: {e}. Restart the MCP server.")}});
-                            stdout.write_all(format!("{err}\n").as_bytes()).await?;
-                            stdout.flush().await?;
+                // remember the open project, to carry on with it if the editor closes
+                if line.contains("\"tools/call\"") {
+                    if let Ok(Ok((200, _, b))) = tokio::time::timeout(std::time::Duration::from_millis(500), local_http(p, "GET", "/api/ping", None, None)).await {
+                        if let Ok(v) = serde_json::from_str::<Value>(&b) {
+                            target = Some((p, v["path"].as_str().map(|s| s.to_string()).or(last_path)));
                         }
                     }
                 }
             }
-        }
-        return Ok(());
-    }
-    let eng: Result<Arc<Engine>, String> = Ok(Engine::new(Ff::find().unwrap_or_else(|_| Ff::missing())));
-    if with_http {
-        if let Ok(e) = &eng {
-            let e2 = e.clone();
-            tokio::spawn(async move {
-                let opts = crate::server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: false, tunnel: false, public_url: None };
-                if let Err(err) = crate::server::serve(e2, opts).await {
-                    eprintln!("moodcut: web GUI not started ({err})");
-                }
-            });
-        }
-    }
-    let mcp = Arc::new(Mcp::new(eng));
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let msg: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
             Err(e) => {
-                let err = serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": format!("parse error: {e}")}});
-                stdout.write_all(format!("{err}\n").as_bytes()).await?;
-                stdout.flush().await?;
-                continue;
+                // the editor went away: continue with our own engine and the same project
+                eprintln!("moodcut: the editor on port {p} closed ({e}); continuing with MoodCut's own engine{}", last_path.as_deref().map(|x| format!(" and {x}")).unwrap_or_default());
+                let mcp = embedded(port, with_http, last_path.as_deref());
+                handle_embedded(&mcp, &line, &mut stdout).await?;
+                local = Some(mcp);
             }
-        };
-        let m = mcp.clone();
-        let resp = tokio::task::spawn_blocking(move || m.handle(&msg)).await?;
-        if let Some(r) = resp {
-            stdout.write_all(serde_json::to_string(&r)?.as_bytes()).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
         }
     }
     Ok(())

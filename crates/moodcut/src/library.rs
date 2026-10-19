@@ -252,7 +252,7 @@ impl Engine {
         }
         let out = dir.join(&name);
         if !out.exists() {
-            let curl = crate::setup::which("curl").ok_or_else(|| anyhow!("downloading needs curl (built into Windows 10+)"))?;
+            let curl = crate::setup::sys_tool("curl").ok_or_else(|| anyhow!("downloading needs curl (built into Windows 10+)"))?;
             let tmp = dir.join(format!(".{name}.part"));
             let st = crate::render::ffmpeg::command(&curl).args(["-L", "--fail", "--silent", "--show-error", "--max-time", "1800", "-o"]).arg(&tmp).arg(url).stdout(Stdio::null()).stderr(Stdio::piped()).output()?;
             if !st.status.success() {
@@ -490,7 +490,7 @@ impl Engine {
                     "-i".into(),
                     m.path.clone(),
                     "-filter_complex".into(),
-                    format!("aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=0x9b8cff:scale=sqrt"),
+                    format!("aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=0xe76c33:scale=sqrt"),
                     "-frames:v".into(),
                     "1".into(),
                     "-f".into(),

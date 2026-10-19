@@ -74,7 +74,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         ff_setup: Arc::new(Mutex::new((false, String::new(), None))),
     });
     let app = Router::new()
-        .route("/api/ping", get(|| async { Json(json!({"app": "moodcut", "version": crate::VERSION})) }))
+        .route("/api/ping", get(api_ping))
         .route("/api/state", get(api_state))
         .route("/api/edit", post(api_edit))
         .route("/api/project", post(api_project))
@@ -100,13 +100,18 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/layer", get(api_layer))
         .route("/api/tunnel", post(api_tunnel))
         .route("/api/setup/ffmpeg", post(api_setup_ffmpeg))
+        .route("/api/ai/clients", get(api_ai_clients))
+        .route("/api/ai/install", post(api_ai_install))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
         .layer(middleware::from_fn_with_state(st.clone(), guard))
+        // HTML graphics with embedded images, big imports and scripts are fine
+        .layer(axum::extract::DefaultBodyLimit::max(256 << 20))
         .with_state(st.clone());
     let addr = format!("{}:{}", o.host, o.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| anyhow::anyhow!("can't listen on {addr}: {e}"))?;
+    write_instance(o.port);
     let url = format!("http://127.0.0.1:{}", o.port);
     eprintln!("MoodCut {} — GUI {url}  |  MCP {url}/mcp", crate::VERSION);
     if let Some(t) = &o.token {
@@ -192,21 +197,35 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
     if remote && st.token.is_none() && remote_tok.is_none() {
         return (StatusCode::FORBIDDEN, "remote access is off: start it with `moodcut connect` (or Connect AI > web link)").into_response();
     }
-    // browsers: only this app's own local pages may call it without a token
-    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+    // browsers: only this app's own local pages may call it without a token;
+    // MCP also answers browser tools on this computer (MCP Inspector, local web clients)
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let mcp_path = path == "/mcp" || path.starts_with("/mcp/");
+    let mut cors_origin: Option<String> = None;
+    if let Some(origin) = &origin {
         let o_host = origin.split("://").nth(1).unwrap_or("").trim_end_matches('/');
         let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
         let same_local = local_host(o_host) && o_host.eq_ignore_ascii_case(host);
         let token_given = matches(&st.token) || matches(&remote_tok);
-        if !same_local && !token_given {
+        let local_tool = mcp_path && !remote && local_host(o_host);
+        if !same_local && !token_given && !local_tool {
             return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
         }
+        if mcp_path && !same_local {
+            cors_origin = Some(origin.clone());
+        }
+    }
+    if req.method() == axum::http::Method::OPTIONS && mcp_path {
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        add_cors(&mut r, cors_origin.as_deref());
+        return r;
     }
     let public_path = !remote && (path == "/api/ping" || (!path.starts_with("/api/") && !path.starts_with("/mcp")));
     if !authed && !public_path {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "missing or invalid token"}))).into_response();
     }
     let mut resp = next.run(req).await;
+    add_cors(&mut resp, cors_origin.as_deref());
     if let Some(qt) = query_tok {
         if matches(&Some(qt.clone())) && (st.token.as_deref() == Some(qt.as_str()) || remote_tok.as_deref() == Some(qt.as_str())) {
             if let Ok(v) = HeaderValue::from_str(&format!("mc_token={qt}; Path=/; SameSite=Strict; HttpOnly")) {
@@ -215,6 +234,106 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
         }
     }
     resp
+}
+
+/// CORS headers for MCP requests from browser tools on this computer.
+fn add_cors(r: &mut Response, origin: Option<&str>) {
+    let Some(o) = origin.and_then(|o| HeaderValue::from_str(o).ok()) else { return };
+    let h = r.headers_mut();
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, DELETE, OPTIONS"));
+    h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type, authorization, mcp-session-id, mcp-protocol-version, last-event-id"));
+    h.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("mcp-session-id"));
+    h.insert(header::VARY, HeaderValue::from_static("origin"));
+}
+
+/// Where the running editor listens, so `moodcut mcp` and a second launch can find it.
+fn instance_file() -> std::path::PathBuf {
+    crate::config::ensure_data_dir().join("instance.json")
+}
+
+fn write_instance(port: u16) {
+    let _ = std::fs::write(instance_file(), json!({"port": port, "pid": std::process::id(), "version": crate::VERSION}).to_string());
+}
+
+/// The port in the instance file (may be stale: check it with `running_instance`).
+pub fn instance_port() -> Option<u16> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(instance_file()).ok()?).ok()?;
+    v["port"].as_u64().map(|p| p as u16)
+}
+
+/// Tiny blocking HTTP request to a local port (no async runtime needed).
+pub fn local_request(port: u16, method: &str, path: &str, body: Option<&str>, timeout_ms: u64) -> Option<(u16, String)> {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let t = std::time::Duration::from_millis(timeout_ms);
+    let mut s = std::net::TcpStream::connect_timeout(&addr, t).ok()?;
+    s.set_read_timeout(Some(t * 10)).ok()?;
+    s.set_write_timeout(Some(t)).ok()?;
+    let body = body.unwrap_or("");
+    let req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    s.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    let _ = s.read_to_end(&mut buf);
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let (head, rest) = text.split_once("\r\n\r\n")?;
+    let code = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let chunked = head.to_ascii_lowercase().contains("transfer-encoding: chunked");
+    Some((code, if chunked { crate::mcp::stdio::dechunk(rest) } else { rest.to_string() }))
+}
+
+/// `/api/ping` of a MoodCut listening on `port`, if one is.
+pub fn running_instance(port: u16) -> Option<Value> {
+    let (code, body) = local_request(port, "GET", "/api/ping", None, 400)?;
+    let v: Value = serde_json::from_str(&body).ok()?;
+    (code == 200 && v["app"] == "moodcut").then_some(v)
+}
+
+/// A MoodCut already running here: on `port`, or where the instance file says.
+pub fn find_instance(port: u16) -> Option<(u16, Value)> {
+    if let Some(v) = running_instance(port) {
+        return Some((port, v));
+    }
+    let p = instance_port().filter(|p| *p != port)?;
+    running_instance(p).map(|v| (p, v))
+}
+
+/// `port` if it is free, else the next free one (up to 20 higher).
+pub fn free_port(port: u16) -> u16 {
+    (port..port.saturating_add(20)).find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()).unwrap_or(port)
+}
+
+async fn api_ping(State(st): State<St>) -> Response {
+    let path = st.eng.st.read().path.as_ref().map(|p| p.to_string_lossy().to_string());
+    Json(json!({"app": "moodcut", "version": crate::VERSION, "port": st.port, "path": path})).into_response()
+}
+
+/// AI apps on this computer and whether MoodCut is connected to them.
+async fn api_ai_clients(headers: HeaderMap) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "only from this computer");
+    }
+    let list = blocking(crate::clients::statuses).await;
+    Json(json!({"ok": true, "clients": list, "command": crate::clients::server_command().ok()})).into_response()
+}
+
+/// One click in the editor: register (or remove) MoodCut in an AI app's settings.
+async fn api_ai_install(headers: HeaderMap, Json(a): Json<Value>) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "AI apps can only be connected from this computer");
+    }
+    let id = a["client"].as_str().unwrap_or("").to_string();
+    let remove = a["remove"].as_bool().unwrap_or(false);
+    let r = blocking(move || -> anyhow::Result<(String, Value)> {
+        let c = crate::clients::find(&id).ok_or_else(|| anyhow::anyhow!("unknown AI app '{id}'"))?;
+        let msg = crate::clients::apply(c, remove)?;
+        Ok((msg, json!(crate::clients::status(c))))
+    })
+    .await;
+    match r {
+        Ok((msg, status)) => Json(json!({"ok": true, "text": msg, "client": status})).into_response(),
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
 }
 
 async fn static_file(req: Request) -> Response {
@@ -671,6 +790,15 @@ async fn api_tunnel(State(st): State<St>, headers: HeaderMap, Json(a): Json<Valu
             *st2.tunnel.lock() = None;
             *st2.public_url.write() = None;
             return Ok(json!({"ok": true, "running": false}));
+        }
+        if action == "url" {
+            // your own public address (named tunnel, Tailscale Funnel, reverse proxy)
+            let u = a["url"].as_str().map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("https://") || u.starts_with("http://")).ok_or_else(|| anyhow::anyhow!("url must start with https://"))?;
+            if st2.remote_token.read().is_none() {
+                *st2.remote_token.write() = Some(crate::tunnel::persistent_token());
+            }
+            *st2.tunnel.lock() = None;
+            *st2.public_url.write() = Some(u);
         }
         if action == "start" {
             let running = st2.tunnel.lock().as_mut().map(|t| t.running()).unwrap_or(false);

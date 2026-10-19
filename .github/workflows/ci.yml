@@ -69,6 +69,22 @@ jobs:
         run: |
           target/release/moodcut graphic examples/graphics/kinetic-title.html -o title.mov --dur 2 --size 1280x720 --var title="CI TEST" --var sub=ok
           test "$(ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 title.mov)" -eq 60
+      - name: AI apps get connected and disconnected (fake home)
+        run: |
+          home="$RUNNER_TEMP/aihome"; mkdir -p "$home/.cursor" "$home/.config/Claude"
+          echo '{"mcpServers": {"other": {"command": "x"}},}' > "$home/.config/Claude/claude_desktop_config.json"
+          HOME="$home" target/release/moodcut install-ai
+          grep -q '"other"' "$home/.config/Claude/claude_desktop_config.json"
+          grep -q '"moodcut"' "$home/.cursor/mcp.json"
+          HOME="$home" target/release/moodcut uninstall-ai
+          ! grep -q '"moodcut"' "$home/.cursor/mcp.json"
+      - name: Package the Linux build
+        run: tar -czf moodcut-linux-x64.tar.gz -C target/release moodcut && ls -l moodcut-linux-x64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moodcut-linux-x64
+          path: moodcut-linux-x64.tar.gz
+          if-no-files-found: error
 
   windows:
     name: Build (Windows x64)
@@ -125,11 +141,50 @@ jobs:
           Write-Host "av1 preset exit code: $LASTEXITCODE"
           & $mc render smoke.mcut -p xml -o smoke.xml
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) { $errs | Format-List; exit 1 }
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc /Qp "/DAppVersion=$version" installer\moodcut.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Item dist\MoodCut-Setup-x64.exe | Format-List Name, Length
+      - name: Installer installs, sets everything up and uninstalls cleanly
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "MoodCut Test"
+          $log = Join-Path $env:RUNNER_TEMP "setup.log"
+          $p = Start-Process dist\MoodCut-Setup-x64.exe -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"", "/TASKS=addtopath,assoc,ffmpeg,connectai", "/LOG=`"$log`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content $log -Tail 80; exit 1 }
+          if (-not (Test-Path "$dir\moodcut.exe")) { Get-Content $log -Tail 80; Write-Error "moodcut.exe missing"; exit 1 }
+          if (-not (Test-Path "$dir\ffmpeg\bin\ffmpeg.exe")) { Get-Content $log -Tail 80; Write-Error "FFmpeg was not installed"; exit 1 }
+          & "$dir\moodcut.exe" doctor
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if ($userPath -notlike "*$dir*") { Write-Error "PATH was not updated"; exit 1 }
+          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\MoodCut.Project\shell\open\command").'(default)'
+          Write-Host "open command: $cmd"
+          if ($cmd -notlike "*moodcut.exe*gui*") { Write-Error "file association missing"; exit 1 }
+          Start-Process "$dir\unins000.exe" -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait
+          # the uninstaller finishes from a temporary copy of itself
+          for ($i = 0; $i -lt 30 -and (Test-Path "$dir\moodcut.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$dir\moodcut.exe") { Write-Error "moodcut.exe left behind"; exit 1 }
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if ($userPath -like "*$dir*") { Write-Error "PATH entry left behind"; exit 1 }
+          if (Test-Path "HKCU:\Software\Classes\MoodCut.Project") { Write-Error "file association left behind"; exit 1 }
+          Write-Host "install + uninstall OK"
       - uses: actions/upload-artifact@v4
         with:
           name: moodcut-windows-x64
           path: |
             target/release/moodcut.exe
+            dist/MoodCut-Setup-x64.exe
             README.md
             LICENSE
           if-no-files-found: error
@@ -149,10 +204,11 @@ jobs:
         with:
           name: moodcut-windows-x64
           path: artifact
-      - name: Commit release/windows-x64/moodcut.exe
+      - name: Commit release/windows-x64 (exe and installer)
         run: |
           mkdir -p release/windows-x64
           cp artifact/target/release/moodcut.exe release/windows-x64/moodcut.exe
+          cp artifact/dist/MoodCut-Setup-x64.exe release/windows-x64/MoodCut-Setup-x64.exe
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           {
             echo "MoodCut $version for Windows x64"
@@ -161,6 +217,8 @@ jobs:
             echo "built at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "sha256: $(sha256sum release/windows-x64/moodcut.exe | cut -d' ' -f1)"
             echo "size: $(stat -c %s release/windows-x64/moodcut.exe) bytes"
+            echo "installer sha256: $(sha256sum release/windows-x64/MoodCut-Setup-x64.exe | cut -d' ' -f1)"
+            echo "installer size: $(stat -c %s release/windows-x64/MoodCut-Setup-x64.exe) bytes"
           } > release/windows-x64/BUILD.txt
           cat release/windows-x64/BUILD.txt
           git config user.name "github-actions[bot]"
@@ -182,9 +240,18 @@ jobs:
         with:
           name: moodcut-windows-x64
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: moodcut-linux-x64
+          path: linux
       - name: Package
-        run: cd dist && zip -r ../moodcut-${{ github.ref_name }}-windows-x64.zip .
+        run: |
+          mkdir -p out
+          cp dist/dist/MoodCut-Setup-x64.exe out/MoodCut-Setup-x64.exe
+          (cd dist && zip -r ../out/moodcut-${{ github.ref_name }}-windows-x64-portable.zip target/release/moodcut.exe README.md LICENSE)
+          cp linux/moodcut-linux-x64.tar.gz out/moodcut-linux-x64.tar.gz
+          (cd out && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
       - uses: softprops/action-gh-release@v2
         with:
-          files: moodcut-${{ github.ref_name }}-windows-x64.zip
+          files: out/*
           generate_release_notes: true

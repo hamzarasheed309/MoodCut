@@ -97,8 +97,8 @@ PROPERTIES & MOTION
  parent <ids> <parent|none>   matte <id> <srcLayer> [alpha|alphainv|luma|lumainv]
 LOOK
  fx <ids> <effect> [params]   fx <id.f1> param=v | del | on | off | up | down   fx <id> clear
- afx <id|A1|master> <audioEffect> [params]
- color <ids> <preset> | color <ids> exposure=.3 contrast=15 temp=-10 sat=110   lut <ids> file.cube [amount]
+ afx <id|A1|master> <audioEffect> [params]   afx <id.a1|A1.a1|master.a1> param=v | del | on | off | up | down   afx <id|A1|master> clear
+ color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 | color <ids> none   lut <ids> file.cube [amount]
  mask <id> <rect|ellipse|path|polygon|star> [x y w h feather expand invert mode]   mask <id.m1> feather=60 | del
  tr <a> <b> <kind> [dur]   tr <id> in|out <kind> [dur]   tr V1 dissolve 0.4 (all cuts)   tr <a> <b> none
  fade <ids> [in=0.5] [out=1] [video|audio]
@@ -274,7 +274,7 @@ pub fn help(topic: &str) -> String {
             s
         }
         "audio" | "afx" | "sound" => {
-            let mut s = String::from("afx <clip|A1|master> <effect> [params]. Clip props: vol(dB, keyframable) pan mute fadeIn fadeOut. Track: track set A1 vol=-3 pan=.2 mute=1 solo=1.\nDucking: duck A2 by=A1 amount=-12 attack=20 release=400. Master: master vol=-1 lufs=-14 limiter=1.\n");
+            let mut s = String::from("afx <clip|A1|master> <effect> [params]. Edit one: afx <c1.a1|A1.a1|master.a1> param=v | del | on | off | up | down (audio effect params are static; automate level with kf c1 vol ...); afx <target> clear removes all. Clip props: vol(dB, keyframable) pan mute fadeIn fadeOut. Track: track set A1 vol=-3 pan=.2 mute=1 solo=1.\nDucking: duck A2 by=A1 amount=-12 attack=20 release=400. Master: master vol=-1 lufs=-14 limiter=1.\n");
             for e in schema::AUDIO_EFFECTS {
                 let ps: Vec<String> = e.params.iter().map(|p| format!("{}={}", p.name, short_def(p))).collect();
                 s.push_str(&format!(" {}: {}. {}\n", e.name, e.desc, ps.join(" ")));

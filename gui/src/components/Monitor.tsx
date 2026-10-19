@@ -118,7 +118,7 @@ function Overlay({ c }: { c: Comp }) {
         run(`mask ${it.id} ${shapeKind.value} x=${fmtNum(((x0 + x1) / 2 - bx) / bw, 4)} y=${fmtNum(((y0 + y1) / 2 - by) / bh, 4)} w=${fmtNum((x1 - x0) / bw, 4)} h=${fmtNum((y1 - y0) / bh, 4)}`, true);
         return;
       }
-      const r = await run(`shape ${shapeKind.value} w=${Math.round(x1 - x0)} h=${Math.round(y1 - y0)} pos=${Math.round((x0 + x1) / 2)},${Math.round((y0 + y1) / 2)} fill=#8b7cf6 at=${at} dur=3`, true);
+      const r = await run(`shape ${shapeKind.value} w=${Math.round(x1 - x0)} h=${Math.round(y1 - y0)} pos=${Math.round((x0 + x1) / 2)},${Math.round((y0 + y1) / 2)} fill=#e76c33 at=${at} dur=3`, true);
       const ids = createdIds(r.log);
       if (ids.length) selection.value = ids;
       return;

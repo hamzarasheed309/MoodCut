@@ -214,6 +214,72 @@ export function FileBrowser() {
   );
 }
 
+type AiClient = { id: string; name: string; installed: boolean; registered: boolean; stale: boolean; config?: string; after: string };
+
+/** AI apps on this computer, each connected with one click (MoodCut edits their MCP settings safely). */
+function DesktopApps() {
+  const [list, setList] = useState<AiClient[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [all, setAll] = useState(false);
+  const load = async () => {
+    try {
+      const r = await fetch("/api/ai/clients").then((x) => x.json());
+      setList(r.ok ? r.clients : []);
+    } catch {
+      setList([]);
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const act = async (c: AiClient, remove = false) => {
+    setBusy(c.id);
+    try {
+      const r = await fetch("/api/ai/install", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client: c.id, remove }) }).then((x) => x.json());
+      toast(r.ok ? r.text : r.error, !r.ok);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+  if (!list) return <div class="ai-apps ai-dim">Looking for AI apps…</div>;
+  const shown = list.filter((c) => all || c.installed || c.registered);
+  const todo = shown.filter((c) => c.installed && (!c.registered || c.stale));
+  return (
+    <div class="ai-apps">
+      {shown.length === 0 && <div class="ai-dim">No AI apps found on this computer. Install Claude Desktop, Cursor or VS Code, or show every app below.</div>}
+      {shown.map((c) => (
+        <div class="ai-app" key={c.id}>
+          <span class={"ai-state" + (c.registered && !c.stale ? " on" : c.installed ? " found" : "")} />
+          <div class="ai-app-name">
+            <b>{c.name}</b>
+            <small title={c.config}>{c.registered ? (c.stale ? "points at another copy of MoodCut: reconnect" : `connected · ${c.after}`) : c.installed ? "found on this computer" : "not found (you can still prepare it)"}</small>
+          </div>
+          {c.registered && !c.stale ? (
+            <button class="btn sm ghost" disabled={busy === c.id} onClick={() => act(c, true)} title="Remove MoodCut from this app's settings">
+              Disconnect
+            </button>
+          ) : (
+            <button class={"btn sm" + (c.installed ? " primary" : "")} disabled={busy === c.id} onClick={() => act(c)}>
+              {busy === c.id ? "Connecting…" : c.stale ? "Reconnect" : "Connect"}
+            </button>
+          )}
+        </div>
+      ))}
+      <div class="ai-apps-foot">
+        {todo.length > 1 && (
+          <button class="btn sm primary" disabled={!!busy} onClick={async () => { for (const c of todo) await act(c); }}>
+            Connect all {todo.length}
+          </button>
+        )}
+        <label class="ai-dim">
+          <input type="checkbox" checked={all} onChange={(e) => setAll((e.target as HTMLInputElement).checked)} /> show every supported app
+        </label>
+      </div>
+    </div>
+  );
+}
+
 export function ConnectAI({ onClose }: { onClose: () => void }) {
   const url = `${location.origin}/mcp`;
   const port = location.port || "7878";
@@ -236,7 +302,7 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
   const pre = { display: "block", padding: "8px", whiteSpace: "pre-wrap", wordBreak: "break-all" } as const;
   return (
     <div class="modal-bg" onClick={onClose}>
-      <div class="modal" style={{ width: "min(680px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
+      <div class="modal" style={{ width: "min(700px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
         <div class="modal-h">
           Connect an AI assistant
           <button class="btn ghost icon x" onClick={onClose}>
@@ -244,6 +310,10 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div class="modal-b" style={{ userSelect: "text" }}>
+          <div>
+            <b>AI apps on this computer</b>: one click adds MoodCut to the app's settings (your other tools stay as they are, and a backup is kept).
+            <DesktopApps />
+          </div>
           <div class="web-link">
             <b>Claude on the web (claude.ai) or ChatGPT</b>: they run in the cloud, so MoodCut gives them a private HTTPS link.
             {web?.running && web.connector ? (
@@ -259,7 +329,7 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
                     <b>ChatGPT</b>: Settings → Connectors → Advanced → turn on Developer mode → Create → paste the link (no authentication).
                   </li>
                 </ol>
-                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                   <button class="btn sm" onClick={() => copy(web.connector!)}>
                     Copy link
                   </button>
@@ -270,7 +340,7 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
                 </div>
               </>
             ) : (
-              <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px", flexWrap: "wrap" }}>
                 <button class="btn primary sm" disabled={busy} onClick={() => tunnel("start")}>
                   {busy ? "Starting… (first time downloads cloudflared)" : "Create web link"}
                 </button>
@@ -279,20 +349,11 @@ export function ConnectAI({ onClose }: { onClose: () => void }) {
             )}
           </div>
           <div>
-            <b>Claude Desktop</b>: run once in a terminal, then restart Claude:
-            <pre class="kbd" style={pre}>moodcut install-claude</pre>
-          </div>
-          <div>
-            <b>Claude Code</b>
-            <pre class="kbd" style={pre} onClick={() => copy("claude mcp add moodcut -- moodcut mcp")}>
-              claude mcp add moodcut -- moodcut mcp
-            </pre>
-          </div>
-          <div>
-            <b>Any MCP client on this computer</b> (Cursor, VS Code, LM Studio, Open WebUI…):
-            <pre class="kbd" style={pre} onClick={() => copy(url)}>
+            <b>Any other MCP client on this computer</b> (Open WebUI, MCP Inspector, your own agent…): Streamable HTTP at
+            <pre class="kbd" style={pre} onClick={() => copy(url)} title="Click to copy">
               {url}
             </pre>
+            or stdio: <code>moodcut mcp</code>. From a terminal, <code>moodcut install-ai</code> connects every app found and <code>moodcut install-ai --list</code> shows what's connected.
           </div>
           <div style={{ color: "var(--muted)" }}>
             Your own domain or Tailscale Funnel instead of a temporary link: <code>moodcut connect --url https://your-host{port === "7878" ? "" : ` --port ${port}`}</code>. Edits made by

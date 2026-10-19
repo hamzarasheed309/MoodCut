@@ -147,8 +147,8 @@ export function EffectsPanel() {
     "sound fx": cat.sfx.map((x) => ({ name: x.name, desc: `${x.desc} · lands ${x.sync <= 0 ? "on" : x.sync >= 1 ? "ending at" : "peaking at"} the playhead`, act: () => run(`sfx ${x.name} at=${at()}`) })),
     generate: [
       { name: "Text", desc: "Title text at the playhead", act: () => run(`text 'Your text' at=${at()} dur=3 style=title enter=fadeUp exit=fadeDown`) },
-      { name: "Rectangle", desc: "Shape layer", act: () => run(`shape rect w=500 h=120 radius=20 fill=#8b7cf6 at=${at()} dur=3`) },
-      { name: "Circle", desc: "Shape layer", act: () => run(`shape ellipse w=240 fill=#ec4899 at=${at()} dur=3 enter=popIn`) },
+      { name: "Rectangle", desc: "Shape layer", act: () => run(`shape rect w=500 h=120 radius=20 fill=#e76c33 at=${at()} dur=3`) },
+      { name: "Circle", desc: "Shape layer", act: () => run(`shape ellipse w=240 fill=#ffffff at=${at()} dur=3 enter=popIn`) },
       { name: "Star", desc: "Shape layer", act: () => run(`shape star fill=#fbbf24 at=${at()} dur=3 enter=spinIn`) },
       { name: "Color matte", desc: "Full-frame solid", act: () => run(`solid #111111 at=${at()} dur=3`) },
       { name: "Gradient matte", desc: "Full-frame gradient", act: () => run(`solid #1b1464 color2=#ff5f6d at=${at()} dur=3`) },

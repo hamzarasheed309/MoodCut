@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphics engine. Workflow: media(import) -> view -> edit (send MANY script lines per call; atomic) -> preview (small contact sheet to check) -> render. \
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
@@ -74,7 +74,8 @@ Organise with edit lines: tag m1..m40 broll | note m3 'drone over beach at sunse
 Place: add <m|path>[in-out] [V2] [at=T] [dur=] [props] | append m1[0-5] m2 | text 'Hi' at=0 dur=3 size=120 enter=fadeUp exit=fadeDown | shape rect w=400 h=80 fill=#f05 | solid #000 | adjust\n\
 Edit: cut <id|V1> at=T | trim <id> start=+1 end=-0.5 | del <ids> [ripple] | move <id> at=T [track=V2] | speed <id> 2x | freeze <id> at=T | dup <id>\n\
 Props: set <id> pos=center scale=1.2 rot=10 opacity=50% blend=screen vol=-6dB | kf <id> scale 0:1 2:1.2@outBack | expr <id> pos 'wiggle(2,20)'\n\
-Look: fx <id> blur radius=8 | color <id> cinematic | tr <a> <b> dissolve 0.5 | tr V1 dissolve | fade <id> in=0.5 out=1 | mask <id> ellipse feather=40 | anim <id> popIn,fadeOut\n\
+Look: fx <id> blur radius=8 | fx c1.f1 radius=4|off|del | color <id> cinematic (a new look replaces the old) | color <id> exposure=.3 temp=-10 | tr <a> <b> dissolve 0.5 | tr V1 dissolve | fade <id> in=0.5 out=1 | mask <id> ellipse feather=40 | anim <id> popIn,fadeOut\n\
+Sound: afx <clip|A1|master> eq bass=3 | afx A1.a1 off|del|ratio=4 | sound <clip> dialogue | sfx whoosh at=2 | duck A2 by=A1 | master lufs=-14 limiter=1 | kf c1 vol 0:-60 1:0\n\
 Pro: title lowerthird text='Jane' sub='CEO' | captions <clip> | autocut silence <clip> | montage m1,m2 music=m3 beats=2 | reframe 9:16 | duck A1 by=A2 | parent <a> <b> | precomp <ids>\n\
 Tools (help tools): roll <id> +0.3 | lift|extract 2 5 | swap a b | paste <from> <to> fx | stagger <ids> by=0.1 | align <ids> center | ease <id> all easy | kf <id> all reverse | null | camera move=pushin layers=V2 | sound <clip> dialogue | workarea 2 8\n\
 Finish (help style, sfx, brand): brand bold | sfx whoosh on=transitions | sfx hit at=0.1 | speedramp V1 at=3 to=4x | punchin V1 | jcut c4 by=0.4 | captions V1 style=punch | anim t1 slamIn|wipeInLeft|whipInRight\n\

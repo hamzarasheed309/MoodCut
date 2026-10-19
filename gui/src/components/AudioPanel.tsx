@@ -3,7 +3,7 @@ import { useState } from "preact/hooks";
 import { levels } from "../meter";
 import { catalog, comp, findItem, mediaById, run, selection } from "../store";
 import type { Effect, Track } from "../types";
-import { fmtNum } from "../util";
+import { fmtNum, staticVal } from "../util";
 import { NumField, Slider } from "./Controls";
 
 const TYPES = [
@@ -27,15 +27,63 @@ function Meter() {
   );
 }
 
+/** Settings of one track / master effect: a slider per number, a menu per choice. */
+function BusFxSettings({ e, target }: { e: Effect; target: string }) {
+  const def = catalog.value?.audio_effects.find((f) => f.name === e.kind);
+  if (!def) return null;
+  const ref = `${target}.${e.id}`;
+  return (
+    <div class="bus-fx-settings">
+      {def.params.map((p) => {
+        const cur = staticVal(e.props?.[p.name]) ?? p.def;
+        if (Array.isArray(p.type))
+          return (
+            <label key={p.name} class="sl" title={p.desc}>
+              <span>{p.name}</span>
+              <select value={String(cur)} onChange={(ev) => run(`afx ${ref} ${p.name}=${(ev.target as HTMLSelectElement).value}`, true)}>
+                {p.type.map((o) => (
+                  <option key={o}>{o}</option>
+                ))}
+              </select>
+            </label>
+          );
+        if (p.type === "bool")
+          return (
+            <label key={p.name} class="sl" title={p.desc}>
+              <span>{p.name}</span>
+              <input type="checkbox" checked={!!cur} onChange={(ev) => run(`afx ${ref} ${p.name}=${(ev.target as HTMLInputElement).checked ? 1 : 0}`, true)} />
+            </label>
+          );
+        if (p.type !== "num") return null;
+        const min = p.min ?? -100;
+        const max = p.max ?? 100;
+        return <Slider key={p.name} label={p.name} title={p.desc} value={Number(cur)} def={Number(p.def)} min={min} max={max} step={max - min > 50 ? 1 : 0.05} onCommit={(v) => run(`afx ${ref} ${p.name}=${fmtNum(v, 3)}`, true)} />;
+      })}
+    </div>
+  );
+}
+
+/** A track's or the master's effect chain: click a chip to bypass it, ⚙ for its settings, ✕ to remove it. */
 function FxChips({ list, target }: { list: Effect[]; target: string }) {
   const cat = catalog.value;
+  const [open, setOpen] = useState<string | null>(null);
+  const shown = list.find((e) => e.id === open);
   return (
     <div class="fx-chips">
       {list.map((e) => (
-        <span key={e.id} class={"chip" + (e.on === false ? " off" : "")} title={e.id}>
-          {e.kind}
+        <span key={e.id} class={"chip bus-fx" + (e.on === false ? " off" : "") + (open === e.id ? " open" : "")}>
+          <button class="chip-main" title={`${target}.${e.id} ${e.kind}: click to ${e.on === false ? "turn on" : "bypass"}`} onClick={() => run(`afx ${target}.${e.id} ${e.on === false ? "on" : "off"}`, true)}>
+            {e.kind}
+          </button>
+          <button class="chip-act" title="Settings" onClick={() => setOpen(open === e.id ? null : e.id)}>
+            ⚙
+          </button>
+          <button class="chip-act" title="Remove this effect" onClick={() => run(`afx ${target}.${e.id} del`, true)}>
+            ✕
+          </button>
         </span>
       ))}
+      {shown && <BusFxSettings e={shown} target={target} />}
       <select
         value=""
         title="Add an audio effect"

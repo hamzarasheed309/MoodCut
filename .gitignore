@@ -5,3 +5,4 @@
 .moodcut-cache/
 /out/
 *.log
+/dist/

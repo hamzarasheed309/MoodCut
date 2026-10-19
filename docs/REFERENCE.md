@@ -267,8 +267,8 @@ PROPERTIES & MOTION
  parent <ids> <parent|none>   matte <id> <srcLayer> [alpha|alphainv|luma|lumainv]
 LOOK
  fx <ids> <effect> [params]   fx <id.f1> param=v | del | on | off | up | down   fx <id> clear
- afx <id|A1|master> <audioEffect> [params]
- color <ids> <preset> | color <ids> exposure=.3 contrast=15 temp=-10 sat=110   lut <ids> file.cube [amount]
+ afx <id|A1|master> <audioEffect> [params]   afx <id.a1|A1.a1|master.a1> param=v | del | on | off | up | down   afx <id|A1|master> clear
+ color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 | color <ids> none   lut <ids> file.cube [amount]
  mask <id> <rect|ellipse|path|polygon|star> [x y w h feather expand invert mode]   mask <id.m1> feather=60 | del
  tr <a> <b> <kind> [dur]   tr <id> in|out <kind> [dur]   tr V1 dissolve 0.4 (all cuts)   tr <a> <b> none
  fade <ids> [in=0.5] [out=1] [video|audio]
@@ -412,7 +412,7 @@ Null layers have only the layer props.
 fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param> ...). Spatial params in comp px. Effects run top to bottom; reorder with fx <id.fN> up|down.
 After Effects / Premiere names work as aliases (gaussian blur, keylight, fractal noise, turbulent displace, venetian blinds, motion tile...). [transition] effects hide the layer as completion goes 0->100; [time] effects change when frames are taken.
 [color]
- lumetri (aka grade color colorgrade): Premiere-style basic correction. exposure=0 contrast=0 highlights=0 shadows=0 whites=0 blacks=0 temp=0 tint=0 sat=100 vibrance=0 fade=0 stint=none htint=none
+ lumetri (aka grade color colorgrade): Premiere-style basic correction. exposure=0 contrast=0 highlights=0 shadows=0 whites=0 blacks=0 temp=0 tint=0 sat=100 vibrance=0 fade=0 stint=none htint=none look=''
  bc (aka brightness contrast brightnesscontrast): Brightness & contrast. brightness=0 contrast=0
  exposure: Exposure, offset and gamma. stops=0 offset=0 gamma=1
  levels: Input/output levels. inBlack=0 inWhite=1 gamma=1 outBlack=0 outWhite=1
@@ -516,7 +516,7 @@ After Effects / Premiere names work as aliases (gaussian blur, keylight, fractal
 ## audio: audio effects, ducking, loudness
 
 ```text
-afx <clip|A1|master> <effect> [params]. Clip props: vol(dB, keyframable) pan mute fadeIn fadeOut. Track: track set A1 vol=-3 pan=.2 mute=1 solo=1.
+afx <clip|A1|master> <effect> [params]. Edit one: afx <c1.a1|A1.a1|master.a1> param=v | del | on | off | up | down (audio effect params are static; automate level with kf c1 vol ...); afx <target> clear removes all. Clip props: vol(dB, keyframable) pan mute fadeIn fadeOut. Track: track set A1 vol=-3 pan=.2 mute=1 solo=1.
 Ducking: duck A2 by=A1 amount=-12 attack=20 release=400. Master: master vol=-1 lufs=-14 limiter=1.
  eq: 3-band EQ. bass=0 mid=0 treble=0
  highpass: High-pass filter. freq=80

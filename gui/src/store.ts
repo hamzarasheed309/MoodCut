@@ -9,6 +9,7 @@ export const dirty = signal(false);
 export const undoN = signal(0);
 export const redoN = signal(0);
 export const ffVersion = signal("");
+export const appVersion = signal("");
 export const selection = signal<string[]>([]);
 export const playhead = signal(0);
 export const playing = signal(false);
@@ -118,6 +119,7 @@ export const refresh = coalesce(async () => {
   undoN.value = s.undo;
   redoN.value = s.redo;
   ffVersion.value = s.ffmpeg;
+  appVersion.value = s.version || "";
   // drop selections that no longer exist
   const sel = selection.value.filter((id) => findItem(id));
   if (sel.length !== selection.value.length) selection.value = sel;

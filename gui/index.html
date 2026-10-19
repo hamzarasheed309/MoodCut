@@ -4,10 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#111111" />
+    <meta name="description" content="MoodCut, the AI-native video editor and motion graphics engine" />
     <title>MoodCut</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <style>
+      /* boot splash, shown until the editor is drawn */
+      #splash { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: #111; color: #ececec; font: 600 13px system-ui, sans-serif; transition: opacity 0.35s; }
+      #splash.gone { opacity: 0; pointer-events: none; }
+      #splash img { width: 88px; height: 88px; animation: mc-breathe 1.6s ease-in-out infinite; }
+      #splash b { font: 900 22px system-ui, sans-serif; letter-spacing: -0.02em; }
+      #splash b i { font-style: normal; color: #e76c33; }
+      #splash small { color: #8a8a8a; font-weight: 400; }
+      @keyframes mc-breathe { 50% { transform: scale(1.06); } }
+      @media (prefers-reduced-motion: reduce) { #splash img { animation: none; } }
+    </style>
   </head>
   <body>
+    <div id="splash" role="status" aria-label="Starting MoodCut"><img src="/favicon.svg" alt="" /><b>Mood<i>Cut</i></b><small>Starting the editor…</small></div>
     <div id="app"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

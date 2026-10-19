@@ -370,6 +370,7 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("fade", Num, N(0.0), 0.0, 100.0, U::None, "Faded film (lifted blacks)"),
         p!("stint", Color, C("none"), -INF, INF, U::None, "Shadow tint for split toning (alpha = strength), e.g. #1b6e8a66", ["shadowtint"]),
         p!("htint", Color, C("none"), -INF, INF, U::None, "Highlight tint for split toning (alpha = strength), e.g. #ff9a4466", ["highlighttint"]),
+        ps!("look", Str, S(""), "Creative look last applied with `color <id> <preset>` (a new look replaces it; your own changes are kept)"),
     ]),
     fx!("bc", ["brightness", "contrast", "brightnesscontrast"], Native, "color", "Brightness & contrast", [
         p!("brightness", Num, N(0.0), -100.0, 100.0, U::None, "Brightness", ["b"]),

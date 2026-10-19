@@ -91,7 +91,7 @@ pub fn install_cloudflared() -> Result<PathBuf> {
     let dir = crate::config::ensure_data_dir().join("bin");
     std::fs::create_dir_all(&dir)?;
     let target = dir.join(exe("cloudflared"));
-    let curl = crate::setup::which("curl").ok_or_else(|| anyhow!("curl is needed to download cloudflared (built into Windows 10+)"))?;
+    let curl = crate::setup::sys_tool("curl").ok_or_else(|| anyhow!("curl is needed to download cloudflared (built into Windows 10+)"))?;
     let (asset, tgz) = if cfg!(windows) {
         (format!("cloudflared-windows-{arch}.exe"), false)
     } else if cfg!(target_os = "macos") {
@@ -106,7 +106,7 @@ pub fn install_cloudflared() -> Result<PathBuf> {
         bail!("couldn't download cloudflared; install it yourself (Windows: winget install Cloudflare.cloudflared) and retry");
     }
     if tgz {
-        let st = crate::render::ffmpeg::command(std::path::Path::new("tar")).arg("-xzf").arg(&dl).arg("-C").arg(&dir).status()?;
+        let st = crate::render::ffmpeg::command(&crate::setup::sys_tool("tar").unwrap_or_else(|| std::path::PathBuf::from("tar"))).arg("-xzf").arg(&dl).arg("-C").arg(&dir).status()?;
         let _ = std::fs::remove_file(&dl);
         if !st.success() {
             bail!("couldn't unpack {asset}");

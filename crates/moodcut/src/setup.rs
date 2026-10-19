@@ -50,7 +50,12 @@ pub fn doctor() -> Result<()> {
     if let Some(d) = crate::config::data_dir() {
         println!("  data dir: {}", d.display());
     }
-    println!("\nClaude Desktop: run `moodcut install-claude`. claude.ai / ChatGPT on the web: run `moodcut connect`.");
+    let apps: Vec<String> = crate::clients::statuses().into_iter().filter(|s| s.registered).map(|s| s.name.to_string()).collect();
+    if apps.is_empty() {
+        println!("\nAI apps: none connected yet. Run `moodcut install-ai` (Claude Desktop, Claude Code, Cursor, VS Code, ...); claude.ai / ChatGPT on the web: `moodcut connect`.");
+    } else {
+        println!("\nAI apps connected: {}. More: `moodcut install-ai --list`; claude.ai / ChatGPT on the web: `moodcut connect`.", apps.join(", "));
+    }
     Ok(())
 }
 
@@ -92,7 +97,6 @@ pub fn install_ffmpeg(progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
         bail!("no portable FFmpeg for this platform; install it with your package manager (macOS: brew install ffmpeg)");
     }
     let curl = sys_tool("curl").context("curl is needed to download FFmpeg (built into Windows 10 and later)")?;
-    let tar = sys_tool("tar").context("tar is needed to unpack FFmpeg (built into Windows 10 and later)")?;
     let home = crate::config::ensure_data_dir();
     let work = home.join("ffmpeg-download");
     let _ = std::fs::remove_dir_all(&work);
@@ -119,38 +123,62 @@ pub fn install_ffmpeg(progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
             last_err = format!("{name}: {}", err.trim());
             continue;
         }
-        progress(format!("unpacking {name}"));
-        let out = work.join("x");
-        std::fs::create_dir_all(&out)?;
-        let st = command(&tar).arg("-xf").arg(&archive).arg("-C").arg(&out).stdout(Stdio::null()).stderr(Stdio::piped()).status().context("running tar")?;
-        let _ = std::fs::remove_file(&archive);
-        if !st.success() {
-            last_err = format!("couldn't unpack {name}");
-            continue;
-        }
-        let Some(bin) = find_ffmpeg_bin(&out, 0) else {
-            last_err = format!("{name} has no ffmpeg/ffprobe");
-            continue;
-        };
-        let dest = home.join("ffmpeg").join("bin");
-        let _ = std::fs::remove_dir_all(&dest);
-        std::fs::create_dir_all(home.join("ffmpeg"))?;
-        if std::fs::rename(&bin, &dest).is_err() {
-            // different volume or locked: copy the files instead
-            std::fs::create_dir_all(&dest)?;
-            for e in std::fs::read_dir(&bin)?.flatten() {
-                if e.path().is_file() {
-                    std::fs::copy(e.path(), dest.join(e.file_name()))?;
-                }
+        match install_ffmpeg_archive(&archive, &home.join("ffmpeg").join("bin"), progress) {
+            Ok(dest) => {
+                let _ = std::fs::remove_dir_all(&work);
+                return Ok(dest);
             }
+            Err(e) => last_err = format!("{e:#}"),
         }
-        let _ = std::fs::remove_dir_all(&work);
-        let ff = Ff::detect().context("FFmpeg was unpacked but doesn't run")?;
-        progress(format!("FFmpeg {} ready", ff.version()));
-        return Ok(dest);
     }
     let _ = std::fs::remove_dir_all(&work);
     bail!("couldn't download FFmpeg ({last_err})")
+}
+
+/// Unpacks an FFmpeg build archive (.zip / .tar.xz, as downloaded by the
+/// installer or by hand) and puts its ffmpeg + ffprobe into `dest`.
+pub fn install_ffmpeg_archive(archive: &std::path::Path, dest: &std::path::Path, progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
+    let tar = sys_tool("tar").context("tar is needed to unpack FFmpeg (built into Windows 10 and later)")?;
+    let name = archive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if !archive.is_file() {
+        bail!("{} not found", archive.display());
+    }
+    progress(format!("unpacking {name}"));
+    let parent = dest.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| crate::config::ensure_data_dir().join("ffmpeg"));
+    std::fs::create_dir_all(&parent).with_context(|| format!("creating {}", parent.display()))?;
+    let out = parent.join(".unpack");
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out)?;
+    let st = command(&tar).arg("-xf").arg(archive).arg("-C").arg(&out).stdout(Stdio::null()).stderr(Stdio::piped()).status().context("running tar")?;
+    if !st.success() {
+        let _ = std::fs::remove_dir_all(&out);
+        bail!("couldn't unpack {name}");
+    }
+    let Some(bin) = find_ffmpeg_bin(&out, 0) else {
+        let _ = std::fs::remove_dir_all(&out);
+        bail!("{name} has no ffmpeg/ffprobe");
+    };
+    let _ = std::fs::remove_dir_all(dest);
+    if std::fs::rename(&bin, dest).is_err() {
+        // different volume or locked: copy the files instead
+        std::fs::create_dir_all(dest)?;
+        for e in std::fs::read_dir(&bin)?.flatten() {
+            if e.path().is_file() {
+                std::fs::copy(e.path(), dest.join(e.file_name()))?;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&out);
+    // check the unpacked copy itself (another FFmpeg may come first on PATH)
+    let exe = dest.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    let out = command(&exe).arg("-version").stdout(Stdio::piped()).stderr(Stdio::null()).output().context("FFmpeg was unpacked but doesn't run")?;
+    let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string();
+    if !out.status.success() || !first.starts_with("ffmpeg version") {
+        bail!("FFmpeg was unpacked to {} but doesn't run", dest.display());
+    }
+    let version = first.split_whitespace().nth(2).unwrap_or("?").to_string();
+    progress(format!("FFmpeg {version} ready"));
+    Ok(dest.to_path_buf())
 }
 
 /// The folder in an unpacked archive that holds ffmpeg and ffprobe.
@@ -165,7 +193,14 @@ fn find_ffmpeg_bin(dir: &std::path::Path, depth: usize) -> Option<PathBuf> {
     std::fs::read_dir(dir).ok()?.flatten().filter(|e| e.path().is_dir()).find_map(|e| find_ffmpeg_bin(&e.path(), depth + 1))
 }
 
-pub fn setup(force: bool) -> Result<()> {
+pub fn setup(force: bool, from: Option<&str>, dest: Option<&str>) -> Result<()> {
+    if let Some(archive) = from {
+        // the installer downloads FFmpeg with its own progress bar and hands it over
+        let dest = dest.map(PathBuf::from).unwrap_or_else(|| crate::config::ensure_data_dir().join("ffmpeg").join("bin"));
+        let dir = install_ffmpeg_archive(std::path::Path::new(archive), &dest, &|s: String| eprintln!("{s}"))?;
+        println!("Installed FFmpeg to {}", dir.display());
+        return Ok(());
+    }
     if !force && Ff::find().is_ok() {
         println!("FFmpeg is already installed.");
         return doctor();
@@ -214,32 +249,64 @@ pub fn setup(force: bool) -> Result<()> {
     }
 }
 
-pub fn claude_config_path() -> Option<PathBuf> {
-    if cfg!(windows) {
-        std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("Claude").join("claude_desktop_config.json"))
-    } else if cfg!(target_os = "macos") {
-        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join("Library/Application Support/Claude/claude_desktop_config.json"))
-    } else {
-        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config/Claude/claude_desktop_config.json"))
-    }
+/// `moodcut install-ai [apps]`: registers MoodCut with the given AI apps, or
+/// with every one found on this computer. `quiet` skips the summary (installer).
+pub fn install_ai(ids: &[String], quiet: bool) -> Result<()> {
+    ai_apply(ids, false, quiet)
 }
 
-pub fn install_claude() -> Result<()> {
-    let path = claude_config_path().context("can't locate the Claude Desktop config folder")?;
-    let exe = std::env::current_exe()?;
-    let exe_s = crate::render::ffmpeg::strip_unc(&exe);
-    let mut cfg: serde_json::Value = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| serde_json::json!({}));
-    if !cfg.is_object() {
-        cfg = serde_json::json!({});
+/// `moodcut uninstall-ai [apps]`: removes MoodCut from the AI apps' settings.
+pub fn uninstall_ai(ids: &[String]) -> Result<()> {
+    ai_apply(ids, true, false)
+}
+
+fn ai_apply(ids: &[String], remove: bool, quiet: bool) -> Result<()> {
+    use crate::clients;
+    let targets: Vec<&'static clients::Client> = if ids.is_empty() || ids.iter().any(|i| i.eq_ignore_ascii_case("all")) {
+        let all = ids.iter().any(|i| i.eq_ignore_ascii_case("all"));
+        // removing: everywhere MoodCut is registered; adding: every app found (or all when asked)
+        clients::CLIENTS.iter().filter(|c| { let st = clients::status(c); if remove { st.registered } else { all || st.installed } }).collect()
+    } else {
+        ids.iter()
+            .map(|i| clients::find(i).ok_or_else(|| anyhow::anyhow!("unknown AI app '{i}' (known: {})", clients::CLIENTS.iter().map(|c| c.id).collect::<Vec<_>>().join(", "))))
+            .collect::<Result<_>>()?
+    };
+    if targets.is_empty() {
+        if !quiet {
+            println!("{}", if remove { "MoodCut isn't registered with any AI app." } else { "No AI apps found on this computer. Install Claude Desktop, Cursor, VS Code... and run this again, or name one: moodcut install-ai claude" });
+        }
+        return Ok(());
     }
-    let servers = cfg.as_object_mut().unwrap().entry("mcpServers").or_insert_with(|| serde_json::json!({}));
-    servers["moodcut"] = serde_json::json!({"command": exe_s, "args": ["mcp"]});
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
+    let mut failed = 0;
+    for c in targets {
+        match clients::apply(c, remove) {
+            Ok(line) => println!("✔ {line}"),
+            Err(e) => {
+                failed += 1;
+                println!("✘ {}: {e:#}", c.name);
+            }
+        }
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
-    println!("Registered MoodCut in {}", path.display());
-    println!("Restart Claude Desktop. Open http://127.0.0.1:7878 to watch edits live.");
-    println!("Claude Code: claude mcp add moodcut -- \"{}\" mcp", exe_s);
+    if !quiet && !remove {
+        println!("\nEdits the AI makes show up live in the MoodCut window (open it any time). claude.ai / ChatGPT on the web: moodcut connect");
+    }
+    if failed > 0 && !quiet {
+        bail!("{failed} app(s) couldn't be set up (see above)");
+    }
+    Ok(())
+}
+
+/// `moodcut install-ai --list`
+pub fn list_ai() -> Result<()> {
+    for st in crate::clients::statuses() {
+        let mark = if st.registered && !st.stale { "✔" } else if st.installed { "○" } else { "–" };
+        let what = match (st.installed, st.registered, st.stale) {
+            (_, true, true) => "registered, but points at another MoodCut (run install-ai again)",
+            (_, true, false) => "connected",
+            (true, false, _) => "found, not connected",
+            _ => "not found",
+        };
+        println!("{mark} {:<18} {:<12} {}  [{}]", st.name, st.id, what, st.config.unwrap_or_default());
+    }
     Ok(())
 }
