@@ -17,7 +17,10 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 mkdir -p "$BIN_DIR"
 os="$(uname -s)"
 arch="$(uname -m)"
-tmp="$(mktemp -d)"
+# work under the user's cache: /tmp is mounted noexec on some hardened systems
+cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+mkdir -p "$cache" 2>/dev/null || true
+tmp="$(mktemp -d "$cache/moodcut-install.XXXXXX" 2>/dev/null || mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 say ""
@@ -30,11 +33,17 @@ if [ "$os" = "Linux" ] && [ "$arch" = "x86_64" ] && [ -z "${MOODCUT_FROM_SOURCE:
   url="https://github.com/$REPO/releases/latest/download/moodcut-linux-x64.tar.gz"
   say "Downloading $url"
   if curl -fsSL "$url" -o "$tmp/moodcut.tar.gz" && tar -xzf "$tmp/moodcut.tar.gz" -C "$tmp"; then
-    # the release is built on a recent Ubuntu; check it runs here before installing it
-    if "$tmp/moodcut" --version >/dev/null 2>&1; then
-      install -m 755 "$tmp/moodcut" "$BIN_DIR/moodcut"
+    # the release is built on a recent Ubuntu: check it runs here, from where it will
+    # live, before replacing anything
+    install -m 755 "$tmp/moodcut" "$BIN_DIR/.moodcut.new"
+    rc=0
+    "$BIN_DIR/.moodcut.new" --version >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      mv -f "$BIN_DIR/.moodcut.new" "$BIN_DIR/moodcut"
       installed=1
     else
+      rm -f "$BIN_DIR/.moodcut.new"
+      [ "$rc" -eq 126 ] && die "programs can't run from $BIN_DIR (is it mounted noexec?). Choose another folder: MOODCUT_BIN_DIR=/path/to/bin"
       prebuilt_broken=1
       say "The prebuilt MoodCut doesn't run on this system (its C library is older than the build's); building from source instead."
     fi

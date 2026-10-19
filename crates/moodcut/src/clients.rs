@@ -476,6 +476,18 @@ fn claude_code_cli(exe: Option<&str>) -> Option<Result<bool>> {
 
 /// Registers MoodCut with a client (or removes it when `remove`). Returns a one-line report.
 pub fn apply(c: &'static Client, remove: bool) -> Result<String> {
+    let r = apply_here(c, remove);
+    if let (Ok(_), Some(dir)) = (&r, profiles_dir()) {
+        if !remove {
+            remember_profile(&dir);
+        } else if CLIENTS.iter().all(|c| !status(c).registered) {
+            forget_profile(&dir);
+        }
+    }
+    r
+}
+
+fn apply_here(c: &'static Client, remove: bool) -> Result<String> {
     let exe = if remove { None } else { Some(server_command()?) };
     if c.id == "claude-code" {
         if let Some(r) = claude_code_cli(exe.as_deref()) {
@@ -520,9 +532,127 @@ pub fn apply(c: &'static Client, remove: bool) -> Result<String> {
     Ok(msg)
 }
 
+// ---- profiles connected on this PC
+//
+// On Windows an all-users install is removed by an elevated uninstaller, often
+// running as another (admin) account than the person who connected their AI
+// apps. Each profile MoodCut registers in is therefore noted in a shared folder
+// (one small file per profile, so every user can add theirs), and
+// `uninstall-ai --all-profiles` cleans all of them.
+
+/// Environment variables that locate a profile's AI app settings (everything `config_paths` reads).
+const PROFILE_VARS: &[&str] = if cfg!(windows) { &["USERPROFILE", "APPDATA", "LOCALAPPDATA"] } else { &["HOME", "XDG_CONFIG_HOME"] };
+
+/// `%ProgramData%\MoodCut\ai-profiles` on Windows; elsewhere only when `MOODCUT_AI_PROFILES` names a folder.
+pub fn profiles_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("MOODCUT_AI_PROFILES").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    if cfg!(windows) {
+        env_dir("ProgramData").map(|d| d.join("MoodCut").join("ai-profiles"))
+    } else {
+        None
+    }
+}
+
+/// This process's profile: the values of `PROFILE_VARS` that are set.
+pub fn current_profile() -> Map<String, Value> {
+    PROFILE_VARS.iter().filter_map(|v| std::env::var(v).ok().filter(|x| !x.is_empty()).map(|x| (v.to_string(), Value::String(x)))).collect()
+}
+
+/// One file per profile, named after its home folder.
+fn profile_file(dir: &Path, profile: &Map<String, Value>) -> Option<PathBuf> {
+    let home = profile.get(PROFILE_VARS[0])?.as_str()?;
+    let name: String = home.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
+    let hash = home.to_lowercase().bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let tail: String = name.chars().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect();
+    Some(dir.join(format!("{tail}-{:08x}.json", hash as u32)))
+}
+
+/// Notes this profile (best effort: a read-only shared folder just means no note).
+fn remember_profile(dir: &Path) {
+    let me = current_profile();
+    let Some(f) = profile_file(dir, &me) else { return };
+    if f.is_file() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(&f, serde_json::to_string_pretty(&Value::Object(me)).unwrap_or_default());
+}
+
+fn forget_profile(dir: &Path) {
+    if let Some(f) = profile_file(dir, &current_profile()) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// The profiles noted in `dir`, with their files.
+pub fn recorded_profiles(dir: &Path) -> Vec<(PathBuf, Map<String, Value>)> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let mut v: Vec<(PathBuf, Map<String, Value>)> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter_map(|p| match std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
+            Some(Value::Object(m)) if m.get(PROFILE_VARS[0]).is_some_and(|h| h.is_string()) => Some((p, m)),
+            _ => None,
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+/// A profile's home folder.
+pub fn profile_home(p: &Map<String, Value>) -> Option<&str> {
+    p.get(PROFILE_VARS[0]).and_then(|v| v.as_str())
+}
+
+/// Same home folder (case-insensitive on Windows).
+pub fn same_profile(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
+    match (profile_home(a), profile_home(b)) {
+        (Some(x), Some(y)) => crate::ops::exec::same_path(x, y),
+        _ => false,
+    }
+}
+
+/// Sets a command's environment to another profile's (variables it lacks are removed).
+pub fn profile_env(cmd: &mut std::process::Command, profile: &Map<String, Value>) {
+    for v in PROFILE_VARS {
+        match profile.get(*v).and_then(|x| x.as_str()) {
+            Some(x) => cmd.env(v, x),
+            None => cmd.env_remove(v),
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiles_are_noted_once_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("moodcut-profiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        remember_profile(&dir);
+        remember_profile(&dir);
+        let me = current_profile();
+        let got = recorded_profiles(&dir);
+        if me.contains_key(PROFILE_VARS[0]) {
+            assert_eq!(got.len(), 1);
+            assert!(same_profile(&got[0].1, &me));
+            forget_profile(&dir);
+            assert!(recorded_profiles(&dir).is_empty());
+        } else {
+            assert!(got.is_empty());
+        }
+        // names are safe file names and differ per home
+        let a: Map<String, Value> = [(PROFILE_VARS[0].to_string(), json!("C:\\Users\\Ana Lía"))].into_iter().collect();
+        let b: Map<String, Value> = [(PROFILE_VARS[0].to_string(), json!("C:\\Users\\bob"))].into_iter().collect();
+        let (fa, fb) = (profile_file(&dir, &a).unwrap(), profile_file(&dir, &b).unwrap());
+        assert_ne!(fa, fb);
+        assert!(fa.file_name().unwrap().to_str().unwrap().chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn jsonc_comments_and_trailing_commas() {

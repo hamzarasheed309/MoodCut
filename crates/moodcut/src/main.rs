@@ -224,7 +224,15 @@ enum Cmd {
         quiet: bool,
     },
     /// Remove MoodCut from the AI apps' settings (all of them when no names are given).
-    UninstallAi { apps: Vec<String> },
+    UninstallAi {
+        apps: Vec<String>,
+        /// Also every other profile on this PC that MoodCut connected (the Windows uninstaller).
+        #[arg(long, hide = true)]
+        all_profiles: bool,
+        /// Leave entries that point at another MoodCut executable alone.
+        #[arg(long, hide = true)]
+        only_this_exe: bool,
+    },
     /// Register MoodCut in Claude Desktop (same as `install-ai claude`).
     InstallClaude,
 }
@@ -507,7 +515,13 @@ fn real_main() -> Result<()> {
                 setup::install_ai(&apps, quiet)
             }
         }
-        Cmd::UninstallAi { apps } => setup::uninstall_ai(&apps),
+        Cmd::UninstallAi { apps, all_profiles, only_this_exe } => {
+            if all_profiles && apps.is_empty() {
+                setup::uninstall_ai_all_profiles()
+            } else {
+                setup::uninstall_ai(&apps, only_this_exe)
+            }
+        }
         Cmd::InstallClaude => setup::install_ai(&["claude".to_string()], false),
     }
 }

@@ -102,8 +102,10 @@ Root: HKA; Subkey: "Software\Classes\MoodCut.Project\shell\open\command"; ValueT
 Filename: "{app}\{#AppExe}"; Description: "Open MoodCut now"; Flags: nowait postinstall skipifsilent runminimized
 
 [UninstallRun]
-; take MoodCut out of the AI apps' settings so they don't point at a removed program
-Filename: "{app}\{#AppExe}"; Parameters: "uninstall-ai"; Flags: runhidden waituntilterminated; RunOnceId: "UninstallAI"
+; take MoodCut out of the AI apps' settings so they don't point at a removed program: this
+; account's, and (all-users installs run elevated, maybe as another admin) every other
+; profile MoodCut connected, noted in %ProgramData%\MoodCut\ai-profiles
+Filename: "{app}\{#AppExe}"; Parameters: "uninstall-ai --all-profiles"; Flags: runhidden waituntilterminated; RunOnceId: "UninstallAI"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\ffmpeg"

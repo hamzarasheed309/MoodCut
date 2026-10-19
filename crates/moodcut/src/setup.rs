@@ -3,7 +3,7 @@
 
 use crate::render::ffmpeg::{command, Ff};
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 /// In GUI mode on Windows, hide the console window if we own it (double-click launch).
@@ -257,16 +257,72 @@ pub fn install_ai(ids: &[String], quiet: bool) -> Result<()> {
 }
 
 /// `moodcut uninstall-ai [apps]`: removes MoodCut from the AI apps' settings.
-pub fn uninstall_ai(ids: &[String]) -> Result<()> {
-    ai_apply(ids, true, false)
+/// `only_this_exe` leaves entries that point at another MoodCut alone.
+pub fn uninstall_ai(ids: &[String], only_this_exe: bool) -> Result<()> {
+    ai_apply_filtered(ids, true, false, only_this_exe)
+}
+
+/// `moodcut uninstall-ai --all-profiles` (the Windows uninstaller): this user, then every
+/// other profile MoodCut connected AI apps in on this PC, where they still point at this
+/// executable (an all-users uninstall runs elevated, often as another account).
+pub fn uninstall_ai_all_profiles() -> Result<()> {
+    use crate::clients;
+    let mine = ai_apply(&[], true, false);
+    if let Some(dir) = clients::profiles_dir() {
+        let me = clients::current_profile();
+        let exe = std::env::current_exe()?;
+        for (file, profile) in clients::recorded_profiles(&dir) {
+            if clients::same_profile(&profile, &me) {
+                let _ = std::fs::remove_file(&file);
+                continue;
+            }
+            let Some(home) = clients::profile_home(&profile).map(str::to_string) else { continue };
+            if !Path::new(&home).is_dir() {
+                let _ = std::fs::remove_file(&file);
+                continue;
+            }
+            println!("Profile {home}:");
+            // a child process with that profile's environment: config paths (and the
+            // claude CLI) are found from it
+            let mut cmd = crate::render::ffmpeg::command(&exe);
+            cmd.args(["uninstall-ai", "--only-this-exe"]).stdin(std::process::Stdio::null());
+            clients::profile_env(&mut cmd, &profile);
+            match cmd.status() {
+                Ok(st) if st.success() => {
+                    let _ = std::fs::remove_file(&file);
+                }
+                Ok(st) => println!("✘ couldn't clean {home} (exit {st})"),
+                Err(e) => println!("✘ couldn't clean {home}: {e}"),
+            }
+        }
+        let _ = std::fs::remove_dir(&dir);
+        if let Some(parent) = dir.parent().filter(|p| p.file_name().is_some_and(|n| n == "MoodCut")) {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    mine
 }
 
 fn ai_apply(ids: &[String], remove: bool, quiet: bool) -> Result<()> {
+    ai_apply_filtered(ids, remove, quiet, false)
+}
+
+fn ai_apply_filtered(ids: &[String], remove: bool, quiet: bool, only_this_exe: bool) -> Result<()> {
     use crate::clients;
     let targets: Vec<&'static clients::Client> = if ids.is_empty() || ids.iter().any(|i| i.eq_ignore_ascii_case("all")) {
         let all = ids.iter().any(|i| i.eq_ignore_ascii_case("all"));
         // removing: everywhere MoodCut is registered; adding: every app found (or all when asked)
-        clients::CLIENTS.iter().filter(|c| { let st = clients::status(c); if remove { st.registered } else { all || st.installed } }).collect()
+        clients::CLIENTS
+            .iter()
+            .filter(|c| {
+                let st = clients::status(c);
+                if remove {
+                    st.registered && !(only_this_exe && st.stale)
+                } else {
+                    all || st.installed
+                }
+            })
+            .collect()
     } else {
         ids.iter()
             .map(|i| clients::find(i).ok_or_else(|| anyhow::anyhow!("unknown AI app '{i}' (known: {})", clients::CLIENTS.iter().map(|c| c.id).collect::<Vec<_>>().join(", "))))
@@ -274,7 +330,7 @@ fn ai_apply(ids: &[String], remove: bool, quiet: bool) -> Result<()> {
     };
     if targets.is_empty() {
         if !quiet {
-            println!("{}", if remove { "MoodCut isn't registered with any AI app." } else { "No AI apps found on this computer. Install Claude Desktop, Cursor, VS Code... and run this again, or name one: moodcut install-ai claude" });
+            println!("{}", if remove && only_this_exe { "Nothing to remove (entries for other MoodCut copies are left alone)." } else if remove { "MoodCut isn't registered with any AI app." } else { "No AI apps found on this computer. Install Claude Desktop, Cursor, VS Code... and run this again, or name one: moodcut install-ai claude" });
         }
         return Ok(());
     }

@@ -120,7 +120,8 @@ export function Slider({ label, value, min, max, step = 1, def = 0, title, onCom
   };
   const lg = !!log && min > 0 && max > min;
   const toPos = (x: number) => (lg ? (Math.log(Math.max(min, x) / min) / Math.log(max / min)) * 1000 : x);
-  const fromPos = (p: number) => (lg ? Math.min(max, Math.max(min, roundSig(min * Math.pow(max / min, p / 1000), step))) : p);
+  // whole-number steps only when the range starts at 1 or more: 0.01-2000 ms must reach 0.5 ms
+  const fromPos = (p: number) => (lg ? Math.min(max, Math.max(min, roundSig(min * Math.pow(max / min, p / 1000), min >= 1 ? step : 0))) : p);
   return (
     <div class={"sl" + (Math.abs(v - def) > 1e-9 ? " changed" : "")} title={title}>
       <label onDblClick={() => commit(def)} title={(title ? title + " · " : "") + "double-click to reset"}>

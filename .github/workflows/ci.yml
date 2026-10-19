@@ -78,6 +78,19 @@ jobs:
           grep -q '"moodcut"' "$home/.cursor/mcp.json"
           HOME="$home" target/release/moodcut uninstall-ai
           ! grep -q '"moodcut"' "$home/.cursor/mcp.json"
+      - name: Uninstall cleans every profile that was connected (as the Windows uninstaller does)
+        run: |
+          shared="$RUNNER_TEMP/ai-profiles"; alice="$RUNNER_TEMP/alice"; bob="$RUNNER_TEMP/bob"; admin="$RUNNER_TEMP/admin"
+          mkdir -p "$alice/.cursor" "$bob/.cursor" "$admin/.cursor"
+          HOME="$alice" MOODCUT_AI_PROFILES="$shared" target/release/moodcut install-ai cursor
+          HOME="$bob" MOODCUT_AI_PROFILES="$shared" target/release/moodcut install-ai cursor
+          # bob has since switched to another copy of MoodCut: that entry must stay
+          echo '{"mcpServers": {"moodcut": {"command": "/elsewhere/moodcut", "args": ["mcp"]}}}' > "$bob/.cursor/mcp.json"
+          test "$(ls "$shared"/*.json | wc -l)" -eq 2
+          HOME="$admin" MOODCUT_AI_PROFILES="$shared" target/release/moodcut uninstall-ai --all-profiles
+          ! grep -q '"moodcut"' "$alice/.cursor/mcp.json"
+          grep -q '/elsewhere/moodcut' "$bob/.cursor/mcp.json"
+          test ! -e "$shared"
       - name: Package the Linux build
         run: tar -czf moodcut-linux-x64.tar.gz -C target/release moodcut && ls -l moodcut-linux-x64.tar.gz
       - uses: actions/upload-artifact@v6

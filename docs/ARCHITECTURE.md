@@ -246,7 +246,9 @@ FFmpeg (downloaded by the installer with a progress bar from gyan.dev or the Btb
 `moodcut setup --from <zip> --dest {app}\ffmpeg\bin`, which MoodCut searches first), and `moodcut install-ai --quiet`.
 The uninstaller runs `moodcut uninstall-ai`, removes the PATH entry and FFmpeg, and offers to delete settings, caches
 and downloaded tools from the data folder (autosaves, generated graphics, sound effects, fonts and models are kept).
-In an all-users install, AI apps are connected as the user who started Setup, not the elevated account.
+In an all-users install, AI apps are connected as the user who started Setup, not the elevated account. On Windows each
+profile MoodCut connects is noted in `%ProgramData%\MoodCut\ai-profiles` (one file per profile), and the uninstaller's
+`uninstall-ai --all-profiles` cleans every noted profile whose entries still point at this executable.
 CI compiles it, installs it silently into a folder with a space, checks FFmpeg, PATH and the association, and uninstalls.
 
 ## Brand (`brand.rs`, `gui/src/brand.tsx`)
