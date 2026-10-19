@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { placeSource } from "../actions";
 import { attachMeter } from "../meter";
 import { showPanel } from "../dock";
-import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, pausedPlayhead, playhead, playing, project, rev, run, selection, setPlayhead, shapeKind, sourceIn, sourceMedia, sourceOut, sourceT, tool } from "../store";
+import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, pausedPlayhead, playhead, playing, project, proxyState, refreshProxies, rev, run, selection, setPlayhead, shapeKind, sourceIn, sourceMedia, sourceOut, sourceT, tool, viewGen } from "../store";
 import type { Comp, Item, LayerGeom } from "../types";
 import { compDuration, fmtNum, fmtTC, isAnimated } from "../util";
 
@@ -333,28 +333,62 @@ function fitFrame(stage: { w: number; h: number }, aspect: number) {
   return { fw: Math.max(32, fw), fh: Math.max(18, fh) };
 }
 
+const RESOLUTIONS = [
+  { v: "auto", l: "Auto" },
+  { v: "1", l: "Full" },
+  { v: "0.5", l: "1/2" },
+  { v: "0.25", l: "1/4" },
+  { v: "0.125", l: "1/8" },
+];
+const RES_KEY = "mc.playres";
+const fracLabel = (s: number) => (s >= 1 ? "Full" : `1/${Math.round(1 / s)}`);
+
+/** Premiere's Auto playback resolution: the smallest of Full, 1/2, 1/4, 1/8 that still
+ * fills the monitor's pixels, so a 4K timeline in a small monitor plays at 1/4. */
+function autoScale(compW: number, shownW: number): number {
+  const need = (shownW * (window.devicePixelRatio || 1)) / Math.max(1, compW);
+  for (const s of [0.125, 0.25, 0.5]) if (s >= need * 0.9) return s;
+  return 1;
+}
+
 /** Program monitor: the composition, playback, safe guides, transform gizmo, Type and Shape tools. */
 export function ProgramMonitor() {
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const stage = useSize(stageRef);
   const [src, load] = useLatestImage();
-  const [quality, setQuality] = useState(0.5);
+  const [res, setResState] = useState<string>(() => {
+    try {
+      return localStorage.getItem(RES_KEY) || "auto";
+    } catch {
+      return "auto";
+    }
+  });
+  const setRes = (v: string) => {
+    setResState(v);
+    try {
+      localStorage.setItem(RES_KEY, v);
+    } catch {}
+  };
   const [safe, setSafe] = useState(false);
   const [streamFrom, setStreamFrom] = useState(0);
   const c = comp.value;
   const p = project.value;
   const dur = c ? compDuration(c) : 0;
   const { fw, fh } = fitFrame(stage, c ? c.w / c.h : 16 / 9);
+  const scale = res === "auto" ? autoScale(c?.w || 1920, fw) : parseFloat(res);
+  const px = proxyState.value;
+  const haveProxies = !!px && Object.values(px.media).some((t) => t === "proxy");
 
+  // paused: a sharp frame at the size it is shown (never more than the comp itself)
   useEffect(() => {
     const t = pausedPlayhead.value;
     if (!c || t < 0) return;
-    const w = Math.round(Math.min(c.w, fw * (window.devicePixelRatio || 1)) * quality * 2) || 320;
-    load(`/api/frame?t=${t.toFixed(4)}&w=${Math.max(64, w)}&comp=${c.id}&r=${rev.value}`);
-  }, [pausedPlayhead.value, rev.value, c?.id, quality, Math.round(fw)]);
+    const w = Math.max(64, Math.round(Math.min(c.w, fw * (window.devicePixelRatio || 1))));
+    load(`/api/frame?t=${t.toFixed(4)}&w=${w}&comp=${c.id}&r=${rev.value}&g=${viewGen.value}`);
+  }, [pausedPlayhead.value, rev.value, viewGen.value, c?.id, Math.round(fw)]);
 
-  // playback via streamed fragmented MP4
+  // playback via streamed fragmented MP4 at the playback resolution
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -362,7 +396,7 @@ export function ProgramMonitor() {
       const from = playhead.value >= dur - 0.05 ? 0 : playhead.value;
       setStreamFrom(from);
       attachMeter(v);
-      v.src = `/api/stream?from=${from.toFixed(3)}&scale=${quality}&comp=${activeId.value}&r=${Date.now()}`;
+      v.src = `/api/stream?from=${from.toFixed(3)}&scale=${scale}&comp=${activeId.value}&r=${Date.now()}`;
       v.play().catch(() => (playing.value = false));
     } else {
       v.pause();
@@ -403,11 +437,21 @@ export function ProgramMonitor() {
           {c?.w}×{c?.h} · {c?.fps}fps
         </span>
         <span style={{ flex: 1 }} />
-        <select value={String(quality)} onChange={(e) => setQuality(parseFloat((e.target as HTMLSelectElement).value))} title="Playback resolution">
-          <option value="1">Full</option>
-          <option value="0.5">1/2</option>
-          <option value="0.25">1/4</option>
+        <select value={res} onChange={(e) => setRes((e.target as HTMLSelectElement).value)} title="Playback resolution. Auto matches the monitor's size, so heavy timelines play smoothly; paused frames are always sharp.">
+          {RESOLUTIONS.map((r) => (
+            <option key={r.v} value={r.v}>
+              {r.v === "auto" ? `Auto (${fracLabel(scale)})` : r.l}
+            </option>
+          ))}
         </select>
+        <button
+          class={"btn sm" + (px?.enabled && haveProxies ? " on" : "")}
+          disabled={!px}
+          onClick={() => refreshProxies({ action: px?.enabled ? "disable" : "enable" })}
+          title={`Toggle Proxies: previews use small, fast copies of heavy footage (4K, HEVC…); exports always use the originals.\n${px?.summary || ""}`}
+        >
+          Proxies
+        </button>
         <button class={"btn sm" + (safe ? " on" : "")} onClick={() => setSafe(!safe)} title="Title/action safe guides">
           Safe
         </button>

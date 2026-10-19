@@ -2334,3 +2334,30 @@ input[type="checkbox"] {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* proxies */
+.proxy-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--muted);
+}
+.proxy-badge.ready {
+  background: var(--ember);
+  color: #fff;
+}
+.proxy-menu {
+  margin-left: 6px;
+  max-width: 120px;
+  font-size: 11px;
+}
+.show-more {
+  display: block;
+  margin: 6px auto 10px;
+}

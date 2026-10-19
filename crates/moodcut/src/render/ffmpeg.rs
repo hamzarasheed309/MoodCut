@@ -35,6 +35,29 @@ pub fn command(exe: &Path) -> Command {
     c
 }
 
+/// Like `command`, for background work (proxies, waveform peaks): below-normal
+/// priority so the editor and playback stay responsive.
+pub fn background_command(exe: &Path) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new(exe);
+        c.creation_flags(0x0800_0000 | 0x0000_4000); // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        match ["/usr/bin/nice", "/bin/nice"].iter().map(Path::new).find(|p| p.is_file()) {
+            Some(nice) => {
+                let mut c = Command::new(nice);
+                c.arg("-n").arg("10").arg(exe);
+                c
+            }
+            None => Command::new(exe),
+        }
+    }
+}
+
 fn exe_name(base: &str) -> String {
     if cfg!(windows) {
         format!("{base}.exe")

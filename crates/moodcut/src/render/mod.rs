@@ -10,6 +10,7 @@ pub mod lut;
 pub mod masks;
 pub mod noise;
 pub mod pixel;
+pub mod proxy;
 pub mod scopes;
 pub mod shapes;
 pub mod text;

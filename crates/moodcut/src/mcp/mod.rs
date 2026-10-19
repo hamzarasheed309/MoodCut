@@ -57,9 +57,11 @@ pub fn tools() -> Value {
 import: paths = files, folders (recursive by default), globs (D:/shoot/**/*.mp4) or http(s) URLs; tag='day1' tags them. Unreadable files are skipped and reported.\n\
 list: compact lines, filters kind (video|audio|image|graphic|still) q (words in name/path/note/tags) tag min_dur max_dur orientation (landscape|portrait|square) used (bool), sort (name|dur|date|size|path), offset/limit paging, detail=2 adds paths.\n\
 find: browse a disk folder without importing (path, pattern, recursive, files=true lists names).\n\
+proxy: preview proxies (small fast copies of 4K/HEVC footage, built in the background; exports always use the originals): ids=m1..m9|all to build, op=delete|cancel, mode=auto|all|off for new imports, enabled=false to preview the originals. No ids = status.\n\
 Organise with edit lines: tag m1..m40 broll | note m3 'drone over beach at sunset' | untag | relink m3 <path> | unimport m5. See footage with preview media=...",
             "inputSchema": {"type": "object", "properties": {
-                "action": {"type": "string", "enum": ["import", "list", "find"]},
+                "action": {"type": "string", "enum": ["import", "list", "find", "proxy"]},
+                "ids": {"type": "string"}, "op": {"type": "string"}, "mode": {"type": "string"}, "enabled": {"type": "boolean"},
                 "paths": {"type": "array", "items": {"type": "string"}}, "recursive": {"type": "boolean"}, "tag": {"type": "string"},
                 "kind": {"type": "string"}, "q": {"type": "string"}, "min_dur": {"type": "number"}, "max_dur": {"type": "number"},
                 "orientation": {"type": "string"}, "used": {"type": "boolean"}, "sort": {"type": "string"},
@@ -308,6 +310,38 @@ impl Mcp {
                 let tags: Vec<String> = s(a, "tag").map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
                 let out = eng.import_with(&paths, a["recursive"].as_bool().unwrap_or(true), &tags, "mcp")?;
                 Ok(out.log.join("\n"))
+            }
+            "proxy" | "proxies" => {
+                use crate::render::proxy::Mode;
+                let mut notes = vec![];
+                if let Some(m) = s(a, "mode") {
+                    let mode = Mode::parse(&m).ok_or_else(|| anyhow::anyhow!("mode must be auto, all or off"))?;
+                    eng.proxies.set_mode(mode);
+                    notes.push(format!("new imports: {}", match mode { Mode::Off => "no proxies", Mode::Auto => "proxies for heavy footage", Mode::All => "proxies for every video" }));
+                }
+                if let Some(on) = a["enabled"].as_bool() {
+                    eng.proxies.set_enabled(on);
+                    notes.push(format!("previews use {}", if on { "proxies where ready" } else { "the original files" }));
+                }
+                let (p, ..) = eng.snapshot();
+                if let Some(spec) = s(a, "ids").or_else(|| s(a, "q")) {
+                    let ids = crate::library::select_media(&p, &spec)?;
+                    let ms: Vec<crate::model::project::Media> = ids.iter().filter_map(|i| p.media(i).cloned()).collect();
+                    match s(a, "op").as_deref().unwrap_or("create") {
+                        "delete" | "del" | "remove" => notes.push(format!("deleted {} prox(ies)", eng.proxies.delete(&ms))),
+                        "create" | "make" | "build" => {
+                            let n = eng.proxies.request(&ms, true);
+                            let skipped = ms.iter().filter(|m| !crate::render::proxy::eligible(m)).count();
+                            notes.push(format!("queued {n} prox(ies){}", if skipped > 0 { format!(" ({skipped} skipped: not video, or with transparency)") } else { String::new() }));
+                        }
+                        other => anyhow::bail!("unknown op '{other}' (create, delete, cancel)"),
+                    }
+                } else if s(a, "op").as_deref() == Some("cancel") {
+                    eng.proxies.cancel_all();
+                    notes.push("cancelled the queued proxies".into());
+                }
+                notes.push(eng.proxies.summary(&p.media));
+                Ok(notes.join("\n"))
             }
             "find" | "browse" | "scan" => {
                 let root = paths.first().cloned().ok_or_else(|| anyhow::anyhow!("find needs path (a folder)"))?;

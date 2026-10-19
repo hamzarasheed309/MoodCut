@@ -35,12 +35,15 @@ function layoutRows(c: Comp | null): Row[] {
 
 // ---- image caches (thumbnails / waveforms), redraw when loaded
 const imgCache = new Map<string, HTMLImageElement | null>();
+/** The last waveform drawn for a clip's source range, shown while another zoom level loads. */
+const waveLast = new Map<string, HTMLImageElement>();
 let requestRedraw: () => void = () => {};
 function img(url: string): HTMLImageElement | null {
   if (imgCache.has(url)) {
     const i = imgCache.get(url)!;
     return i && i.complete && i.naturalWidth > 0 ? i : null;
   }
+  if (imgCache.size > 1500) imgCache.clear(); // zooming makes new sizes; keep memory bounded
   const i = new Image();
   i.onload = () => requestRedraw();
   i.onerror = () => imgCache.set(url, null);
@@ -328,14 +331,21 @@ export function Timeline() {
       }
       g.fillStyle = "rgba(0,0,0,0.25)";
       g.fillRect(x, y + 14, w, h - 14);
-    } else if (m && m.has_audio && r.track.kind === "audio" && w > 10) {
-      const im = img(`/api/waveform?media=${m.id}&w=1600&h=80`);
-      if (im && m.dur > 0) {
-        const sp = speedOf(it);
-        const s0 = ((it.in || 0) / m.dur) * im.naturalWidth;
-        const s1 = (((it.in || 0) + it.dur * sp) / m.dur) * im.naturalWidth;
+    } else if (m && m.has_audio && r.track.kind === "audio" && w > 10 && m.dur > 0) {
+      // just this clip's part of the file, at the width it is drawn (rounded to a power of
+      // two so zooming reuses images); the server draws it from the file's peak data
+      const sp = speedOf(it);
+      const from = it.in || 0;
+      const to = Math.min(m.dur, from + it.dur * sp);
+      const shown = ((to - from) / sp) * zoom.value;
+      const qw = Math.min(4096, 2 ** Math.ceil(Math.log2(Math.max(64, shown))));
+      const range = `${m.id}|${from.toFixed(3)}|${to.toFixed(3)}`;
+      let im = img(`/api/waveform?media=${m.id}&w=${qw}&h=64&from=${from.toFixed(3)}&to=${to.toFixed(3)}`);
+      if (im) waveLast.set(range, im);
+      else im = waveLast.get(range) || null;
+      if (im && to > from) {
         g.globalAlpha *= 0.9;
-        g.drawImage(im, s0, 0, Math.max(1, s1 - s0), im.naturalHeight, x, y + 12, (Math.min(m.dur, (it.in || 0) + it.dur * sp) - (it.in || 0)) / sp * zoom.value, h - 12);
+        g.drawImage(im, x, y + 12, shown, h - 12);
       }
     }
     // label

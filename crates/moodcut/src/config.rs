@@ -37,3 +37,21 @@ pub fn autosave_dir() -> PathBuf {
     let _ = std::fs::create_dir_all(&d);
     d
 }
+
+fn settings_file() -> PathBuf {
+    ensure_data_dir().join("settings.json")
+}
+
+/// User settings kept between sessions (proxies, ...), `{}` when there are none.
+pub fn settings() -> serde_json::Value {
+    std::fs::read_to_string(settings_file()).ok().and_then(|t| serde_json::from_str(&t).ok()).filter(|v: &serde_json::Value| v.is_object()).unwrap_or_else(|| serde_json::json!({}))
+}
+
+/// Sets one top-level setting and saves the file.
+pub fn save_setting(key: &str, value: serde_json::Value) {
+    let mut s = settings();
+    s[key] = value;
+    if let Ok(text) = serde_json::to_string_pretty(&s) {
+        let _ = std::fs::write(settings_file(), text);
+    }
+}

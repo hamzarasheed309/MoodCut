@@ -301,14 +301,18 @@ impl Engine {
         if files.is_empty() {
             bail!("no media files found in {}", paths.join(", "));
         }
-        let probed: Vec<(PathBuf, Result<Media>)> = files
-            .par_iter()
-            .map(|f| {
-                let s = f.to_string_lossy().to_string();
-                let r = self.check_path(&s).and_then(|_| self.probe_cached(&s));
-                (f.clone(), r)
-            })
-            .collect();
+        // probe on a small pool of its own: a drive of footage doesn't flood the
+        // disk with dozens of ffprobes, and playback (on the global pool) stays smooth
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8);
+        let probe = |f: &PathBuf| {
+            let s = f.to_string_lossy().to_string();
+            let r = self.check_path(&s).and_then(|_| self.probe_cached(&s));
+            (f.clone(), r)
+        };
+        let probed: Vec<(PathBuf, Result<Media>)> = match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+            Ok(pool) => pool.install(|| files.par_iter().map(probe).collect()),
+            Err(_) => files.par_iter().map(probe).collect(),
+        };
         let mut ok = vec![];
         let mut skipped = vec![];
         for (f, r) in probed {
@@ -333,6 +337,8 @@ impl Engine {
         let mut out = self.edit(&script, source)?;
         let p = self.st.read().p.clone();
         let new: Vec<&Media> = p.media.iter().filter(|m| !before.contains(&m.id)).collect();
+        // heavy footage gets preview proxies in the background (like Premiere's ingest)
+        let queued = self.proxies.request(&new.iter().map(|m| (*m).clone()).collect::<Vec<_>>(), false);
         let existing = ok.len() - new.len();
         if new.len() > 25 || !skipped.is_empty() || existing > 0 {
             let mut lines = vec![];
@@ -362,6 +368,9 @@ impl Engine {
                 lines.push(format!("! skipped {} unreadable file(s): {}", skipped.len(), skipped.iter().take(8).cloned().collect::<Vec<_>>().join("; ")));
             }
             out.log = lines;
+        }
+        if queued > 0 {
+            out.log.push(format!("making preview proxies for {queued} heavy file(s) in the background (exports use the originals)"));
         }
         Ok(out)
     }
@@ -447,6 +456,11 @@ impl Engine {
         for m in v.iter().skip(offset).take(limit) {
             s.push('\n');
             s.push_str(&media_line(&p, m, detail));
+            let tag = self.proxies.tag(m);
+            if !tag.is_empty() {
+                s.push(' ');
+                s.push_str(&tag);
+            }
         }
         s
     }
@@ -463,11 +477,13 @@ impl Engine {
             MediaKind::Image => self.frames.image(&m.path, w, ((m.h as f32 / m.w.max(1) as f32) * w as f32).round().max(2.0) as u32)?,
             MediaKind::Svg => self.frames.svg(&m.path, w, ((m.h as f32 / m.w.max(1) as f32) * w as f32).round().max(2.0) as u32)?,
             MediaKind::Video => {
+                // a proxy decodes 4K / HEVC posters and filmstrips many times faster
+                let src = self.proxies.for_preview(m, w).unwrap_or_else(|| m.path.clone());
                 let (raw, _) = self.ff.run_capture(&[
                     "-ss".into(),
                     format!("{:.3}", t.clamp(0.0, (m.dur - 0.05).max(0.0))),
                     "-i".into(),
-                    m.path.clone(),
+                    src,
                     "-frames:v".into(),
                     "1".into(),
                     "-vf".into(),
@@ -486,23 +502,8 @@ impl Engine {
             }
             MediaKind::Audio => {
                 let h = (w * 9 / 16).max(8);
-                let (raw, _) = self.ff.run_capture(&[
-                    "-i".into(),
-                    m.path.clone(),
-                    "-filter_complex".into(),
-                    format!("aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=0xe76c33:scale=sqrt"),
-                    "-frames:v".into(),
-                    "1".into(),
-                    "-f".into(),
-                    "rawvideo".into(),
-                    "-pix_fmt".into(),
-                    "rgba".into(),
-                    "-".into(),
-                ])?;
-                if raw.len() < (w * h * 4) as usize {
-                    bail!("no waveform for {}", m.name);
-                }
-                Arc::new(crate::render::decode::pixmap_from_rgba(raw[..(w * h * 4) as usize].to_vec(), w, h, true).ok_or_else(|| anyhow!("bad waveform"))?)
+                let peaks = self.peaks(m)?;
+                Arc::new(draw_waveform(&peaks, 0.0, m.dur.max(0.01), w, h, (0xe7, 0x6c, 0x33), true))
             }
         };
         let mut c = self.thumbs.lock();
@@ -662,5 +663,146 @@ pub fn filter_from_json(a: &Value) -> MediaFilter {
         max_dur: a["max_dur"].as_f64(),
         orient: s("orientation").or_else(|| s("orient")),
         used: a["used"].as_bool(),
+    }
+}
+
+/// Audio peaks per second stored in a peak file.
+pub const PEAK_RATE: usize = 200;
+
+impl Engine {
+    /// Audio peaks of a media file (largest |sample| per 1/200 s, 0-255), made
+    /// once and kept in memory and on disk like Premiere's .pek files, so
+    /// waveforms at any size and zoom are drawn without decoding the audio again.
+    pub fn peaks(&self, m: &Media) -> Result<Arc<Vec<u8>>> {
+        let key = format!("{}|{}|{}", m.path, m.size, m.mtime);
+        if let Some(p) = self.peaks.lock().get(&key) {
+            return Ok(p.clone());
+        }
+        let file = crate::config::cache_dir().join("peaks").join(format!("{:016x}.pk", crate::render::eval::hash_str(&key)));
+        let data = match std::fs::read(&file) {
+            Ok(d) if d.len() > 8 && &d[..4] == b"MCPK" => d[8..].to_vec(),
+            _ => {
+                if !m.has_audio {
+                    bail!("{} has no audio", m.name);
+                }
+                self.ff.need()?;
+                let mut c = crate::render::ffmpeg::background_command(&self.ff.ffmpeg_path());
+                c.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"]).arg(&m.path);
+                c.args(["-vn", "-sn", "-dn", "-ac", "1", "-ar", &(PEAK_RATE * 40).to_string(), "-f", "s16le", "-"]);
+                c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+                let mut child = c.spawn().context("starting ffmpeg for the waveform")?;
+                let mut out = child.stdout.take().unwrap();
+                let mut peaks = Vec::with_capacity((m.dur.max(1.0) * PEAK_RATE as f64) as usize + 16);
+                let mut buf = vec![0u8; 80 * 1024];
+                let (mut carry, mut cur, mut n): (Option<u8>, u16, usize) = (None, 0, 0);
+                loop {
+                    let k = std::io::Read::read(&mut out, &mut buf)?;
+                    if k == 0 {
+                        break;
+                    }
+                    let mut i = 0;
+                    if let Some(lo) = carry.take() {
+                        let s = i16::from_le_bytes([lo, buf[0]]);
+                        cur = cur.max(s.unsigned_abs());
+                        n += 1;
+                        i = 1;
+                    }
+                    while i + 1 < k {
+                        let s = i16::from_le_bytes([buf[i], buf[i + 1]]);
+                        cur = cur.max(s.unsigned_abs());
+                        n += 1;
+                        if n == 40 {
+                            peaks.push((cur.min(32767) as u32 * 255 / 32767) as u8);
+                            cur = 0;
+                            n = 0;
+                        }
+                        i += 2;
+                    }
+                    if i < k {
+                        carry = Some(buf[i]);
+                    }
+                }
+                if n > 0 {
+                    peaks.push((cur.min(32767) as u32 * 255 / 32767) as u8);
+                }
+                let _ = child.wait();
+                if peaks.is_empty() {
+                    bail!("no audio decoded from {}", m.name);
+                }
+                if let Some(d) = file.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                let mut f = b"MCPK".to_vec();
+                f.extend_from_slice(&(PEAK_RATE as u32).to_le_bytes());
+                f.extend_from_slice(&peaks);
+                let _ = std::fs::write(&file, f);
+                peaks
+            }
+        };
+        let arc = Arc::new(data);
+        let mut g = self.peaks.lock();
+        if g.len() > 400 {
+            g.clear();
+        }
+        g.insert(key, arc.clone());
+        Ok(arc)
+    }
+}
+
+/// Draws a mirrored waveform of `peaks` over source seconds `from..to` into a
+/// transparent `w`x`h` picture in `color` (#rrggbb). `sqrt` lifts quiet parts.
+pub fn draw_waveform(peaks: &[u8], from: f64, to: f64, w: u32, h: u32, color: (u8, u8, u8), sqrt: bool) -> Pixmap {
+    let mut pm = Pixmap::new(w.max(1), h.max(1)).unwrap();
+    let span = (to - from).max(1e-6);
+    let mid = h as f32 / 2.0;
+    let data = pm.data_mut();
+    for x in 0..w {
+        let t0 = from + span * x as f64 / w as f64;
+        let t1 = from + span * (x + 1) as f64 / w as f64;
+        let i0 = ((t0 * PEAK_RATE as f64).floor().max(0.0) as usize).min(peaks.len());
+        let i1 = ((t1 * PEAK_RATE as f64).ceil().max(0.0) as usize).clamp(i0, peaks.len());
+        let p = if i1 > i0 { peaks[i0..i1].iter().copied().max().unwrap_or(0) } else { peaks.get(i0).copied().unwrap_or(0) };
+        let mut a = p as f32 / 255.0;
+        if sqrt {
+            a = a.sqrt();
+        }
+        let half = (a * mid).max(if p > 0 { 0.5 } else { 0.0 });
+        let (y0, y1) = ((mid - half).floor().max(0.0) as u32, ((mid + half).ceil() as u32).min(h));
+        for y in y0..y1 {
+            let o = ((y * w + x) * 4) as usize;
+            data[o..o + 4].copy_from_slice(&[color.0, color.1, color.2, 255]);
+        }
+    }
+    pm
+}
+
+/// `#rrggbb` (or `rrggbb`) to RGB.
+pub fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waveform_follows_the_peaks_of_the_range() {
+        // 1 s of silence, then 1 s at full level
+        let mut peaks = vec![0u8; PEAK_RATE];
+        peaks.extend(vec![255u8; PEAK_RATE]);
+        let pm = draw_waveform(&peaks, 0.0, 2.0, 100, 40, (255, 0, 0), false);
+        let filled = |x: u32| (0..40).filter(|y| pm.pixel(x, *y).unwrap().alpha() > 0).count();
+        assert_eq!(filled(10), 0, "silence draws nothing");
+        assert_eq!(filled(90), 40, "full scale fills the height");
+        // a sub-range of the loud part fills every column
+        let part = draw_waveform(&peaks, 1.2, 1.8, 50, 20, (0, 255, 0), true);
+        assert!((0..50).all(|x| part.pixel(x, 10).unwrap().alpha() == 255));
+        assert_eq!(hex_rgb("#e76c33"), Some((0xe7, 0x6c, 0x33)));
+        assert_eq!(hex_rgb("nope"), None);
     }
 }

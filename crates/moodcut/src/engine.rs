@@ -91,6 +91,8 @@ pub struct Engine {
     pub st: RwLock<State>,
     pub events: broadcast::Sender<Event>,
     pub frames: Arc<FrameServer>,
+    /// Preview proxies of heavy footage (built in the background).
+    pub proxies: Arc<crate::render::proxy::Proxies>,
     pub jobs: Mutex<Vec<Arc<Job>>>,
     pub log: Mutex<VecDeque<LogEntry>>,
     analysis: Mutex<HashMap<String, Value>>,
@@ -100,6 +102,8 @@ pub struct Engine {
     pub(crate) probes: Mutex<HashMap<String, Media>>,
     /// Library thumbnails / filmstrip frames.
     pub(crate) thumbs: Mutex<HashMap<String, Arc<resvg::tiny_skia::Pixmap>>>,
+    /// Audio peak data for waveforms, by path|size|mtime.
+    pub(crate) peaks: Mutex<HashMap<String, Arc<Vec<u8>>>>,
     /// The editor window's selection and playhead, sent over its WebSocket.
     ui: RwLock<ops::Ui>,
     /// Editor windows connected right now (the UI state only counts while one is).
@@ -147,8 +151,10 @@ impl Engine {
         let p = Project::new("Untitled", 1920, 1080, 30.0);
         let active = p.main.clone();
         let (tx, _) = broadcast::channel(256);
-        Arc::new(Engine {
-            frames: Arc::new(FrameServer::new(ff.clone(), false)),
+        let proxies = crate::render::proxy::Proxies::new(ff.clone());
+        let eng = Arc::new(Engine {
+            frames: Arc::new(FrameServer::for_preview(ff.clone(), proxies.clone())),
+            proxies,
             ff,
             st: RwLock::new(State { p, path: None, rev: 1, active, undo: vec![], redo: vec![], dirty: false }),
             events: tx,
@@ -158,9 +164,30 @@ impl Engine {
             roots: RwLock::new(None),
             probes: Mutex::new(HashMap::new()),
             thumbs: Mutex::new(HashMap::new()),
+            peaks: Mutex::new(HashMap::new()),
             ui: RwLock::new(ops::Ui::default()),
             gui_clients: std::sync::atomic::AtomicUsize::new(0),
-        })
+        });
+        // a finished proxy changes what previews show: tell the editor
+        let weak = Arc::downgrade(&eng);
+        eng.proxies.set_on_change(Box::new(move |msg| {
+            if let Some(e) = weak.upgrade() {
+                let rev = e.st.read().rev;
+                e.emit("proxy", rev, "proxy", msg);
+            }
+        }));
+        eng
+    }
+
+    /// Changes whenever a preview of the same revision could look different
+    /// (a proxy became ready, proxies were switched on or off): for frame caches.
+    pub fn view_key(&self) -> (u64, u64) {
+        (self.st.read().rev, self.proxies.generation())
+    }
+
+    /// One media item by id (cheaper than a whole snapshot).
+    pub fn media(&self, id: &str) -> Option<Media> {
+        self.st.read().p.media(id).cloned()
     }
 
     pub(crate) fn emit(&self, kind: &str, rev: u64, source: &str, text: String) {
@@ -426,6 +453,8 @@ impl Engine {
             rev = s.rev;
         }
         self.frames.clear();
+        let media = self.st.read().p.media.clone();
+        self.proxies.request(&media, false);
         self.emit("changed", rev, "project", "open".into());
         let mut msg = format!("opened '{name}' from {path}");
         if !missing.is_empty() {

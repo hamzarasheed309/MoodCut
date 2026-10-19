@@ -47,7 +47,11 @@ struct AppState {
     public_url: parking_lot::RwLock<Option<String>>,
     port: u16,
     cache: Mutex<HashMap<String, (Vec<u8>, &'static str)>>,
+    /// Rendered monitor frames by revision/time/size: scrubbing back over frames is instant.
+    frame_cache: Mutex<FrameCache>,
     thumb_slots: tokio::sync::Semaphore,
+    /// Waveform peak files being made (each decodes a whole audio track once).
+    wave_slots: tokio::sync::Semaphore,
     /// FFmpeg install from the editor: (running, last status line, error)
     ff_setup: Arc<Mutex<(bool, String, Option<String>)>>,
 }
@@ -70,7 +74,9 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         public_url: parking_lot::RwLock::new(o.public_url.clone()),
         port: o.port,
         cache: Mutex::new(HashMap::new()),
+        frame_cache: Mutex::new(FrameCache::default()),
         thumb_slots: tokio::sync::Semaphore::new(4),
+        wave_slots: tokio::sync::Semaphore::new(2),
         ff_setup: Arc::new(Mutex::new((false, String::new(), None))),
     });
     let app = Router::new()
@@ -100,6 +106,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/layer", get(api_layer))
         .route("/api/tunnel", post(api_tunnel))
         .route("/api/setup/ffmpeg", post(api_setup_ffmpeg))
+        .route("/api/proxy", get(api_proxy).post(api_proxy))
         .route("/api/ai/clients", get(api_ai_clients))
         .route("/api/ai/install", post(api_ai_install))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
@@ -419,8 +426,55 @@ struct FrameQ {
     png: Option<bool>,
 }
 
+/// Small LRU of encoded monitor frames (about 96 MB).
+#[derive(Default)]
+struct FrameCache {
+    map: HashMap<String, (Bytes, &'static str)>,
+    order: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+
+impl FrameCache {
+    const BUDGET: usize = 96 << 20;
+    fn get(&mut self, k: &str) -> Option<(Bytes, &'static str)> {
+        let v = self.map.get(k).cloned()?;
+        if let Some(i) = self.order.iter().position(|x| x == k) {
+            let key = self.order.remove(i).unwrap();
+            self.order.push_back(key);
+        }
+        Some(v)
+    }
+    fn put(&mut self, k: String, v: (Bytes, &'static str)) {
+        self.bytes += v.0.len();
+        if let Some(old) = self.map.insert(k.clone(), v) {
+            self.bytes -= old.0.len();
+        } else {
+            self.order.push_back(k);
+        }
+        while self.bytes > Self::BUDGET {
+            let Some(old) = self.order.pop_front() else { break };
+            if let Some(o) = self.map.remove(&old) {
+                self.bytes -= o.0.len();
+            }
+        }
+    }
+    fn clear(&mut self) {
+        *self = FrameCache::default();
+    }
+}
+
 async fn api_frame(State(st): State<St>, Query(q): Query<FrameQ>) -> Response {
     let eng = st.eng.clone();
+    // same revision, frame, size and proxy state = same picture
+    let key = {
+        let s = eng.st.read();
+        let cid = q.comp.clone().unwrap_or_else(|| s.active.clone());
+        let fps = s.p.comp(&cid).map(|c| c.fps).unwrap_or(30.0);
+        format!("{}|{}|{cid}|{}|{}|{}|{}", s.rev, eng.proxies.generation(), (q.t * fps).round() as i64, q.w.unwrap_or(960), q.q.unwrap_or(80), q.png.unwrap_or(false))
+    };
+    if let Some((b, mime)) = st.frame_cache.lock().get(&key) {
+        return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], b).into_response();
+    }
     let r = blocking(move || -> anyhow::Result<(Vec<u8>, &'static str)> {
         let pm = eng.frame(q.comp.as_deref(), q.t, q.w.unwrap_or(960), true)?;
         if q.png.unwrap_or(false) {
@@ -431,7 +485,11 @@ async fn api_frame(State(st): State<St>, Query(q): Query<FrameQ>) -> Response {
     })
     .await;
     match r {
-        Ok((b, mime)) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], b).into_response(),
+        Ok((b, mime)) => {
+            let b = Bytes::from(b);
+            st.frame_cache.lock().put(key, (b.clone(), mime));
+            ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], b).into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     }
 }
@@ -443,18 +501,21 @@ struct ThumbQ {
     t: Option<f64>,
     #[serde(default)]
     w: Option<u32>,
-    #[serde(default)]
-    h: Option<u32>,
 }
 
 async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
-    let (p, ..) = st.eng.snapshot();
-    let Some(m) = p.media(&q.media).cloned() else { return err(StatusCode::NOT_FOUND, "no media") };
+    let Some(m) = st.eng.media(&q.media) else { return err(StatusCode::NOT_FOUND, "no media") };
     let w = q.w.unwrap_or(160).clamp(16, 960);
     let t = q.t.unwrap_or_else(|| Engine::poster_time(&m));
-    let key = format!("thumb|{}|{}|{:.2}|{w}", m.path, m.mtime, t);
+    let key = format!("thumb|{}|{}|{}|{:.2}|{w}", m.path, m.size, m.mtime, t);
     if let Some((b, mime)) = st.cache.lock().get(&key).cloned() {
         return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
+    }
+    // thumbnails are kept on disk too (like Premiere's media cache): reopening a big library is instant
+    let disk = crate::config::cache_dir().join("thumbs").join(format!("{:016x}.jpg", crate::render::eval::hash_str(&key)));
+    if let Ok(b) = tokio::fs::read(&disk).await {
+        st.cache.lock().insert(key, (b.clone(), "image/jpeg"));
+        return ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
     // a big library can request hundreds of thumbnails at once; decode a few at a time
     let _permit = st.thumb_slots.acquire().await;
@@ -465,7 +526,12 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
         }
         let pm = eng.media_frame(&m, t, w)?;
         let pm = if m.alpha { crate::library::on_checker(&pm) } else { (*pm).clone() };
-        encode::encode_jpeg(&pm, 75)
+        let jpg = encode::encode_jpeg(&pm, 75)?;
+        if let Some(d) = disk.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(&disk, &jpg);
+        Ok(jpg)
     })
     .await;
     match r {
@@ -481,30 +547,98 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
     }
 }
 
-async fn api_waveform(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
-    let (p, ..) = st.eng.snapshot();
-    let Some(m) = p.media(&q.media).cloned() else { return err(StatusCode::NOT_FOUND, "no media") };
+#[derive(Deserialize)]
+struct WaveQ {
+    media: String,
+    #[serde(default)]
+    w: Option<u32>,
+    #[serde(default)]
+    h: Option<u32>,
+    /// source seconds shown (default: the whole file)
+    #[serde(default)]
+    from: Option<f64>,
+    #[serde(default)]
+    to: Option<f64>,
+    #[serde(default)]
+    color: Option<String>,
+}
+
+/// Waveform picture of a media file (or a part of it), drawn from its peak file.
+async fn api_waveform(State(st): State<St>, Query(q): Query<WaveQ>) -> Response {
+    let Some(m) = st.eng.media(&q.media) else { return err(StatusCode::NOT_FOUND, "no media") };
     if !m.has_audio {
         return err(StatusCode::NOT_FOUND, "no audio");
     }
-    let (w, h) = (q.w.unwrap_or(800).clamp(32, 4000), q.h.unwrap_or(64).clamp(16, 400));
-    let key = format!("wave|{}|{}|{w}x{h}", m.path, m.mtime);
+    let (w, h) = (q.w.unwrap_or(800).clamp(16, 8192), q.h.unwrap_or(64).clamp(8, 600));
+    let from = q.from.unwrap_or(0.0).max(0.0);
+    let to = q.to.unwrap_or(m.dur).max(from + 1e-3);
+    let color = q.color.as_deref().and_then(crate::library::hex_rgb).unwrap_or((0x9b, 0xe7, 0xc4));
+    let key = format!("wave|{}|{}|{}|{w}x{h}|{from:.3}-{to:.3}|{color:?}", m.path, m.size, m.mtime);
     if let Some((b, mime)) = st.cache.lock().get(&key).cloned() {
-        return ([(header::CONTENT_TYPE, mime)], b).into_response();
+        return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
+    let _permit = st.wave_slots.acquire().await;
     let eng = st.eng.clone();
-    let r = blocking(move || {
-        eng.ff.run_capture(&[
-            "-i".into(), m.path.clone(), "-filter_complex".into(), format!("aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=#9be7c4"), "-frames:v".into(), "1".into(), "-f".into(), "image2pipe".into(), "-vcodec".into(), "png".into(), "-".into(),
-        ])
+    let r = blocking(move || -> anyhow::Result<Vec<u8>> {
+        let peaks = eng.peaks(&m)?;
+        encode::encode_png(&crate::library::draw_waveform(&peaks, from, to, w, h, color, true))
     })
     .await;
     match r {
-        Ok((b, _)) => {
-            st.cache.lock().insert(key, (b.clone(), "image/png"));
-            ([(header::CONTENT_TYPE, "image/png")], b).into_response()
+        Ok(b) => {
+            let mut c = st.cache.lock();
+            if c.len() > 4000 {
+                c.clear();
+            }
+            c.insert(key, (b.clone(), "image/png"));
+            ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "max-age=3600")], b).into_response()
         }
         Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")),
+    }
+}
+
+/// Preview proxies: status, the Toggle Proxies switch, making and deleting them.
+async fn api_proxy(State(st): State<St>, body: Option<Json<Value>>) -> Response {
+    let a = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let eng = st.eng.clone();
+    let r = blocking(move || -> anyhow::Result<Value> {
+        use crate::render::proxy::Mode;
+        let px = &eng.proxies;
+        let (p, ..) = eng.snapshot();
+        let ids: Vec<String> = match a["ids"].as_str() {
+            Some(spec) if !spec.trim().is_empty() => crate::library::select_media(&p, spec)?,
+            _ => vec![],
+        };
+        let ms: Vec<crate::model::project::Media> = ids.iter().filter_map(|i| p.media(i).cloned()).collect();
+        match a["action"].as_str().unwrap_or("status") {
+            "enable" => px.set_enabled(true),
+            "disable" => px.set_enabled(false),
+            "toggle" => px.set_enabled(!px.enabled()),
+            "mode" => px.set_mode(a["mode"].as_str().and_then(Mode::parse).ok_or_else(|| anyhow::anyhow!("mode must be auto, all or off"))?),
+            "create" => {
+                let all: Vec<_> = if ms.is_empty() { p.media.clone() } else { ms.clone() };
+                px.request(&all, true);
+            }
+            "delete" => {
+                px.delete(if ms.is_empty() { &p.media } else { &ms });
+            }
+            "cancel" => px.cancel_all(),
+            _ => {}
+        }
+        let tags: serde_json::Map<String, Value> = p.media.iter().filter_map(|m| {
+            let t = px.tag(m);
+            (!t.is_empty()).then(|| (m.id.clone(), json!(t)))
+        }).collect();
+        let busy = tags.values().any(|t| t.as_str().is_some_and(|s| s.contains('%') || s.contains("queued")));
+        Ok(json!({"ok": true, "enabled": px.enabled(), "mode": px.mode().name(), "summary": px.summary(&p.media), "media": tags, "busy": busy}))
+    })
+    .await;
+    match r {
+        Ok(v) => {
+            st.frame_cache.lock().clear();
+            Json(v).into_response()
+        }
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
     }
 }
 
@@ -767,6 +901,7 @@ async fn api_setup_ffmpeg(State(st): State<St>, headers: HeaderMap, Json(a): Jso
                     Ok(_) if eng.ff.reload() => {
                         g.1 = format!("FFmpeg {} ready", eng.ff.version());
                         st2.cache.lock().clear();
+                        st2.frame_cache.lock().clear();
                         eng.emit("setup", eng.st.read().rev, "setup", g.1.clone());
                     }
                     Ok(_) => g.2 = Some("FFmpeg was installed but couldn't be started".into()),
@@ -1066,5 +1201,34 @@ pub fn open_window(url: &str) {
             }
         }
         let _ = try_run("xdg-open", &[url]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_cache_keeps_recent_frames_within_its_budget() {
+        let mut c = FrameCache::default();
+        let mb = Bytes::from(vec![0u8; 1 << 20]);
+        for i in 0..200 {
+            c.put(format!("f{i}"), (mb.clone(), "image/jpeg"));
+            if i == 10 {
+                // touching an old frame keeps it
+                assert!(c.get("f0").is_some());
+            }
+        }
+        assert!(c.bytes <= FrameCache::BUDGET);
+        assert!(c.get("f199").is_some(), "newest kept");
+        assert!(c.get("f1").is_none(), "oldest evicted");
+        c.clear();
+        assert_eq!(c.bytes, 0);
+    }
+
+    #[test]
+    fn local_and_remote_hosts() {
+        assert!(local_host("127.0.0.1:7878") && local_host("localhost") && local_host("[::1]:7878"));
+        assert!(!local_host("quiet-river.trycloudflare.com") && !local_host("192.168.1.5:7878"));
     }
 }

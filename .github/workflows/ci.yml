@@ -27,8 +27,8 @@ jobs:
     name: Test + render smoke test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -80,7 +80,7 @@ jobs:
           ! grep -q '"moodcut"' "$home/.cursor/mcp.json"
       - name: Package the Linux build
         run: tar -czf moodcut-linux-x64.tar.gz -C target/release moodcut && ls -l moodcut-linux-x64.tar.gz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: moodcut-linux-x64
           path: moodcut-linux-x64.tar.gz
@@ -90,8 +90,8 @@ jobs:
     name: Build (Windows x64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -179,7 +179,7 @@ jobs:
           if ($userPath -like "*$dir*") { Write-Error "PATH entry left behind"; exit 1 }
           if (Test-Path "HKCU:\Software\Classes\MoodCut.Project") { Write-Error "file association left behind"; exit 1 }
           Write-Host "install + uninstall OK"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: moodcut-windows-x64
           path: |
@@ -197,10 +197,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref_name }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: moodcut-windows-x64
           path: artifact
@@ -236,11 +236,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: moodcut-windows-x64
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: moodcut-linux-x64
           path: linux

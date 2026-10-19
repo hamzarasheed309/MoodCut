@@ -1,12 +1,12 @@
 import { render } from "preact";
 import { App } from "./App";
 import { maybeShowHome } from "./components/Home";
-import { connectWS, loadCatalog, refresh, refreshHistory, refreshJobs, refreshLogs, toast } from "./store";
+import { connectWS, loadCatalog, refresh, refreshHistory, refreshJobs, refreshLogs, refreshProxies, toast } from "./store";
 import "./styles.css";
 
 async function boot() {
   try {
-    await Promise.all([refresh(), loadCatalog(), refreshLogs(), refreshJobs(), refreshHistory()]);
+    await Promise.all([refresh(), loadCatalog(), refreshLogs(), refreshJobs(), refreshHistory(), refreshProxies()]);
   } catch (e) {
     toast(`Can't reach the MoodCut engine: ${e}`, true);
   }

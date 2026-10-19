@@ -268,11 +268,20 @@ pub struct FrameServer {
     readers: Mutex<HashMap<String, Arc<Mutex<VideoReader>>>>,
     stills: Mutex<HashMap<String, (FrameRef, Instant)>>,
     pub hw: bool,
+    /// Preview proxies (the editor's frame server only; exports never use them).
+    pub proxies: Option<Arc<super::proxy::Proxies>>,
 }
 
 impl FrameServer {
     pub fn new(ff: Arc<Ff>, hw: bool) -> FrameServer {
-        FrameServer { ff, readers: Mutex::new(HashMap::new()), stills: Mutex::new(HashMap::new()), hw }
+        FrameServer { ff, readers: Mutex::new(HashMap::new()), stills: Mutex::new(HashMap::new()), hw, proxies: None }
+    }
+
+    /// A frame server for previews: proxies, and hardware decoding only when asked
+    /// for with MOODCUT_HWDEC=1 (CPU decoding keeps the GPU free by default).
+    pub fn for_preview(ff: Arc<Ff>, proxies: Arc<super::proxy::Proxies>) -> FrameServer {
+        let hw = std::env::var("MOODCUT_HWDEC").is_ok_and(|v| matches!(v.as_str(), "1" | "on" | "auto" | "true"));
+        FrameServer { proxies: Some(proxies), ..FrameServer::new(ff, hw) }
     }
 
     /// `owner` scopes a reader to one timeline item so parallel clips of the

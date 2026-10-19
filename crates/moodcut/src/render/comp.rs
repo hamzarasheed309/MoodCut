@@ -532,7 +532,7 @@ impl<'a> CompR<'a> {
                         let sp = it.speed();
                         let remapped = it.props.get("remap").map(|a| a.is_animated()).unwrap_or(false);
                         let rate = if remapped { m.fps.max(1.0) } else { self.comp.fps / sp };
-                        let spec = ReaderSpec {
+                        let mut spec = ReaderSpec {
                             path: m.path.clone(),
                             w: dw,
                             h: dh,
@@ -543,6 +543,13 @@ impl<'a> CompR<'a> {
                             src_dur: m.dur,
                             interp: ev.str(&it.props, "interp"),
                         };
+                        // previews decode the proxy when there is one (decode-time FFmpeg
+                        // effects work in source pixels, so those clips keep the original)
+                        if self.rc.draft && spec.vf.is_empty() {
+                            if let Some(p) = self.rc.frames.proxies.as_ref().and_then(|px| px.for_preview(m, dw)) {
+                                spec.path = p;
+                            }
+                        }
                         let st = Self::src_time(it, tl, ev, m.fps);
                         if it.props.get("hold").map(|a| a.v.bool()).unwrap_or(false) {
                             return Ok(Some(self.rc.frames.video_still(&spec, st)?));

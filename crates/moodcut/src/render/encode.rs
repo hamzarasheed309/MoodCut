@@ -352,15 +352,39 @@ pub fn preview_stream(ff: Arc<Ff>, p: Project, frames: Arc<FrameServer>, comp: S
     std::thread::spawn(move || {
         let rc = RenderCtx { p: &p, frames: &frames, draft: true };
         let n = ((t1 - t0) * fps).round() as u64;
+        let frame_dur = 1.0 / fps;
+        // Real-time playback: when frames take longer to make than to show, the
+        // last one is repeated instead of stalling the player (dropped frames, as
+        // in Premiere), so picture and sound stay in sync. Only render time counts:
+        // waiting on a full pipe means the player is ahead. The start-up credit
+        // absorbs decoders spinning up; a new picture comes at least once a second.
+        let mut debt = -0.25f64;
+        let mut last: Option<Vec<u8>> = None;
+        let mut repeats = 0;
+        let max_repeats = fps.round().max(1.0) as u32;
         for i in 0..n {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
+            if debt > frame_dur && repeats < max_repeats {
+                if let Some(b) = &last {
+                    if stdin.write_all(b).is_err() {
+                        break;
+                    }
+                    debt -= frame_dur;
+                    repeats += 1;
+                    continue;
+                }
+            }
+            let started = Instant::now();
             let t = t0 + i as f64 / fps;
             let Ok(pm) = render_frame(&rc, &comp, t, scale) else { break };
+            debt = (debt + started.elapsed().as_secs_f64() - frame_dur).max(-0.5);
+            repeats = 0;
             if stdin.write_all(pm.data()).is_err() {
                 break;
             }
+            last = Some(pm.take());
         }
         drop(stdin);
         if cancel.load(Ordering::Relaxed) {

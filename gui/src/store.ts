@@ -42,6 +42,11 @@ export const showRender = signal(false);
 export const showCheck = signal(false);
 /** HTML graphic editor: null = closed, {} = new graphic, {id} = edit that graphic. */
 export const graphicEditor = signal<null | { id?: string }>(null);
+/** Preview proxies (Premiere's Toggle Proxies): status per media and the on/off switch. */
+export type ProxyState = { enabled: boolean; mode: string; summary: string; media: Record<string, string>; busy: boolean };
+export const proxyState = signal<ProxyState | null>(null);
+/** Bumped when previews of the same revision may look different (a proxy finished, proxies toggled). */
+export const viewGen = signal(0);
 export const fileBrowser = signal<null | { kind: "open" | "save" | "import" | "folder"; filter: string; resolve: (p: string[]) => void }>(null);
 
 export const comp = computed<Comp | null>(() => {
@@ -164,8 +169,9 @@ export async function importPaths(paths: string[]) {
   if (!paths.length) return;
   const r = await j<any>("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths }) });
   if (!r.ok) toast(r.error, true);
-  else toast(`Imported ${r.log.length} item(s)`);
+  else toast(r.log.find((l: string) => l.startsWith("making preview proxies")) ? `Imported. ${r.log[r.log.length - 1]}` : `Imported ${r.log.length} item(s)`);
   await refresh();
+  refreshProxies();
 }
 
 /** Native OS dialog, falling back to the in-app browser. */
@@ -176,6 +182,20 @@ export async function pickFiles(kind: "open" | "save" | "import" | "folder", fil
   } catch {}
   // no native dialog available (e.g. Linux without zenity): use the in-app browser
   return new Promise((resolve) => (fileBrowser.value = { kind, filter, resolve }));
+}
+
+let proxyPoll: number | undefined;
+/** Reads (or changes, with a body) the proxy state; polls while proxies are being made. */
+export async function refreshProxies(body?: Record<string, unknown>) {
+  try {
+    const r = await j<any>("/api/proxy", body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
+    if (!r.ok) return toast(r.error, true);
+    const before = proxyState.value;
+    proxyState.value = r;
+    if (body || (before && (before.enabled !== r.enabled || Object.keys(before.media).length !== Object.keys(r.media).length))) viewGen.value++;
+    clearTimeout(proxyPoll);
+    if (r.busy) proxyPoll = window.setTimeout(() => refreshProxies(), 2000);
+  } catch {}
 }
 
 export async function loadCatalog() {
@@ -225,8 +245,13 @@ export function connectWS() {
         refreshLogs();
         refreshHistory();
         if (e.source === "mcp") aiPulse.value++;
+        // imports (by the AI too) queue proxies for heavy footage
+        if (e.source !== "gui" || /import/.test(e.text || "")) refreshProxies();
       } else if (e.kind === "setup") {
         refresh();
+      } else if (e.kind === "proxy") {
+        viewGen.value++;
+        refreshProxies();
       } else if (e.kind === "job") {
         refreshJobs();
         if (e.text?.includes("done") || e.text?.includes("failed")) toast(e.text, e.text.includes("failed"));
