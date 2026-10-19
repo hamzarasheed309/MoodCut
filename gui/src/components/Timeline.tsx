@@ -321,10 +321,12 @@ export function Timeline() {
     if (m && r.track.kind === "video" && (m.kind === "video" || m.kind === "image" || m.kind === "svg") && w > 30) {
       const tw = Math.max(40, Math.round(((h - 16) * m.w) / Math.max(1, m.h)));
       const sp = speedOf(it);
+      const back = !!staticVal(it.props?.reverse);
       for (let tx = x; tx < x + w; tx += tw) {
         if (tx + tw < 0 || tx > g.canvas.width) continue;
         const local = (tx - x) / zoom.value;
-        let st = (it.in || 0) + local * sp;
+        // a reversed clip plays its source range backwards
+        let st = (it.in || 0) + (back ? Math.max(0, it.dur - local) : local) * sp;
         st = m.kind === "video" ? Math.round(Math.min(st, Math.max(0, m.dur - 0.1)) * 2) / 2 : 0;
         const im = img(`/api/thumb?media=${m.id}&t=${st}&w=96`);
         if (im) g.drawImage(im, tx, y + 14, tw, h - 14);
@@ -345,7 +347,14 @@ export function Timeline() {
       else im = waveLast.get(range) || null;
       if (im && to > from) {
         g.globalAlpha *= 0.9;
-        g.drawImage(im, x, y + 12, shown, h - 12);
+        if (staticVal(it.props?.reverse)) {
+          // reversed clip: mirror the waveform so it lines up with what you hear
+          g.save();
+          g.translate(x + shown, 0);
+          g.scale(-1, 1);
+          g.drawImage(im, 0, y + 12, shown, h - 12);
+          g.restore();
+        } else g.drawImage(im, x, y + 12, shown, h - 12);
       }
     }
     // label
@@ -355,7 +364,7 @@ export function Timeline() {
     g.font = "600 10.5px Inter, system-ui";
     const label = itemLabel(it, it.kind === "comp" ? project.value?.comps.find((c) => c.id === it.src)?.name : m?.name);
     const sp = speedOf(it);
-    const extra = (sp !== 1 ? ` ${sp}x` : "") + (it.props?.reverse ? " ⟲" : "") + ((it.fx || []).length ? " ƒ" : "");
+    const extra = (sp !== 1 ? ` ${sp}x` : "") + (staticVal(it.props?.reverse) ? " ⟲" : "") + ((it.fx || []).length ? " ƒ" : "");
     g.fillText(label + extra, x + 5, y + 10.5, Math.max(10, w - 8));
     // keyframes of the selected item
     if (selected) {

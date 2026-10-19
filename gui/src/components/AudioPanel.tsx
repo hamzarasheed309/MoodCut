@@ -2,7 +2,7 @@
 import { useState } from "preact/hooks";
 import { levels } from "../meter";
 import { catalog, comp, findItem, mediaById, run, selection } from "../store";
-import type { Effect, Track } from "../types";
+import type { Effect, PDef, Track } from "../types";
 import { fmtNum, staticVal } from "../util";
 import { NumField, Slider } from "./Controls";
 
@@ -28,6 +28,16 @@ function Meter() {
 }
 
 /** Settings of one track / master effect: a slider per number, a menu per choice. */
+/** Slider range for an audio effect setting. Every number setting has a range in the catalog; the fallback is only for older engines. */
+function fxRange(p: PDef): { min: number; max: number; step: number; log: boolean } {
+  const d = Number(p.def) || 0;
+  const min = p.min ?? Math.min(0, d * 2);
+  const max = p.max ?? Math.max(1, Math.abs(d) * 4);
+  const whole = ["bits", "downsample", "harmonics"].includes(p.name);
+  const step = p.name === "freq" && min === 50 && max === 60 ? 10 : whole ? 1 : max - min > 200 ? 1 : max - min > 20 ? 0.1 : 0.01;
+  return { min, max, step, log: min > 0 && max / min >= 50 };
+}
+
 function BusFxSettings({ e, target }: { e: Effect; target: string }) {
   const def = catalog.value?.audio_effects.find((f) => f.name === e.kind);
   if (!def) return null;
@@ -55,9 +65,8 @@ function BusFxSettings({ e, target }: { e: Effect; target: string }) {
             </label>
           );
         if (p.type !== "num") return null;
-        const min = p.min ?? -100;
-        const max = p.max ?? 100;
-        return <Slider key={p.name} label={p.name} title={p.desc} value={Number(cur)} def={Number(p.def)} min={min} max={max} step={max - min > 50 ? 1 : 0.05} onCommit={(v) => run(`afx ${ref} ${p.name}=${fmtNum(v, 3)}`, true)} />;
+        const { min, max, step, log } = fxRange(p);
+        return <Slider key={p.name} label={p.name} title={p.desc} value={Number(cur)} def={Number(p.def)} min={min} max={max} step={step} log={log} onCommit={(v) => run(`afx ${ref} ${p.name}=${fmtNum(v, 3)}`, true)} />;
       })}
     </div>
   );

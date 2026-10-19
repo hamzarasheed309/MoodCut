@@ -1,4 +1,4 @@
-; MoodCut for Windows: installer (Inno Setup 6.1 or later).
+; MoodCut for Windows: installer (Inno Setup 6.3 or later).
 ;
 ; Build:   iscc /DAppVersion=1.0.0 installer\moodcut.iss      -> dist\MoodCut-Setup-x64.exe
 ; Silent:  MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopath,assoc,ffmpeg,connectai"
@@ -9,6 +9,10 @@
 ; moodcut), .mcut file association, a portable FFmpeg downloaded with a progress
 ; bar, and registering MoodCut with the AI apps found on the PC. The uninstaller
 ; reverses all of it.
+
+#if VER < EncodeVer(6,3,0)
+  #error MoodCut's installer needs Inno Setup 6.3 or later (it uses x64compatible and DownloadTemporaryFile)
+#endif
 
 #define AppName "MoodCut"
 #ifndef AppVersion
@@ -54,7 +58,8 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 ChangesEnvironment=yes
 ChangesAssociations=yes
-CloseApplications=yes
+; a running editor, or an AI app's background moodcut (no window), must be closed to update the exe
+CloseApplications=force
 RestartApplications=no
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName={#AppName}
@@ -164,13 +169,20 @@ begin
   Result := True;
 end;
 
-function RunMoodCut(Params, Status: String): Integer;
+function RunMoodCut(Params, Status: String; AsUser: Boolean): Integer;
 var
   Code: Integer;
+  Ok: Boolean;
 begin
   WizardForm.StatusLabel.Caption := Status;
-  if not Exec(ExpandConstant('{app}\{#AppExe}'), Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
-    Code := -1;
+  { AI app settings live in the signed-in user's profile: in an all-users install
+    Setup runs elevated (maybe as another admin account), so run those steps as the
+    user who started Setup }
+  if AsUser and IsAdminInstallMode then
+    Ok := ExecAsOriginalUser(ExpandConstant('{app}\{#AppExe}'), Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code)
+  else
+    Ok := Exec(ExpandConstant('{app}\{#AppExe}'), Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code);
+  if not Ok then Code := -1;
   Log(Format('moodcut %s -> %d', [Params, Code]));
   Result := Code;
 end;
@@ -197,7 +209,7 @@ begin
   end;
   WizardForm.ProgressGauge.Position := WizardForm.ProgressGauge.Max;
   if Ok then
-    Ok := RunMoodCut('setup --from "' + Zip + '" --dest "' + ExpandConstant('{app}\ffmpeg\bin') + '"', 'Unpacking FFmpeg...') = 0;
+    Ok := RunMoodCut('setup --from "' + Zip + '" --dest "' + ExpandConstant('{app}\ffmpeg\bin') + '"', 'Unpacking FFmpeg...', False) = 0;
   if not Ok then
     SuppressibleMsgBox('FFmpeg could not be downloaded right now.' + #13#10#13#10 + 'MoodCut will offer a one-click install the first time it opens.', mbInformation, MB_OK, IDOK);
 end;
@@ -210,8 +222,22 @@ begin
   begin
     if WizardIsTaskSelected('addtopath') then AddToPath(ExpandConstant('{app}'));
     if WizardIsTaskSelected('ffmpeg') then InstallFFmpeg;
-    if WizardIsTaskSelected('connectai') then RunMoodCut('install-ai --quiet', 'Connecting your AI apps...');
+    if WizardIsTaskSelected('connectai') then RunMoodCut('install-ai --quiet', 'Connecting your AI apps...', True);
   end;
+end;
+
+{ Settings and re-creatable files only. Kept: autosave\, graphics\, sfx\, downloads\,
+  fonts\ and models\, which can hold the user's own work or files they added. }
+procedure RemoveSettingsAndCaches(Data: String);
+begin
+  DelTree(Data + '\cache', True, True, True);
+  DelTree(Data + '\ffmpeg', True, True, True);
+  DelTree(Data + '\ffmpeg-download', True, True, True);
+  DelTree(Data + '\bin', True, True, True);
+  DeleteFile(Data + '\settings.json');
+  DeleteFile(Data + '\instance.json');
+  DeleteFile(Data + '\remote-token');
+  RemoveDir(Data); { only if nothing else is left }
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -224,7 +250,7 @@ begin
   begin
     Data := ExpandConstant('{userappdata}\MoodCut');
     if DirExists(Data) and not UninstallSilent then
-      if MsgBox('Also remove MoodCut''s settings and caches (' + Data + ')?' + #13#10#13#10 + 'Your projects and videos are not touched.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-        DelTree(Data, True, True, True);
+      if MsgBox('Also remove MoodCut''s settings, caches and downloaded tools (' + Data + ')?' + #13#10#13#10 + 'Autosaves, generated graphics and sound effects are kept, and your projects and videos are not touched.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+        RemoveSettingsAndCaches(Data);
   end;
 end;

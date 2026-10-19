@@ -25,19 +25,28 @@ say "  MoodCut - the AI-native video editor"
 say ""
 
 installed=""
+prebuilt_broken=""
 if [ "$os" = "Linux" ] && [ "$arch" = "x86_64" ] && [ -z "${MOODCUT_FROM_SOURCE:-}" ]; then
   url="https://github.com/$REPO/releases/latest/download/moodcut-linux-x64.tar.gz"
   say "Downloading $url"
-  if curl -fsSL "$url" -o "$tmp/moodcut.tar.gz"; then
-    tar -xzf "$tmp/moodcut.tar.gz" -C "$tmp"
-    install -m 755 "$tmp/moodcut" "$BIN_DIR/moodcut"
-    installed=1
+  if curl -fsSL "$url" -o "$tmp/moodcut.tar.gz" && tar -xzf "$tmp/moodcut.tar.gz" -C "$tmp"; then
+    # the release is built on a recent Ubuntu; check it runs here before installing it
+    if "$tmp/moodcut" --version >/dev/null 2>&1; then
+      install -m 755 "$tmp/moodcut" "$BIN_DIR/moodcut"
+      installed=1
+    else
+      prebuilt_broken=1
+      say "The prebuilt MoodCut doesn't run on this system (its C library is older than the build's); building from source instead."
+    fi
   else
     say "No prebuilt release found; building from source instead."
   fi
 fi
 
 if [ -z "$installed" ]; then
+  if [ -n "${prebuilt_broken:-}" ] && ! command -v cargo >/dev/null 2>&1; then
+    die "the prebuilt binary needs a newer Linux (glibc 2.39, e.g. Ubuntu 24.04+). Install Rust (https://rustup.rs) and Node.js 20+, then run this again to build from source"
+  fi
   command -v cargo >/dev/null 2>&1 || die "building needs Rust (https://rustup.rs) and Node.js 20+"
   command -v npm >/dev/null 2>&1 || die "building needs Node.js 20+ (https://nodejs.org)"
   command -v git >/dev/null 2>&1 || die "building needs git"

@@ -445,10 +445,10 @@ export function ProgramMonitor() {
           ))}
         </select>
         <button
-          class={"btn sm" + (px?.enabled && haveProxies ? " on" : "")}
+          class={"btn sm" + (px?.enabled ? " on" : "")}
           disabled={!px}
           onClick={() => refreshProxies({ action: px?.enabled ? "disable" : "enable" })}
-          title={`Toggle Proxies: previews use small, fast copies of heavy footage (4K, HEVC…); exports always use the originals.\n${px?.summary || ""}`}
+          title={`Toggle Proxies: previews use small, fast copies of heavy footage (4K, HEVC…); exports always use the originals.\n${px?.enabled && !haveProxies ? "On (no proxies ready yet).\n" : ""}${px?.summary || ""}`}
         >
           Proxies
         </button>

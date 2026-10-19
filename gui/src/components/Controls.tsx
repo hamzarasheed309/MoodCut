@@ -100,7 +100,15 @@ export function TextField({ value, onCommit, placeholder, cls, style, title }: {
 }
 
 /** Labelled range slider; drags preview locally and commit once on release. Double-click the label to reset. */
-export function Slider({ label, value, min, max, step = 1, def = 0, title, onCommit, bg }: { label: string; value: number; min: number; max: number; step?: number; def?: number; title?: string; onCommit: (v: number) => void; bg?: string }) {
+/** Rounds to about three significant digits (for log-scale sliders). */
+function roundSig(x: number, step: number): number {
+  const q = Math.abs(x) >= 100 ? 1 : Math.abs(x) >= 10 ? 0.1 : Math.abs(x) >= 1 ? 0.01 : 0.001;
+  const s = Math.max(q, step >= 1 ? step : 0);
+  return Math.round(x / s) * s;
+}
+
+/** Labeled slider with a number field. `log` maps the track logarithmically (frequencies, times), so 20 Hz-20 kHz is usable. */
+export function Slider({ label, value, min, max, step = 1, def = 0, title, onCommit, bg, log }: { label: string; value: number; min: number; max: number; step?: number; def?: number; title?: string; onCommit: (v: number) => void; bg?: string; log?: boolean }) {
   const [v, setV] = useState(value);
   const dragging = useRef(false);
   useEffect(() => {
@@ -110,6 +118,9 @@ export function Slider({ label, value, min, max, step = 1, def = 0, title, onCom
     dragging.current = false;
     if (Math.abs(n - value) > 1e-9) onCommit(n);
   };
+  const lg = !!log && min > 0 && max > min;
+  const toPos = (x: number) => (lg ? (Math.log(Math.max(min, x) / min) / Math.log(max / min)) * 1000 : x);
+  const fromPos = (p: number) => (lg ? Math.min(max, Math.max(min, roundSig(min * Math.pow(max / min, p / 1000), step))) : p);
   return (
     <div class={"sl" + (Math.abs(v - def) > 1e-9 ? " changed" : "")} title={title}>
       <label onDblClick={() => commit(def)} title={(title ? title + " · " : "") + "double-click to reset"}>
@@ -117,14 +128,14 @@ export function Slider({ label, value, min, max, step = 1, def = 0, title, onCom
       </label>
       <input
         type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={v}
+        min={lg ? 0 : min}
+        max={lg ? 1000 : max}
+        step={lg ? 1 : step}
+        value={toPos(v)}
         style={bg ? { background: bg } : undefined}
         onPointerDown={() => (dragging.current = true)}
-        onInput={(e) => setV(parseFloat((e.target as HTMLInputElement).value))}
-        onChange={(e) => commit(parseFloat((e.target as HTMLInputElement).value))}
+        onInput={(e) => setV(fromPos(parseFloat((e.target as HTMLInputElement).value)))}
+        onChange={(e) => commit(fromPos(parseFloat((e.target as HTMLInputElement).value)))}
         onKeyDown={(e) => e.stopPropagation()}
       />
       <NumField value={v} step={step} min={min} max={max} onCommit={commit} />
