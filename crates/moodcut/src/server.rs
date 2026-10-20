@@ -47,7 +47,11 @@ struct AppState {
     public_url: parking_lot::RwLock<Option<String>>,
     port: u16,
     cache: Mutex<HashMap<String, (Vec<u8>, &'static str)>>,
+    /// Rendered monitor frames by revision/time/size: scrubbing back over frames is instant.
+    frame_cache: Mutex<FrameCache>,
     thumb_slots: tokio::sync::Semaphore,
+    /// Waveform peak files being made (each decodes a whole audio track once).
+    wave_slots: tokio::sync::Semaphore,
     /// FFmpeg install from the editor: (running, last status line, error)
     ff_setup: Arc<Mutex<(bool, String, Option<String>)>>,
 }
@@ -59,6 +63,10 @@ pub fn random_token() -> String {
 }
 
 pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
+    // a long-running session: background proxies are welcome (the project's heavy footage too)
+    eng.proxies.set_active();
+    let media = eng.st.read().p.media.clone();
+    eng.proxies.request(&media, false);
     let mcp = Arc::new(Mcp::new(Ok(eng.clone())));
     let remote = if o.tunnel || o.public_url.is_some() { Some(o.token.clone().unwrap_or_else(crate::tunnel::persistent_token)) } else { o.token.clone() };
     let st: St = Arc::new(AppState {
@@ -70,11 +78,13 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         public_url: parking_lot::RwLock::new(o.public_url.clone()),
         port: o.port,
         cache: Mutex::new(HashMap::new()),
+        frame_cache: Mutex::new(FrameCache::default()),
         thumb_slots: tokio::sync::Semaphore::new(4),
+        wave_slots: tokio::sync::Semaphore::new(2),
         ff_setup: Arc::new(Mutex::new((false, String::new(), None))),
     });
     let app = Router::new()
-        .route("/api/ping", get(|| async { Json(json!({"app": "moodcut", "version": crate::VERSION})) }))
+        .route("/api/ping", get(api_ping))
         .route("/api/state", get(api_state))
         .route("/api/edit", post(api_edit))
         .route("/api/project", post(api_project))
@@ -100,13 +110,19 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/layer", get(api_layer))
         .route("/api/tunnel", post(api_tunnel))
         .route("/api/setup/ffmpeg", post(api_setup_ffmpeg))
+        .route("/api/proxy", get(api_proxy).post(api_proxy))
+        .route("/api/ai/clients", get(api_ai_clients))
+        .route("/api/ai/install", post(api_ai_install))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
         .layer(middleware::from_fn_with_state(st.clone(), guard))
+        // HTML graphics with embedded images, big imports and scripts are fine
+        .layer(axum::extract::DefaultBodyLimit::max(256 << 20))
         .with_state(st.clone());
     let addr = format!("{}:{}", o.host, o.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| anyhow::anyhow!("can't listen on {addr}: {e}"))?;
+    write_instance(o.port);
     let url = format!("http://127.0.0.1:{}", o.port);
     eprintln!("MoodCut {} — GUI {url}  |  MCP {url}/mcp", crate::VERSION);
     if let Some(t) = &o.token {
@@ -192,21 +208,37 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
     if remote && st.token.is_none() && remote_tok.is_none() {
         return (StatusCode::FORBIDDEN, "remote access is off: start it with `moodcut connect` (or Connect AI > web link)").into_response();
     }
-    // browsers: only this app's own local pages may call it without a token
-    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+    // browsers: only this app's own local pages may call it without a token; MCP
+    // also answers allow-listed browser tools on this computer (MCP Inspector). Not
+    // every local page: HTML graphics render on a throwaway 127.0.0.1 port, and their
+    // scripts must never reach the editor.
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let mcp_path = path == "/mcp" || path.starts_with("/mcp/");
+    let mut cors_origin: Option<String> = None;
+    if let Some(origin) = &origin {
         let o_host = origin.split("://").nth(1).unwrap_or("").trim_end_matches('/');
         let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
         let same_local = local_host(o_host) && o_host.eq_ignore_ascii_case(host);
         let token_given = matches(&st.token) || matches(&remote_tok);
-        if !same_local && !token_given {
+        let local_tool = mcp_path && !remote && allowed_tool_origin(origin);
+        if !same_local && !token_given && !local_tool {
             return (StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
         }
+        if mcp_path && !same_local {
+            cors_origin = Some(origin.clone());
+        }
+    }
+    if req.method() == axum::http::Method::OPTIONS && mcp_path {
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        add_cors(&mut r, cors_origin.as_deref());
+        return r;
     }
     let public_path = !remote && (path == "/api/ping" || (!path.starts_with("/api/") && !path.starts_with("/mcp")));
     if !authed && !public_path {
         return (StatusCode::UNAUTHORIZED, Json(json!({"error": "missing or invalid token"}))).into_response();
     }
     let mut resp = next.run(req).await;
+    add_cors(&mut resp, cors_origin.as_deref());
     if let Some(qt) = query_tok {
         if matches(&Some(qt.clone())) && (st.token.as_deref() == Some(qt.as_str()) || remote_tok.as_deref() == Some(qt.as_str())) {
             if let Ok(v) = HeaderValue::from_str(&format!("mc_token={qt}; Path=/; SameSite=Strict; HttpOnly")) {
@@ -215,6 +247,122 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
         }
     }
     resp
+}
+
+/// Browser origins (besides the editor itself) allowed to call /mcp without a
+/// token: MCP Inspector's default page, and any listed in MOODCUT_ALLOW_ORIGINS
+/// (comma separated, e.g. `http://localhost:3000`). Only local hosts count.
+fn allowed_tool_origin(origin: &str) -> bool {
+    let o = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+    let host = o.split("://").nth(1).unwrap_or("");
+    if !local_host(host) {
+        return false;
+    }
+    let port = host.rsplit_once(':').map(|(_, p)| p).unwrap_or("");
+    if port == "6274" {
+        return true;
+    }
+    std::env::var("MOODCUT_ALLOW_ORIGINS").map(|v| v.split(',').any(|a| a.trim().trim_end_matches('/').eq_ignore_ascii_case(&o))).unwrap_or(false)
+}
+
+/// CORS headers for MCP requests from browser tools on this computer.
+fn add_cors(r: &mut Response, origin: Option<&str>) {
+    let Some(o) = origin.and_then(|o| HeaderValue::from_str(o).ok()) else { return };
+    let h = r.headers_mut();
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+    h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST, DELETE, OPTIONS"));
+    h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type, authorization, mcp-session-id, mcp-protocol-version, last-event-id"));
+    h.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static("mcp-session-id"));
+    h.insert(header::VARY, HeaderValue::from_static("origin"));
+}
+
+/// Where the running editor listens, so `moodcut mcp` and a second launch can find it.
+fn instance_file() -> std::path::PathBuf {
+    crate::config::ensure_data_dir().join("instance.json")
+}
+
+fn write_instance(port: u16) {
+    let _ = std::fs::write(instance_file(), json!({"port": port, "pid": std::process::id(), "version": crate::VERSION}).to_string());
+}
+
+/// The port in the instance file (may be stale: check it with `running_instance`).
+pub fn instance_port() -> Option<u16> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(instance_file()).ok()?).ok()?;
+    v["port"].as_u64().map(|p| p as u16)
+}
+
+/// Tiny blocking HTTP request to a local port (no async runtime needed).
+pub fn local_request(port: u16, method: &str, path: &str, body: Option<&str>, timeout_ms: u64) -> Option<(u16, String)> {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let t = std::time::Duration::from_millis(timeout_ms);
+    let mut s = std::net::TcpStream::connect_timeout(&addr, t).ok()?;
+    s.set_read_timeout(Some(t * 10)).ok()?;
+    s.set_write_timeout(Some(t)).ok()?;
+    let body = body.unwrap_or("");
+    let req = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    s.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    let _ = s.read_to_end(&mut buf);
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let (head, rest) = text.split_once("\r\n\r\n")?;
+    let code = head.lines().next()?.split_whitespace().nth(1)?.parse().ok()?;
+    let chunked = head.to_ascii_lowercase().contains("transfer-encoding: chunked");
+    Some((code, if chunked { crate::mcp::stdio::dechunk(rest) } else { rest.to_string() }))
+}
+
+/// `/api/ping` of a MoodCut listening on `port`, if one is.
+pub fn running_instance(port: u16) -> Option<Value> {
+    let (code, body) = local_request(port, "GET", "/api/ping", None, 400)?;
+    let v: Value = serde_json::from_str(&body).ok()?;
+    (code == 200 && v["app"] == "moodcut").then_some(v)
+}
+
+/// A MoodCut already running here: on `port`, or where the instance file says.
+pub fn find_instance(port: u16) -> Option<(u16, Value)> {
+    if let Some(v) = running_instance(port) {
+        return Some((port, v));
+    }
+    let p = instance_port().filter(|p| *p != port)?;
+    running_instance(p).map(|v| (p, v))
+}
+
+/// `port` if it is free, else the next free one (up to 20 higher).
+pub fn free_port(port: u16) -> u16 {
+    (port..port.saturating_add(20)).find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok()).unwrap_or(port)
+}
+
+async fn api_ping(State(st): State<St>) -> Response {
+    let path = st.eng.st.read().path.as_ref().map(|p| p.to_string_lossy().to_string());
+    Json(json!({"app": "moodcut", "version": crate::VERSION, "port": st.port, "path": path})).into_response()
+}
+
+/// AI apps on this computer and whether MoodCut is connected to them.
+async fn api_ai_clients(headers: HeaderMap) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "only from this computer");
+    }
+    let list = blocking(crate::clients::statuses).await;
+    Json(json!({"ok": true, "clients": list, "command": crate::clients::server_command().ok()})).into_response()
+}
+
+/// One click in the editor: register (or remove) MoodCut in an AI app's settings.
+async fn api_ai_install(headers: HeaderMap, Json(a): Json<Value>) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "AI apps can only be connected from this computer");
+    }
+    let id = a["client"].as_str().unwrap_or("").to_string();
+    let remove = a["remove"].as_bool().unwrap_or(false);
+    let r = blocking(move || -> anyhow::Result<(String, Value)> {
+        let c = crate::clients::find(&id).ok_or_else(|| anyhow::anyhow!("unknown AI app '{id}'"))?;
+        let msg = crate::clients::apply(c, remove)?;
+        Ok((msg, json!(crate::clients::status(c))))
+    })
+    .await;
+    match r {
+        Ok((msg, status)) => Json(json!({"ok": true, "text": msg, "client": status})).into_response(),
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
 }
 
 async fn static_file(req: Request) -> Response {
@@ -300,8 +448,55 @@ struct FrameQ {
     png: Option<bool>,
 }
 
+/// Small LRU of encoded monitor frames (about 96 MB).
+#[derive(Default)]
+struct FrameCache {
+    map: HashMap<String, (Bytes, &'static str)>,
+    order: std::collections::VecDeque<String>,
+    bytes: usize,
+}
+
+impl FrameCache {
+    const BUDGET: usize = 96 << 20;
+    fn get(&mut self, k: &str) -> Option<(Bytes, &'static str)> {
+        let v = self.map.get(k).cloned()?;
+        if let Some(i) = self.order.iter().position(|x| x == k) {
+            let key = self.order.remove(i).unwrap();
+            self.order.push_back(key);
+        }
+        Some(v)
+    }
+    fn put(&mut self, k: String, v: (Bytes, &'static str)) {
+        self.bytes += v.0.len();
+        if let Some(old) = self.map.insert(k.clone(), v) {
+            self.bytes -= old.0.len();
+        } else {
+            self.order.push_back(k);
+        }
+        while self.bytes > Self::BUDGET {
+            let Some(old) = self.order.pop_front() else { break };
+            if let Some(o) = self.map.remove(&old) {
+                self.bytes -= o.0.len();
+            }
+        }
+    }
+    fn clear(&mut self) {
+        *self = FrameCache::default();
+    }
+}
+
 async fn api_frame(State(st): State<St>, Query(q): Query<FrameQ>) -> Response {
     let eng = st.eng.clone();
+    // same revision, frame, size and proxy state = same picture
+    let key = {
+        let s = eng.st.read();
+        let cid = q.comp.clone().unwrap_or_else(|| s.active.clone());
+        let fps = s.p.comp(&cid).map(|c| c.fps).unwrap_or(30.0);
+        format!("{}|{}|{cid}|{}|{}|{}|{}", s.rev, eng.proxies.generation(), (q.t * fps).round() as i64, q.w.unwrap_or(960), q.q.unwrap_or(80), q.png.unwrap_or(false))
+    };
+    if let Some((b, mime)) = st.frame_cache.lock().get(&key) {
+        return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], b).into_response();
+    }
     let r = blocking(move || -> anyhow::Result<(Vec<u8>, &'static str)> {
         let pm = eng.frame(q.comp.as_deref(), q.t, q.w.unwrap_or(960), true)?;
         if q.png.unwrap_or(false) {
@@ -312,7 +507,11 @@ async fn api_frame(State(st): State<St>, Query(q): Query<FrameQ>) -> Response {
     })
     .await;
     match r {
-        Ok((b, mime)) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], b).into_response(),
+        Ok((b, mime)) => {
+            let b = Bytes::from(b);
+            st.frame_cache.lock().put(key, (b.clone(), mime));
+            ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-store")], b).into_response()
+        }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
     }
 }
@@ -324,18 +523,29 @@ struct ThumbQ {
     t: Option<f64>,
     #[serde(default)]
     w: Option<u32>,
-    #[serde(default)]
-    h: Option<u32>,
 }
 
 async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
-    let (p, ..) = st.eng.snapshot();
-    let Some(m) = p.media(&q.media).cloned() else { return err(StatusCode::NOT_FOUND, "no media") };
+    let Some(m) = st.eng.media(&q.media) else { return err(StatusCode::NOT_FOUND, "no media") };
     let w = q.w.unwrap_or(160).clamp(16, 960);
     let t = q.t.unwrap_or_else(|| Engine::poster_time(&m));
-    let key = format!("thumb|{}|{}|{:.2}|{w}", m.path, m.mtime, t);
+    let key = format!("thumb|{}|{}|{}|{:.2}|{w}", m.path, m.size, m.mtime, t);
     if let Some((b, mime)) = st.cache.lock().get(&key).cloned() {
         return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
+    }
+    // library and timeline thumbnails (small) are kept on disk too, like Premiere's media
+    // cache, so reopening a big library is instant; Source-monitor frames (any time, big) aren't
+    let disk = (w <= 320).then(|| crate::config::cache_dir().join("thumbs").join(format!("{:016x}.jpg", crate::render::eval::hash_str(&key))));
+    if let Some(Ok(b)) = match &disk {
+        Some(d) => Some(tokio::fs::read(d).await),
+        None => None,
+    } {
+        let mut c = st.cache.lock();
+        if c.len() > 2000 {
+            c.clear();
+        }
+        c.insert(key, (b.clone(), "image/jpeg"));
+        return ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
     // a big library can request hundreds of thumbnails at once; decode a few at a time
     let _permit = st.thumb_slots.acquire().await;
@@ -346,7 +556,14 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
         }
         let pm = eng.media_frame(&m, t, w)?;
         let pm = if m.alpha { crate::library::on_checker(&pm) } else { (*pm).clone() };
-        encode::encode_jpeg(&pm, 75)
+        let jpg = encode::encode_jpeg(&pm, 75)?;
+        if let Some(disk) = &disk {
+            if let Some(d) = disk.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(disk, &jpg);
+        }
+        Ok(jpg)
     })
     .await;
     match r {
@@ -362,30 +579,98 @@ async fn api_thumb(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
     }
 }
 
-async fn api_waveform(State(st): State<St>, Query(q): Query<ThumbQ>) -> Response {
-    let (p, ..) = st.eng.snapshot();
-    let Some(m) = p.media(&q.media).cloned() else { return err(StatusCode::NOT_FOUND, "no media") };
+#[derive(Deserialize)]
+struct WaveQ {
+    media: String,
+    #[serde(default)]
+    w: Option<u32>,
+    #[serde(default)]
+    h: Option<u32>,
+    /// source seconds shown (default: the whole file)
+    #[serde(default)]
+    from: Option<f64>,
+    #[serde(default)]
+    to: Option<f64>,
+    #[serde(default)]
+    color: Option<String>,
+}
+
+/// Waveform picture of a media file (or a part of it), drawn from its peak file.
+async fn api_waveform(State(st): State<St>, Query(q): Query<WaveQ>) -> Response {
+    let Some(m) = st.eng.media(&q.media) else { return err(StatusCode::NOT_FOUND, "no media") };
     if !m.has_audio {
         return err(StatusCode::NOT_FOUND, "no audio");
     }
-    let (w, h) = (q.w.unwrap_or(800).clamp(32, 4000), q.h.unwrap_or(64).clamp(16, 400));
-    let key = format!("wave|{}|{}|{w}x{h}", m.path, m.mtime);
+    let (w, h) = (q.w.unwrap_or(800).clamp(16, 8192), q.h.unwrap_or(64).clamp(8, 600));
+    let from = q.from.unwrap_or(0.0).max(0.0);
+    let to = q.to.unwrap_or(m.dur).max(from + 1e-3);
+    let color = q.color.as_deref().and_then(crate::library::hex_rgb).unwrap_or((0x9b, 0xe7, 0xc4));
+    let key = format!("wave|{}|{}|{}|{w}x{h}|{from:.3}-{to:.3}|{color:?}", m.path, m.size, m.mtime);
     if let Some((b, mime)) = st.cache.lock().get(&key).cloned() {
-        return ([(header::CONTENT_TYPE, mime)], b).into_response();
+        return ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=3600")], b).into_response();
     }
+    let _permit = st.wave_slots.acquire().await;
     let eng = st.eng.clone();
-    let r = blocking(move || {
-        eng.ff.run_capture(&[
-            "-i".into(), m.path.clone(), "-filter_complex".into(), format!("aformat=channel_layouts=mono,showwavespic=s={w}x{h}:colors=#9be7c4"), "-frames:v".into(), "1".into(), "-f".into(), "image2pipe".into(), "-vcodec".into(), "png".into(), "-".into(),
-        ])
+    let r = blocking(move || -> anyhow::Result<Vec<u8>> {
+        let peaks = eng.peaks(&m)?;
+        encode::encode_png(&crate::library::draw_waveform(&peaks, from, to, w, h, color, true))
     })
     .await;
     match r {
-        Ok((b, _)) => {
-            st.cache.lock().insert(key, (b.clone(), "image/png"));
-            ([(header::CONTENT_TYPE, "image/png")], b).into_response()
+        Ok(b) => {
+            let mut c = st.cache.lock();
+            if c.len() > 4000 {
+                c.clear();
+            }
+            c.insert(key, (b.clone(), "image/png"));
+            ([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "max-age=3600")], b).into_response()
         }
         Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")),
+    }
+}
+
+/// Preview proxies: status, the Toggle Proxies switch, making and deleting them.
+async fn api_proxy(State(st): State<St>, body: Option<Json<Value>>) -> Response {
+    let a = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let eng = st.eng.clone();
+    let r = blocking(move || -> anyhow::Result<Value> {
+        use crate::render::proxy::Mode;
+        let px = &eng.proxies;
+        let (p, ..) = eng.snapshot();
+        let ids: Vec<String> = match a["ids"].as_str() {
+            Some(spec) if !spec.trim().is_empty() => crate::library::select_media(&p, spec)?,
+            _ => vec![],
+        };
+        let ms: Vec<crate::model::project::Media> = ids.iter().filter_map(|i| p.media(i).cloned()).collect();
+        match a["action"].as_str().unwrap_or("status") {
+            "enable" => px.set_enabled(true),
+            "disable" => px.set_enabled(false),
+            "toggle" => px.set_enabled(!px.enabled()),
+            "mode" => px.set_mode(a["mode"].as_str().and_then(Mode::parse).ok_or_else(|| anyhow::anyhow!("mode must be auto, all or off"))?),
+            "create" => {
+                let all: Vec<_> = if ms.is_empty() { p.media.clone() } else { ms.clone() };
+                px.request(&all, true);
+            }
+            "delete" => {
+                px.delete(if ms.is_empty() { &p.media } else { &ms });
+            }
+            "cancel" => px.cancel_all(),
+            _ => {}
+        }
+        let tags: serde_json::Map<String, Value> = p.media.iter().filter_map(|m| {
+            let t = px.tag(m);
+            (!t.is_empty()).then(|| (m.id.clone(), json!(t)))
+        }).collect();
+        let busy = tags.values().any(|t| t.as_str().is_some_and(|s| s.contains('%') || s.contains("queued")));
+        Ok(json!({"ok": true, "enabled": px.enabled(), "mode": px.mode().name(), "summary": px.summary(&p.media), "media": tags, "busy": busy}))
+    })
+    .await;
+    match r {
+        Ok(v) => {
+            st.frame_cache.lock().clear();
+            Json(v).into_response()
+        }
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
     }
 }
 
@@ -648,6 +933,7 @@ async fn api_setup_ffmpeg(State(st): State<St>, headers: HeaderMap, Json(a): Jso
                     Ok(_) if eng.ff.reload() => {
                         g.1 = format!("FFmpeg {} ready", eng.ff.version());
                         st2.cache.lock().clear();
+                        st2.frame_cache.lock().clear();
                         eng.emit("setup", eng.st.read().rev, "setup", g.1.clone());
                     }
                     Ok(_) => g.2 = Some("FFmpeg was installed but couldn't be started".into()),
@@ -671,6 +957,15 @@ async fn api_tunnel(State(st): State<St>, headers: HeaderMap, Json(a): Json<Valu
             *st2.tunnel.lock() = None;
             *st2.public_url.write() = None;
             return Ok(json!({"ok": true, "running": false}));
+        }
+        if action == "url" {
+            // your own public address (named tunnel, Tailscale Funnel, reverse proxy)
+            let u = a["url"].as_str().map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| u.starts_with("https://") || u.starts_with("http://")).ok_or_else(|| anyhow::anyhow!("url must start with https://"))?;
+            if st2.remote_token.read().is_none() {
+                *st2.remote_token.write() = Some(crate::tunnel::persistent_token());
+            }
+            *st2.tunnel.lock() = None;
+            *st2.public_url.write() = Some(u);
         }
         if action == "start" {
             let running = st2.tunnel.lock().as_mut().map(|t| t.running()).unwrap_or(false);
@@ -938,5 +1233,44 @@ pub fn open_window(url: &str) {
             }
         }
         let _ = try_run("xdg-open", &[url]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_cache_keeps_recent_frames_within_its_budget() {
+        let mut c = FrameCache::default();
+        let mb = Bytes::from(vec![0u8; 1 << 20]);
+        for i in 0..200 {
+            c.put(format!("f{i}"), (mb.clone(), "image/jpeg"));
+            if i == 10 {
+                // touching an old frame keeps it
+                assert!(c.get("f0").is_some());
+            }
+        }
+        assert!(c.bytes <= FrameCache::BUDGET);
+        assert!(c.get("f199").is_some(), "newest kept");
+        assert!(c.get("f1").is_none(), "oldest evicted");
+        c.clear();
+        assert_eq!(c.bytes, 0);
+    }
+
+    #[test]
+    fn only_listed_local_browser_tools_may_call_mcp() {
+        assert!(allowed_tool_origin("http://localhost:6274"));
+        assert!(allowed_tool_origin("http://127.0.0.1:6274/"));
+        // an HTML graphic's throwaway page, other local pages and websites are refused
+        assert!(!allowed_tool_origin("http://127.0.0.1:53211"));
+        assert!(!allowed_tool_origin("http://localhost:3000"));
+        assert!(!allowed_tool_origin("https://evil.example:6274"));
+    }
+
+    #[test]
+    fn local_and_remote_hosts() {
+        assert!(local_host("127.0.0.1:7878") && local_host("localhost") && local_host("[::1]:7878"));
+        assert!(!local_host("quiet-river.trycloudflare.com") && !local_host("192.168.1.5:7878"));
     }
 }

@@ -9,7 +9,9 @@
 //!   moodcut doctor     check FFmpeg, encoders, GPU, fonts, speech-to-text
 
 pub mod analyze;
+pub mod brand;
 pub mod check;
+pub mod clients;
 pub mod config;
 pub mod engine;
 pub mod export;
@@ -190,13 +192,48 @@ enum Cmd {
     /// Print the MoodCut Script reference as Markdown.
     #[command(hide = true)]
     Docs,
+    /// Regenerate the logo, icons and installer artwork from the brand definition (brand.rs).
+    #[command(hide = true)]
+    Brand {
+        /// The repository folder.
+        #[arg(default_value = ".")]
+        root: String,
+    },
     /// Install a portable FFmpeg (no admin rights needed) and check the setup.
     Setup {
         /// Download the portable FFmpeg even if one is already installed (to update it)
         #[arg(long)]
         force: bool,
+        /// Install from an FFmpeg build archive you already have (.zip / .tar.xz) instead of downloading.
+        #[arg(long)]
+        from: Option<String>,
+        /// With --from: the folder for ffmpeg and ffprobe (default: the data folder).
+        #[arg(long)]
+        dest: Option<String>,
     },
-    /// Register MoodCut in Claude Desktop's MCP config.
+    /// Connect MoodCut to the AI apps on this computer: Claude Desktop, Claude Code, Cursor,
+    /// VS Code, Windsurf, LM Studio, Gemini CLI, Codex. No names = every app that's installed.
+    InstallAi {
+        /// Apps to connect (claude, claude-code, cursor, vscode, windsurf, lmstudio, gemini, codex, all).
+        apps: Vec<String>,
+        /// Show which apps are installed and connected.
+        #[arg(long)]
+        list: bool,
+        /// No summary (for installers).
+        #[arg(long)]
+        quiet: bool,
+    },
+    /// Remove MoodCut from the AI apps' settings (all of them when no names are given).
+    UninstallAi {
+        apps: Vec<String>,
+        /// Also every other profile on this PC that MoodCut connected (the Windows uninstaller).
+        #[arg(long, hide = true)]
+        all_profiles: bool,
+        /// Leave entries that point at another MoodCut executable alone.
+        #[arg(long, hide = true)]
+        only_this_exe: bool,
+    },
+    /// Register MoodCut in Claude Desktop (same as `install-ai claude`).
     InstallClaude,
 }
 
@@ -227,15 +264,41 @@ fn real_main() -> Result<()> {
     match cli.cmd.unwrap_or(Cmd::Gui { port: 7878, project: None }) {
         Cmd::Gui { port, project } => {
             setup::detach_console_if_owned();
+            // one editor at a time: a second launch (or a double-clicked .mcut) goes to the open one
+            if let Some((p, _)) = server::find_instance(port) {
+                if let Some(path) = &project {
+                    let abs = std::fs::canonicalize(path).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| path.clone());
+                    server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": abs}).to_string()), 3000);
+                }
+                server::open_window(&format!("http://127.0.0.1:{p}"));
+                return Ok(());
+            }
+            let port = server::free_port(port);
+            let project_path = project.as_ref().map(|p| std::fs::canonicalize(p).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| p.clone()));
             let eng = load_engine()?;
             if let Some(p) = project {
                 eng.open(&p)?;
             }
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move {
+            let r = rt.block_on(async move {
                 let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: true, tunnel: false, public_url: None };
                 server::serve(eng, opts).await
-            })
+            });
+            // started at the same moment as another MoodCut (two files opened at once):
+            // the other one got the port, so hand this file over to it
+            if let Err(e) = &r {
+                if e.to_string().contains("can't listen") {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    if let Some((p, _)) = server::find_instance(port) {
+                        if let Some(path) = &project_path {
+                            server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path}).to_string()), 3000);
+                        }
+                        server::open_window(&format!("http://127.0.0.1:{p}"));
+                        return Ok(());
+                    }
+                }
+            }
+            r
         }
         Cmd::Serve { port, host, token, public, allow, project } => {
             let eng = load_engine()?;
@@ -254,6 +317,30 @@ fn real_main() -> Result<()> {
             if new_token {
                 let _ = std::fs::remove_file(config::ensure_data_dir().join("remote-token"));
             }
+            // the editor is already open: give it the web link instead of starting a second one
+            if let Some((p, _)) = server::find_instance(port) {
+                if new_token {
+                    eprintln!("note: the open editor keeps its current secret until it restarts");
+                }
+                let body = match &url {
+                    Some(u) => serde_json::json!({"action": "url", "url": u}),
+                    None => serde_json::json!({"action": "start"}),
+                };
+                eprintln!("MoodCut is already open (port {p}); {} …", if url.is_some() { "setting its public address" } else { "starting a web link for it" });
+                // the first start may download cloudflared and wait up to 45 s for the tunnel
+                let (_, text) = server::local_request(p, "POST", "/api/tunnel", Some(&body.to_string()), 15000).ok_or_else(|| anyhow::anyhow!("the open MoodCut didn't answer"))?;
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                let connector = v["connector"].as_str().ok_or_else(|| anyhow::anyhow!("{}", v["error"].as_str().unwrap_or("couldn't start the web link")))?;
+                println!("{}", tunnel::instructions(connector));
+                if tunnel::copy_to_clipboard(connector) {
+                    eprintln!("(connector URL copied to the clipboard)");
+                }
+                if !no_window {
+                    server::open_window(&format!("http://127.0.0.1:{p}"));
+                }
+                return Ok(());
+            }
+            let port = server::free_port(port);
             let eng = load_engine()?;
             if let Some(p) = project {
                 eng.open(&p)?;
@@ -386,6 +473,12 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Cmd::Doctor => setup::doctor(),
+        Cmd::Brand { root } => {
+            for f in brand::generate(std::path::Path::new(&root))? {
+                println!("wrote {f}");
+            }
+            Ok(())
+        }
         Cmd::Docs => {
             print!("{}", mcp::docs::reference_markdown());
             Ok(())
@@ -414,7 +507,21 @@ fn real_main() -> Result<()> {
             println!("{n} frames in {el:.2}s = {:.1} fps (worst {:.0} ms at t={:.2})", n as f64 / el, worst.0, worst.1);
             Ok(())
         }
-        Cmd::Setup { force } => setup::setup(force),
-        Cmd::InstallClaude => setup::install_claude(),
+        Cmd::Setup { force, from, dest } => setup::setup(force, from.as_deref(), dest.as_deref()),
+        Cmd::InstallAi { apps, list, quiet } => {
+            if list {
+                setup::list_ai()
+            } else {
+                setup::install_ai(&apps, quiet)
+            }
+        }
+        Cmd::UninstallAi { apps, all_profiles, only_this_exe } => {
+            if all_profiles && apps.is_empty() {
+                setup::uninstall_ai_all_profiles()
+            } else {
+                setup::uninstall_ai(&apps, only_this_exe)
+            }
+        }
+        Cmd::InstallClaude => setup::install_ai(&["claude".to_string()], false),
     }
 }

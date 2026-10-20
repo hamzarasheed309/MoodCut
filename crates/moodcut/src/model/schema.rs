@@ -78,6 +78,12 @@ macro_rules! ps {
         P { name: $n, t: $t, d: $d, min: -INF, max: INF, u: U::None, anim: false, desc: $desc, alias: &[$($a),*] }
     };
 }
+/// A static (not animatable) number with a range: audio effect settings.
+macro_rules! pr {
+    ($n:expr, $d:expr, $min:expr, $max:expr, $desc:expr) => {
+        P { name: $n, t: Num, d: N($d), min: $min, max: $max, u: U::None, anim: false, desc: $desc, alias: &[] }
+    };
+}
 
 use D::*;
 use T::*;
@@ -370,6 +376,7 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("fade", Num, N(0.0), 0.0, 100.0, U::None, "Faded film (lifted blacks)"),
         p!("stint", Color, C("none"), -INF, INF, U::None, "Shadow tint for split toning (alpha = strength), e.g. #1b6e8a66", ["shadowtint"]),
         p!("htint", Color, C("none"), -INF, INF, U::None, "Highlight tint for split toning (alpha = strength), e.g. #ff9a4466", ["highlighttint"]),
+        ps!("look", Str, S(""), "Creative look last applied with `color <id> <preset>` (a new look replaces it; your own changes are kept)"),
     ]),
     fx!("bc", ["brightness", "contrast", "brightnesscontrast"], Native, "color", "Brightness & contrast", [
         p!("brightness", Num, N(0.0), -100.0, 100.0, U::None, "Brightness", ["b"]),
@@ -841,56 +848,56 @@ pub static EFFECTS: &[EffectDef] = &[
 
 pub static AUDIO_EFFECTS: &[EffectDef] = &[
     fx!("eq", ["equalizer", "tone"], Audio, "audio", "3-band EQ", [
-        ps!("bass", Num, N(0.0), "Low shelf gain dB (100Hz)"),
-        ps!("mid", Num, N(0.0), "Mid gain dB (1kHz)"),
-        ps!("treble", Num, N(0.0), "High shelf gain dB (8kHz)"),
+        pr!("bass", 0.0, -24.0, 24.0, "Low shelf gain dB (100Hz)"),
+        pr!("mid", 0.0, -24.0, 24.0, "Mid gain dB (1kHz)"),
+        pr!("treble", 0.0, -24.0, 24.0, "High shelf gain dB (8kHz)"),
     ]),
-    fx!("highpass", ["hpf", "lowcut"], Audio, "audio", "High-pass filter", [ps!("freq", Num, N(80.0), "Cutoff Hz")]),
-    fx!("lowpass", ["lpf", "highcut", "muffle"], Audio, "audio", "Low-pass filter", [ps!("freq", Num, N(12000.0), "Cutoff Hz")]),
+    fx!("highpass", ["hpf", "lowcut"], Audio, "audio", "High-pass filter", [pr!("freq", 80.0, 10.0, 20000.0, "Cutoff Hz")]),
+    fx!("lowpass", ["lpf", "highcut", "muffle"], Audio, "audio", "Low-pass filter", [pr!("freq", 12000.0, 20.0, 20000.0, "Cutoff Hz")]),
     fx!("compress", ["compressor", "comp"], Audio, "audio", "Dynamic range compressor", [
-        ps!("threshold", Num, N(-18.0), "Threshold dB"),
-        ps!("ratio", Num, N(4.0), "Ratio"),
-        ps!("attack", Num, N(20.0), "Attack ms"),
-        ps!("release", Num, N(250.0), "Release ms"),
-        ps!("makeup", Num, N(0.0), "Makeup gain dB"),
+        pr!("threshold", -18.0, -60.0, 0.0, "Threshold dB"),
+        pr!("ratio", 4.0, 1.0, 20.0, "Ratio"),
+        pr!("attack", 20.0, 0.01, 2000.0, "Attack ms"),
+        pr!("release", 250.0, 0.01, 9000.0, "Release ms"),
+        pr!("makeup", 0.0, 0.0, 36.0, "Makeup gain dB"),
     ]),
-    fx!("limiter", ["limit"], Audio, "audio", "Peak limiter", [ps!("limit", Num, N(-1.0), "Ceiling dBFS")]),
-    fx!("gate", ["noisegate"], Audio, "audio", "Noise gate", [ps!("threshold", Num, N(-45.0), "Threshold dB")]),
-    fx!("denoise", ["noisereduction", "nr", "afftdn"], Audio, "audio", "FFT noise reduction", [ps!("amount", Num, N(12.0), "Reduction dB")]),
-    fx!("normalize", ["loudnorm", "loudness"], Audio, "audio", "EBU R128 loudness normalization", [ps!("lufs", Num, N(-14.0), "Target LUFS"), ps!("tp", Num, N(-1.0), "True peak dBTP")]),
-    fx!("reverb", ["room"], Audio, "audio", "Simple reverb", [ps!("amount", Num, N(0.3), "Wet amount 0-1"), ps!("size", Num, N(0.5), "Room size 0-1")]),
-    fx!("echo", ["delay"], Audio, "audio", "Echo", [ps!("delay", Num, N(300.0), "Delay ms"), ps!("decay", Num, N(0.4), "Decay 0-1")]),
-    fx!("pitch", ["pitchshift"], Audio, "audio", "Pitch shift (keeps tempo)", [ps!("semitones", Num, N(0.0), "Semitones")]),
-    fx!("deess", ["deesser"], Audio, "audio", "De-esser", [ps!("amount", Num, N(0.5), "Intensity 0-1")]),
-    fx!("voice", ["enhance", "voiceenhance", "podcast"], Audio, "audio", "Voice enhancement chain (HPF + denoise + compress + presence)", [ps!("amount", Num, N(1.0), "Intensity 0-1")]),
+    fx!("limiter", ["limit"], Audio, "audio", "Peak limiter", [pr!("limit", -1.0, -24.0, 0.0, "Ceiling dBFS")]),
+    fx!("gate", ["noisegate"], Audio, "audio", "Noise gate", [pr!("threshold", -45.0, -80.0, 0.0, "Threshold dB")]),
+    fx!("denoise", ["noisereduction", "nr", "afftdn"], Audio, "audio", "FFT noise reduction", [pr!("amount", 12.0, 0.0, 97.0, "Reduction dB")]),
+    fx!("normalize", ["loudnorm", "loudness"], Audio, "audio", "EBU R128 loudness normalization", [pr!("lufs", -14.0, -70.0, -5.0, "Target LUFS"), pr!("tp", -1.0, -9.0, 0.0, "True peak dBTP")]),
+    fx!("reverb", ["room"], Audio, "audio", "Simple reverb", [pr!("amount", 0.3, 0.0, 1.0, "Wet amount 0-1"), pr!("size", 0.5, 0.0, 1.0, "Room size 0-1")]),
+    fx!("echo", ["delay"], Audio, "audio", "Echo", [pr!("delay", 300.0, 1.0, 5000.0, "Delay ms"), pr!("decay", 0.4, 0.0, 1.0, "Decay 0-1")]),
+    fx!("pitch", ["pitchshift"], Audio, "audio", "Pitch shift (keeps tempo)", [pr!("semitones", 0.0, -24.0, 24.0, "Semitones")]),
+    fx!("deess", ["deesser"], Audio, "audio", "De-esser", [pr!("amount", 0.5, 0.0, 1.0, "Intensity 0-1")]),
+    fx!("voice", ["enhance", "voiceenhance", "podcast"], Audio, "audio", "Voice enhancement chain (HPF + denoise + compress + presence)", [pr!("amount", 1.0, 0.0, 1.0, "Intensity 0-1")]),
     fx!("telephone", ["phone", "radio"], Audio, "audio", "Telephone / radio band-pass", []),
     fx!("peq", ["parametric", "parametriceq", "eq3"], Audio, "audio", "Parametric EQ: three bell bands (freq Hz, gain dB, q)", [
-        ps!("f1", Num, N(200.0), "Band 1 frequency Hz"),
-        ps!("g1", Num, N(0.0), "Band 1 gain dB"),
-        ps!("q1", Num, N(1.0), "Band 1 width (Q)"),
-        ps!("f2", Num, N(1000.0), "Band 2 frequency Hz"),
-        ps!("g2", Num, N(0.0), "Band 2 gain dB"),
-        ps!("q2", Num, N(1.0), "Band 2 width (Q)"),
-        ps!("f3", Num, N(5000.0), "Band 3 frequency Hz"),
-        ps!("g3", Num, N(0.0), "Band 3 gain dB"),
-        ps!("q3", Num, N(1.0), "Band 3 width (Q)"),
+        pr!("f1", 200.0, 20.0, 20000.0, "Band 1 frequency Hz"),
+        pr!("g1", 0.0, -30.0, 30.0, "Band 1 gain dB"),
+        pr!("q1", 1.0, 0.1, 20.0, "Band 1 width (Q)"),
+        pr!("f2", 1000.0, 20.0, 20000.0, "Band 2 frequency Hz"),
+        pr!("g2", 0.0, -30.0, 30.0, "Band 2 gain dB"),
+        pr!("q2", 1.0, 0.1, 20.0, "Band 2 width (Q)"),
+        pr!("f3", 5000.0, 20.0, 20000.0, "Band 3 frequency Hz"),
+        pr!("g3", 0.0, -30.0, 30.0, "Band 3 gain dB"),
+        pr!("q3", 1.0, 0.1, 20.0, "Band 3 width (Q)"),
     ]),
-    fx!("bassboost", ["bass", "lowshelf"], Audio, "audio", "Bass boost (low shelf)", [ps!("gain", Num, N(6.0), "Gain dB"), ps!("freq", Num, N(120.0), "Shelf frequency Hz")]),
-    fx!("gain", ["amplify", "volume"], Audio, "audio", "Static gain stage", [ps!("db", Num, N(0.0), "Gain dB")]),
-    fx!("chorus", [], Audio, "audio", "Chorus (thicker, doubled sound)", [ps!("depth", Num, N(0.5), "Depth 0-1"), ps!("mix", Num, N(0.5), "Wet amount 0-1")]),
-    fx!("flanger", [], Audio, "audio", "Flanger (jet sweep)", [ps!("depth", Num, N(2.0), "Sweep depth ms"), ps!("speed", Num, N(0.5), "Sweep speed Hz")]),
-    fx!("phaser", [], Audio, "audio", "Phaser", [ps!("speed", Num, N(0.5), "Speed Hz"), ps!("decay", Num, N(0.4), "Feedback 0-0.99")]),
-    fx!("tremolo", [], Audio, "audio", "Tremolo (volume wobble)", [ps!("freq", Num, N(5.0), "Rate Hz"), ps!("depth", Num, N(0.5), "Depth 0-1")]),
-    fx!("vibrato", [], Audio, "audio", "Vibrato (pitch wobble)", [ps!("freq", Num, N(5.0), "Rate Hz"), ps!("depth", Num, N(0.5), "Depth 0-1")]),
-    fx!("distortion", ["overdrive", "saturate", "softclip"], Audio, "audio", "Distortion / saturation", [ps!("amount", Num, N(0.5), "Drive 0-1")]),
-    fx!("bitcrush", ["crusher", "lofi"], Audio, "audio", "Bit crusher (lo-fi)", [ps!("bits", Num, N(8.0), "Bit depth 1-16"), ps!("downsample", Num, N(1.0), "Sample-rate reduction factor 1-250")]),
-    fx!("widen", ["stereowiden", "extrastereo", "wide"], Audio, "audio", "Stereo widener (1 = unchanged, 0 = mono)", [ps!("amount", Num, N(1.6), "Width 0-4")]),
+    fx!("bassboost", ["bass", "lowshelf"], Audio, "audio", "Bass boost (low shelf)", [pr!("gain", 6.0, -30.0, 30.0, "Gain dB"), pr!("freq", 120.0, 20.0, 1000.0, "Shelf frequency Hz")]),
+    fx!("gain", ["amplify", "volume"], Audio, "audio", "Static gain stage", [pr!("db", 0.0, -60.0, 30.0, "Gain dB")]),
+    fx!("chorus", [], Audio, "audio", "Chorus (thicker, doubled sound)", [pr!("depth", 0.5, 0.0, 1.0, "Depth 0-1"), pr!("mix", 0.5, 0.0, 1.0, "Wet amount 0-1")]),
+    fx!("flanger", [], Audio, "audio", "Flanger (jet sweep)", [pr!("depth", 2.0, 0.0, 10.0, "Sweep depth ms"), pr!("speed", 0.5, 0.1, 10.0, "Sweep speed Hz")]),
+    fx!("phaser", [], Audio, "audio", "Phaser", [pr!("speed", 0.5, 0.1, 2.0, "Speed Hz"), pr!("decay", 0.4, 0.0, 0.99, "Feedback 0-0.99")]),
+    fx!("tremolo", [], Audio, "audio", "Tremolo (volume wobble)", [pr!("freq", 5.0, 0.1, 20000.0, "Rate Hz"), pr!("depth", 0.5, 0.0, 1.0, "Depth 0-1")]),
+    fx!("vibrato", [], Audio, "audio", "Vibrato (pitch wobble)", [pr!("freq", 5.0, 0.1, 20000.0, "Rate Hz"), pr!("depth", 0.5, 0.0, 1.0, "Depth 0-1")]),
+    fx!("distortion", ["overdrive", "saturate", "softclip"], Audio, "audio", "Distortion / saturation", [pr!("amount", 0.5, 0.0, 1.0, "Drive 0-1")]),
+    fx!("bitcrush", ["crusher", "lofi"], Audio, "audio", "Bit crusher (lo-fi)", [pr!("bits", 8.0, 1.0, 16.0, "Bit depth 1-16"), pr!("downsample", 1.0, 1.0, 250.0, "Sample-rate reduction factor 1-250")]),
+    fx!("widen", ["stereowiden", "extrastereo", "wide"], Audio, "audio", "Stereo widener (1 = unchanged, 0 = mono)", [pr!("amount", 1.6, 0.0, 4.0, "Width 0-4")]),
     fx!("mono", ["tomono", "downmix"], Audio, "audio", "Sum to mono (both channels)", []),
     fx!("swap", ["swapchannels", "channelswap"], Audio, "audio", "Swap left and right channels", []),
-    fx!("dehum", ["humremove", "hum"], Audio, "audio", "Remove mains hum (notches at the hum frequency and its harmonics)", [ps!("freq", Num, N(50.0), "Hum frequency: 50 (Europe/Asia) or 60 (Americas)"), ps!("harmonics", Num, N(4.0), "Harmonics to notch 1-8")]),
+    fx!("dehum", ["humremove", "hum"], Audio, "audio", "Remove mains hum (notches at the hum frequency and its harmonics)", [pr!("freq", 50.0, 50.0, 60.0, "Hum frequency: 50 (Europe/Asia) or 60 (Americas)"), pr!("harmonics", 4.0, 1.0, 8.0, "Harmonics to notch 1-8")]),
     fx!("declick", ["declicker", "crackle"], Audio, "audio", "Remove clicks and crackle", []),
-    fx!("exciter", ["presence", "brilliance"], Audio, "audio", "Harmonic exciter (adds brightness and presence)", [ps!("amount", Num, N(1.0), "Amount 0-10"), ps!("freq", Num, N(7500.0), "Above this frequency Hz")]),
-    fx!("autogain", ["dynaudnorm", "leveler", "levelling", "speechnorm"], Audio, "audio", "Dynamic leveler: evens out loud and quiet passages", [ps!("strength", Num, N(0.5), "Strength 0-1")]),
+    fx!("exciter", ["presence", "brilliance"], Audio, "audio", "Harmonic exciter (adds brightness and presence)", [pr!("amount", 1.0, 0.0, 10.0, "Amount 0-10"), pr!("freq", 7500.0, 2000.0, 12000.0, "Above this frequency Hz")]),
+    fx!("autogain", ["dynaudnorm", "leveler", "levelling", "speechnorm"], Audio, "audio", "Dynamic leveler: evens out loud and quiet passages", [pr!("strength", 0.5, 0.0, 1.0, "Strength 0-1")]),
     fx!("ff", ["ffmpeg", "af"], Audio, "audio", "Raw FFmpeg audio filter chain", [ps!("filter", Str, S(""), "Filter chain e.g. 'aecho=0.8:0.9:500:0.3'", ["f", "chain"])]),
 ];
 
@@ -1194,6 +1201,19 @@ pub fn describe(p: &P) -> String {
 mod tests {
     use super::*;
     const CX: VCtx = VCtx { cw: 1920.0, ch: 1080.0 };
+
+    #[test]
+    fn audio_effect_settings_have_ranges_around_their_defaults() {
+        // the mixer draws its sliders from these ranges
+        for e in AUDIO_EFFECTS {
+            for p in e.params.iter().filter(|p| p.t == Num) {
+                assert!(p.min.is_finite() && p.max.is_finite() && p.min < p.max, "{}.{} has no range", e.name, p.name);
+                let d = default_val(p, CX).num();
+                assert!(d >= p.min && d <= p.max, "{}.{} default {d} is outside {}..{}", e.name, p.name, p.min, p.max);
+                assert!(!p.anim, "{}.{} must stay static", e.name, p.name);
+            }
+        }
+    }
 
     #[test]
     fn parse_values() {

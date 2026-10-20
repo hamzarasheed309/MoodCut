@@ -23,6 +23,13 @@ pub struct ReaderSpec {
     pub rate: f64,
     /// FFmpeg filters applied before scaling (decode-time effects).
     pub vf: String,
+    /// Seconds the video starts after the file's start (camcorder .MTS and other
+    /// files whose audio starts first). Source time t is time since the file's
+    /// start, the clock the audio uses; reads before the video begins show its
+    /// first frame. Decoders never start inside that gap: FFmpeg rebases the first
+    /// frame after a seek to time 0, which would shift every later frame by the gap
+    /// (MPEG-TS seeks stay within a frame or two; MP4/MOV are exact).
+    pub start: f64,
     pub alpha: bool,
     pub hw: bool,
     pub src_dur: f64,
@@ -176,7 +183,7 @@ impl VideoReader {
         let rate = self.spec.rate;
         let max_t = (self.spec.src_dur - 0.5 / rate).max(0.0);
         let t = t.clamp(0.0, max_t);
-        let idx = (t * rate + 1e-6).floor() as i64;
+        let idx = ((t * rate + 1e-6).floor() as i64).max(self.first_index());
         if let Some((li, f)) = &self.last {
             if *li == idx {
                 return Ok(f.clone());
@@ -239,10 +246,16 @@ impl VideoReader {
         Ok(f)
     }
 
+    /// The frame index where the video starts (0 unless it starts after the file).
+    fn first_index(&self) -> i64 {
+        let max_t = (self.spec.src_dur - 0.5 / self.spec.rate).max(0.0);
+        (self.spec.start.min(max_t) * self.spec.rate + 1e-6).floor() as i64
+    }
+
     fn reverse_chunk(&mut self, idx: i64) -> Result<FrameRef> {
         let fb = self.frame_bytes().max(1);
         let n = ((512usize << 20) / fb).clamp(4, 60) as i64;
-        let first = (idx - n + 1).max(0);
+        let first = (idx - n + 1).max(self.first_index());
         self.start(first)?;
         let mut frames = Vec::with_capacity(n as usize);
         while self.next <= idx {
@@ -268,11 +281,32 @@ pub struct FrameServer {
     readers: Mutex<HashMap<String, Arc<Mutex<VideoReader>>>>,
     stills: Mutex<HashMap<String, (FrameRef, Instant)>>,
     pub hw: bool,
+    /// Preview proxies (the editor's frame server only; exports never use them).
+    pub proxies: Option<Arc<super::proxy::Proxies>>,
+    /// Video start offsets by path.
+    starts: Mutex<HashMap<String, f64>>,
 }
 
 impl FrameServer {
     pub fn new(ff: Arc<Ff>, hw: bool) -> FrameServer {
-        FrameServer { ff, readers: Mutex::new(HashMap::new()), stills: Mutex::new(HashMap::new()), hw }
+        FrameServer { ff, readers: Mutex::new(HashMap::new()), stills: Mutex::new(HashMap::new()), hw, proxies: None, starts: Mutex::new(HashMap::new()) }
+    }
+
+    /// Where a file's video starts after the file's start (measured once per file).
+    pub fn video_start(&self, path: &str) -> f64 {
+        if let Some(v) = self.starts.lock().get(path) {
+            return *v;
+        }
+        let v = self.ff.video_start_offset(path);
+        self.starts.lock().insert(path.to_string(), v);
+        v
+    }
+
+    /// A frame server for previews: proxies, and hardware decoding only when asked
+    /// for with MOODCUT_HWDEC=1 (CPU decoding keeps the GPU free by default).
+    pub fn for_preview(ff: Arc<Ff>, proxies: Arc<super::proxy::Proxies>) -> FrameServer {
+        let hw = std::env::var("MOODCUT_HWDEC").is_ok_and(|v| matches!(v.as_str(), "1" | "on" | "auto" | "true"));
+        FrameServer { proxies: Some(proxies), ..FrameServer::new(ff, hw) }
     }
 
     /// `owner` scopes a reader to one timeline item so parallel clips of the

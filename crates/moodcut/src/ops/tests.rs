@@ -744,3 +744,96 @@ fn track_end_as_a_time() {
     let song = p.comps[0].items().find(|i| i.src.as_deref() == Some("m2")).unwrap();
     assert_eq!(song.dur, 7.0);
 }
+
+#[test]
+fn track_and_master_audio_effects_are_editable() {
+    let mut p = proj();
+    ok(&mut p, "import /m/song.mp3\nadd m1 A1 at=0 dur=10\nafx A1 eq\nafx A1 compressor\nafx master limiter");
+    let a1 = |p: &Project| p.comps[0].track("A1").unwrap().afx.clone();
+    assert_eq!(a1(&p).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["a1", "a2"]);
+    let log = ok(&mut p, "afx A1.a2 off\nafx A1.a1 del");
+    assert!(log.iter().any(|l| l == "-A1.a1"), "{log:?}");
+    assert_eq!(a1(&p).len(), 1);
+    assert!(!a1(&p)[0].on);
+    // a later add never reuses a deleted id
+    ok(&mut p, "afx A1 gain\nafx A1.a3 up");
+    assert_eq!(a1(&p).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["a3", "a2"]);
+    let gain = schema_param("gain");
+    ok(&mut p, &format!("afx A1.a3 {gain}=4"));
+    assert_eq!(a1(&p)[0].props[gain].v.num(), 4.0);
+    ok(&mut p, "afx master.a1 off");
+    assert!(!p.comps[0].master.afx[0].on);
+    let e = err(&mut p, "afx A1.a9 del");
+    assert!(e.contains("has no audio effect a9") && e.contains("A1.a3"), "{e}");
+    let e = err(&mut p, "afx A1.a3 nosuchparam=1");
+    assert!(e.contains("nosuchparam"), "{e}");
+}
+
+/// The first parameter of the `gain` audio effect (whatever it is called).
+fn schema_param(effect: &str) -> &'static str {
+    crate::model::schema::audio_effect(effect).unwrap().params[0].name
+}
+
+#[test]
+fn a_new_look_replaces_the_previous_one_but_keeps_manual_changes() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\ncolor c1 cinematic\ncolor c1 exposure=0.4 contrast=5");
+    let fx = |p: &Project| p.item("c1").unwrap().fx.clone();
+    assert!(fx(&p).iter().any(|e| e.kind == "vignette"), "cinematic adds a vignette");
+    ok(&mut p, "color c1 bw");
+    let f = fx(&p);
+    let lum = f.iter().find(|e| e.kind == "lumetri").unwrap();
+    // cinematic's untouched tints and vignette are gone, the hand-set values stay
+    assert!(!lum.props.contains_key("stint") && !lum.props.contains_key("htint"), "{:?}", lum.props.keys());
+    assert!(!f.iter().any(|e| e.kind == "vignette"));
+    assert_eq!(lum.props["exposure"].v.num(), 0.4);
+    assert_eq!(lum.props["sat"].v.num(), 0.0);
+    assert_eq!(lum.props["contrast"].v.num(), 18.0, "the new look sets contrast");
+    assert_eq!(lum.props["look"].v.str(), "bw");
+    // re-applying is idempotent; reset clears the look and its extras
+    ok(&mut p, "color c1 noir\ncolor c1 noir");
+    assert_eq!(fx(&p).iter().filter(|e| e.kind == "vignette").count(), 1);
+    ok(&mut p, "color c1 none");
+    assert!(fx(&p).is_empty(), "{:?}", fx(&p));
+}
+
+#[test]
+fn editing_a_missing_effect_is_an_error_not_a_crash() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\nfx c1 blur");
+    for line in ["fx c1.f9 up", "fx c1.f9 radius=3", "fx c1.f9 off", "fx c1.f9 del", "afx c1.a4 down"] {
+        let e = err(&mut p, line);
+        assert!(e.contains("has no"), "{line}: {e}");
+    }
+    assert!(err(&mut p, "fx c1.f9 up").contains("c1.f1 blur"), "names what is there");
+}
+
+#[test]
+fn bus_effect_ids_are_never_reused() {
+    let mut p = proj();
+    ok(&mut p, "import /m/song.mp3\nadd m1 A1 at=0\nafx A1 eq\nafx A1 compressor\nafx A1.a2 del\nafx A1 gain");
+    let ids: Vec<String> = p.comps[0].track("A1").unwrap().afx.iter().map(|e| e.id.clone()).collect();
+    assert_eq!(ids, vec!["a1", "a3"]);
+    ok(&mut p, "afx A1 clear\nafx A1 eq");
+    assert_eq!(p.comps[0].track("A1").unwrap().afx[0].id, "a4");
+    ok(&mut p, "afx master eq\nafx master.a1 del\nafx master eq");
+    assert_eq!(p.comps[0].master.afx[0].id, "a2");
+}
+
+#[test]
+fn a_look_only_takes_back_what_it_added() {
+    let mut p = proj();
+    // the user's own vignette and grain match musicvideo's values exactly
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\nfx c1 vignette amount=0.4\nfx c1 noise amount=0.04\ncolor c1 musicvideo");
+    ok(&mut p, "color c1 none");
+    let kinds: Vec<String> = p.item("c1").unwrap().fx.iter().map(|e| e.kind.clone()).collect();
+    assert_eq!(kinds, vec!["vignette", "noise"], "the user's effects stay");
+    // a hand-made value equal to the look's stays when the look changes
+    ok(&mut p, "fx c1 clear\ncolor c1 sat=0\ncolor c1 bw\ncolor c1 warm");
+    let lum = p.item("c1").unwrap().fx.iter().find(|e| e.kind == "lumetri").unwrap().clone();
+    assert_eq!(lum.props["sat"].v.num(), 0.0);
+    assert!(!lum.props.contains_key("contrast"), "bw's own contrast went with it");
+    // internal bookkeeping doesn't show in the AI's views
+    let view = super::outline::item_detail(&p, p.item("c1").unwrap());
+    assert!(!view.contains("_look"), "{view}");
+}

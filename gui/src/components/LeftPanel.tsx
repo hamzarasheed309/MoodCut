@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import { showPanel } from "../dock";
-import { activeId, catalog, graphicEditor, importPaths, monitorTab, pickFiles, playhead, project, run, selection, sourceIn, sourceMedia, sourceOut, sourceT, toast } from "../store";
+import { activeId, catalog, graphicEditor, importPaths, monitorTab, pickFiles, playhead, project, proxyState, refreshProxies, run, selection, sourceIn, sourceMedia, sourceOut, sourceT, toast } from "../store";
 import type { Media } from "../types";
 import { fmtNum } from "../util";
 
@@ -30,6 +30,7 @@ function MediaCard({ m }: { m: Media }) {
       <div class={"bin-thumb" + (m.kind === "audio" ? " audio-thumb" : "") + (m.gfx ? " gfx-thumb" : "")}>
         {m.kind !== "audio" && <img src={`/api/thumb?media=${m.id}&w=240`} loading="lazy" decoding="async" alt="" />}
         <span class="kind">{m.gfx ? "html" : m.kind}</span>
+        <ProxyBadge id={m.id} />
         {m.gfx && (
           <button class="btn sm edit-gfx" title="Edit the HTML and re-render" onClick={(e) => (e.stopPropagation(), (graphicEditor.value = { id: m.id }))}>
             Edit
@@ -46,6 +47,50 @@ function MediaCard({ m }: { m: Media }) {
   );
 }
 
+/** "P" when a preview proxy is ready, its progress while it is made. */
+function ProxyBadge({ id }: { id: string }) {
+  const t = proxyState.value?.media[id];
+  if (!t) return null;
+  const ready = t === "proxy";
+  const label = ready ? "P" : t.includes("%") ? `P ${t.split(" ")[1]}` : t.includes("failed") ? "P !" : "P …";
+  return (
+    <span class={"proxy-badge" + (ready ? " ready" : "")} title={ready ? "Previews use a fast proxy of this clip (exports use the original)" : t}>
+      {label}
+    </span>
+  );
+}
+
+/** Premiere-style proxy actions for the whole library. */
+function ProxyMenu() {
+  const px = proxyState.value;
+  if (!px) return null;
+  return (
+    <select
+      class="proxy-menu"
+      value=""
+      title={px.summary}
+      onChange={(e) => {
+        const v = (e.target as HTMLSelectElement).value;
+        (e.target as HTMLSelectElement).value = "";
+        if (v === "create") refreshProxies({ action: "create" }).then(() => toast("Making proxies in the background"));
+        else if (v === "delete") refreshProxies({ action: "delete" });
+        else if (v === "cancel") refreshProxies({ action: "cancel" });
+        else if (v) refreshProxies({ action: "mode", mode: v });
+      }}
+    >
+      <option value="">Proxies{px.busy ? " …" : ""}</option>
+      <option value="create">Make proxies for all video</option>
+      {px.busy && <option value="cancel">Stop making proxies</option>}
+      <option value="delete">Delete proxies</option>
+      <option disabled>── new imports ──</option>
+      <option value="auto">{px.mode === "auto" ? "✓ " : ""}Proxies for heavy footage (4K, HEVC…)</option>
+      <option value="all">{px.mode === "all" ? "✓ " : ""}Proxies for every video</option>
+      <option value="off">{px.mode === "off" ? "✓ " : ""}No proxies</option>
+    </select>
+  );
+}
+
+const PAGE = 240;
 const KINDS = ["all", "video", "audio", "image", "html"] as const;
 
 /** Project panel: the media bin and compositions. */
@@ -53,6 +98,7 @@ export function ProjectPanel() {
   const p = project.value;
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<(typeof KINDS)[number]>("all");
+  const [shown, setShown] = useState(PAGE);
   const all = p?.media || [];
   const words = filter.toLowerCase().split(/\s+/).filter(Boolean);
   const media = all.filter((m) => {
@@ -82,16 +128,24 @@ export function ProjectPanel() {
             </button>
           ))}
           <span class="count">{media.length === all.length ? `${all.length}` : `${media.length}/${all.length}`}</span>
+          {all.some((m) => m.kind === "video") && <ProxyMenu />}
         </div>
       )}
       {media.length === 0 ? (
         <div class="empty">No media yet.<br />Import files, or ask your AI to `media import` a folder.</div>
       ) : (
-        <div class="bin-grid">
-          {media.map((m) => (
-            <MediaCard m={m} key={m.id} />
-          ))}
-        </div>
+        <>
+          <div class="bin-grid">
+            {media.slice(0, shown).map((m) => (
+              <MediaCard m={m} key={m.id} />
+            ))}
+          </div>
+          {media.length > shown && (
+            <button class="btn sm show-more" onClick={() => setShown(shown + PAGE)}>
+              Show {Math.min(PAGE, media.length - shown)} more of {media.length - shown}
+            </button>
+          )}
+        </>
       )}
       <div class="section-title">Compositions</div>
       {p?.comps.map((c) => (
@@ -147,8 +201,8 @@ export function EffectsPanel() {
     "sound fx": cat.sfx.map((x) => ({ name: x.name, desc: `${x.desc} · lands ${x.sync <= 0 ? "on" : x.sync >= 1 ? "ending at" : "peaking at"} the playhead`, act: () => run(`sfx ${x.name} at=${at()}`) })),
     generate: [
       { name: "Text", desc: "Title text at the playhead", act: () => run(`text 'Your text' at=${at()} dur=3 style=title enter=fadeUp exit=fadeDown`) },
-      { name: "Rectangle", desc: "Shape layer", act: () => run(`shape rect w=500 h=120 radius=20 fill=#8b7cf6 at=${at()} dur=3`) },
-      { name: "Circle", desc: "Shape layer", act: () => run(`shape ellipse w=240 fill=#ec4899 at=${at()} dur=3 enter=popIn`) },
+      { name: "Rectangle", desc: "Shape layer", act: () => run(`shape rect w=500 h=120 radius=20 fill=#e76c33 at=${at()} dur=3`) },
+      { name: "Circle", desc: "Shape layer", act: () => run(`shape ellipse w=240 fill=#ffffff at=${at()} dur=3 enter=popIn`) },
       { name: "Star", desc: "Shape layer", act: () => run(`shape star fill=#fbbf24 at=${at()} dur=3 enter=spinIn`) },
       { name: "Color matte", desc: "Full-frame solid", act: () => run(`solid #111111 at=${at()} dur=3`) },
       { name: "Gradient matte", desc: "Full-frame gradient", act: () => run(`solid #1b1464 color2=#ff5f6d at=${at()} dur=3`) },

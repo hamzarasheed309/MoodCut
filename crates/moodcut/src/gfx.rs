@@ -185,6 +185,11 @@ fn launch(w: u32, h: u32) -> Result<(Browser, String)> {
     ]);
     cmd.arg(format!("--user-data-dir={}", profile.display()));
     cmd.arg(format!("--window-size={w},{h}"));
+    // frames are captured one by one, so software rendering costs little, gives the
+    // same pixels on every PC and leaves the GPU to the editor (MOODCUT_BROWSER_GPU=1 to use it)
+    if !std::env::var("MOODCUT_BROWSER_GPU").is_ok_and(|v| matches!(v.as_str(), "1" | "on" | "true")) {
+        cmd.arg("--disable-gpu");
+    }
     if running_as_root() || std::env::var("MOODCUT_BROWSER_NO_SANDBOX").is_ok() {
         cmd.arg("--no-sandbox");
     }

@@ -4,7 +4,9 @@ import { CheckPanel } from "./components/CheckPanel";
 import { Dock } from "./components/Dock";
 import { FfmpegBanner } from "./components/FfmpegBanner";
 import { GraphicEditor } from "./components/GraphicEditor";
+import { Home, showHome } from "./components/Home";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
+import { LogoMark, Wordmark } from "./brand";
 import { ALL_PANELS, closePanel, isOpen, maximized, narrow, PANEL_TITLES, resetWorkspace, setLayout, showPanel, switchWorkspace, workspace, WORKSPACES } from "./dock";
 import { aiPulse, connected, dirty, logs, pickFiles, project, project_, projectPath, redoN, rev, run, showCheck, showRender, undoN } from "./store";
 
@@ -85,9 +87,9 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
   const aiEdits = logs.value.filter((l) => l.source === "mcp").length;
   return (
     <div class="topbar">
-      <div class="brand">
-        <div class="brand-mark" />
-        MoodCut
+      <div class="brand" title="MoodCut Home: new project, recent projects, setup" onClick={() => (showHome.value = true)}>
+        <LogoMark size={24} class="brand-mark" />
+        <Wordmark />
       </div>
       <button class="btn sm ghost" onClick={async () => {
         const name = prompt("Project name", "Untitled");
@@ -150,6 +152,7 @@ export function App() {
       <FileBrowser />
       <GraphicEditor />
       <CheckPanel />
+      <Home onConnect={() => setConnect(true)} />
       {connect && <ConnectAI onClose={() => setConnect(false)} />}
       <Toasts />
     </div>

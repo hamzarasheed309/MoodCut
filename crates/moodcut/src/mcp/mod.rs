@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphics engine. Workflow: media(import) -> view -> edit (send MANY script lines per call; atomic) -> preview (small contact sheet to check) -> render. \
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
@@ -57,9 +57,11 @@ pub fn tools() -> Value {
 import: paths = files, folders (recursive by default), globs (D:/shoot/**/*.mp4) or http(s) URLs; tag='day1' tags them. Unreadable files are skipped and reported.\n\
 list: compact lines, filters kind (video|audio|image|graphic|still) q (words in name/path/note/tags) tag min_dur max_dur orientation (landscape|portrait|square) used (bool), sort (name|dur|date|size|path), offset/limit paging, detail=2 adds paths.\n\
 find: browse a disk folder without importing (path, pattern, recursive, files=true lists names).\n\
+proxy: preview proxies (small fast copies of 4K/HEVC footage, built in the background; exports always use the originals): ids=m1..m9|all to build, op=delete|cancel, mode=auto|all|off for new imports, enabled=false to preview the originals. No ids = status.\n\
 Organise with edit lines: tag m1..m40 broll | note m3 'drone over beach at sunset' | untag | relink m3 <path> | unimport m5. See footage with preview media=...",
             "inputSchema": {"type": "object", "properties": {
-                "action": {"type": "string", "enum": ["import", "list", "find"]},
+                "action": {"type": "string", "enum": ["import", "list", "find", "proxy"]},
+                "ids": {"type": "string"}, "op": {"type": "string"}, "mode": {"type": "string"}, "enabled": {"type": "boolean"},
                 "paths": {"type": "array", "items": {"type": "string"}}, "recursive": {"type": "boolean"}, "tag": {"type": "string"},
                 "kind": {"type": "string"}, "q": {"type": "string"}, "min_dur": {"type": "number"}, "max_dur": {"type": "number"},
                 "orientation": {"type": "string"}, "used": {"type": "boolean"}, "sort": {"type": "string"},
@@ -74,7 +76,8 @@ Organise with edit lines: tag m1..m40 broll | note m3 'drone over beach at sunse
 Place: add <m|path>[in-out] [V2] [at=T] [dur=] [props] | append m1[0-5] m2 | text 'Hi' at=0 dur=3 size=120 enter=fadeUp exit=fadeDown | shape rect w=400 h=80 fill=#f05 | solid #000 | adjust\n\
 Edit: cut <id|V1> at=T | trim <id> start=+1 end=-0.5 | del <ids> [ripple] | move <id> at=T [track=V2] | speed <id> 2x | freeze <id> at=T | dup <id>\n\
 Props: set <id> pos=center scale=1.2 rot=10 opacity=50% blend=screen vol=-6dB | kf <id> scale 0:1 2:1.2@outBack | expr <id> pos 'wiggle(2,20)'\n\
-Look: fx <id> blur radius=8 | color <id> cinematic | tr <a> <b> dissolve 0.5 | tr V1 dissolve | fade <id> in=0.5 out=1 | mask <id> ellipse feather=40 | anim <id> popIn,fadeOut\n\
+Look: fx <id> blur radius=8 | fx c1.f1 radius=4|off|del | color <id> cinematic (a new look replaces the old) | color <id> exposure=.3 temp=-10 | tr <a> <b> dissolve 0.5 | tr V1 dissolve | fade <id> in=0.5 out=1 | mask <id> ellipse feather=40 | anim <id> popIn,fadeOut\n\
+Sound: afx <clip|A1|master> eq bass=3 | afx A1.a1 off|del|ratio=4 | sound <clip> dialogue | sfx whoosh at=2 | duck A2 by=A1 | master lufs=-14 limiter=1 | kf c1 vol 0:-60 1:0\n\
 Pro: title lowerthird text='Jane' sub='CEO' | captions <clip> | autocut silence <clip> | montage m1,m2 music=m3 beats=2 | reframe 9:16 | duck A1 by=A2 | parent <a> <b> | precomp <ids>\n\
 Tools (help tools): roll <id> +0.3 | lift|extract 2 5 | swap a b | paste <from> <to> fx | stagger <ids> by=0.1 | align <ids> center | ease <id> all easy | kf <id> all reverse | null | camera move=pushin layers=V2 | sound <clip> dialogue | workarea 2 8\n\
 Finish (help style, sfx, brand): brand bold | sfx whoosh on=transitions | sfx hit at=0.1 | speedramp V1 at=3 to=4x | punchin V1 | jcut c4 by=0.4 | captions V1 style=punch | anim t1 slamIn|wipeInLeft|whipInRight\n\
@@ -199,7 +202,14 @@ impl Mcp {
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(self.call(name, &args))
+                // a bug in one tool must never take the connection down with it
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.call(name, &args))) {
+                    Ok(r) => Ok(r),
+                    Err(e) => {
+                        let why = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned()).unwrap_or_else(|| "unknown error".into());
+                        Ok(err_result(format!("MoodCut hit an internal error in {name} ({why}); nothing was changed. Please report it; you can carry on.")))
+                    }
+                }
             }
             "resources/list" => Ok(json!({"resources": []})),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
@@ -307,6 +317,50 @@ impl Mcp {
                 let tags: Vec<String> = s(a, "tag").map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
                 let out = eng.import_with(&paths, a["recursive"].as_bool().unwrap_or(true), &tags, "mcp")?;
                 Ok(out.log.join("\n"))
+            }
+            "proxy" | "proxies" => {
+                use crate::render::proxy::Mode;
+                let mut notes = vec![];
+                // check everything first, so a bad call changes nothing
+                let op = s(a, "op").map(|o| o.to_ascii_lowercase());
+                let ids_given = s(a, "ids").or_else(|| s(a, "q")).is_some();
+                if let Some(o) = op.as_deref() {
+                    if !matches!(o, "create" | "make" | "build" | "delete" | "del" | "remove" | "cancel" | "stop") {
+                        anyhow::bail!("unknown op '{o}' (create, delete, cancel)");
+                    }
+                    if matches!(o, "delete" | "del" | "remove") && !ids_given {
+                        anyhow::bail!("op=delete needs ids (e.g. ids=m3 or ids=all)");
+                    }
+                }
+                let mode = match s(a, "mode") {
+                    Some(m) => Some(Mode::parse(&m).ok_or_else(|| anyhow::anyhow!("mode must be auto, all or off"))?),
+                    None => None,
+                };
+                if let Some(mode) = mode {
+                    eng.proxies.set_mode(mode);
+                    notes.push(format!("new imports: {}", match mode { Mode::Off => "no proxies", Mode::Auto => "proxies for heavy footage", Mode::All => "proxies for every video" }));
+                }
+                if let Some(on) = a["enabled"].as_bool() {
+                    eng.proxies.set_enabled(on);
+                    notes.push(format!("previews use {}", if on { "proxies where ready" } else { "the original files" }));
+                }
+                let (p, ..) = eng.snapshot();
+                if matches!(op.as_deref(), Some("cancel" | "stop")) {
+                    eng.proxies.cancel_all();
+                    notes.push("stopped making proxies (the queue is empty)".into());
+                } else if let Some(spec) = s(a, "ids").or_else(|| s(a, "q")) {
+                    let ids = crate::library::select_media(&p, &spec)?;
+                    let ms: Vec<crate::model::project::Media> = ids.iter().filter_map(|i| p.media(i).cloned()).collect();
+                    if matches!(op.as_deref(), Some("delete" | "del" | "remove")) {
+                        notes.push(format!("deleted {} prox(ies)", eng.proxies.delete(&ms)));
+                    } else {
+                        let n = eng.proxies.request(&ms, true);
+                        let skipped = ms.iter().filter(|m| !crate::render::proxy::eligible(m)).count();
+                        notes.push(format!("queued {n} prox(ies){}", if skipped > 0 { format!(" ({skipped} skipped: not video, or with transparency)") } else { String::new() }));
+                    }
+                }
+                notes.push(eng.proxies.summary(&p.media));
+                Ok(notes.join("\n"))
             }
             "find" | "browse" | "scan" => {
                 let root = paths.first().cloned().ok_or_else(|| anyhow::anyhow!("find needs path (a folder)"))?;

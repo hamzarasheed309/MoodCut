@@ -146,7 +146,8 @@ fn effect_line(e: &Effect, list: &[&schema::P]) -> String {
     if !e.on {
         s.push_str(" (off)");
     }
-    for (k, a) in &e.props {
+    // `_`-prefixed props are internal bookkeeping (e.g. what a color look owns)
+    for (k, a) in e.props.iter().filter(|(k, _)| !k.starts_with('_')) {
         let _ = write!(s, " {k}={}", a.display());
     }
     let _ = list;

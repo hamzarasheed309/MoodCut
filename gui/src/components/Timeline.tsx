@@ -35,12 +35,15 @@ function layoutRows(c: Comp | null): Row[] {
 
 // ---- image caches (thumbnails / waveforms), redraw when loaded
 const imgCache = new Map<string, HTMLImageElement | null>();
+/** The last waveform drawn for a clip's source range, shown while another zoom level loads. */
+const waveLast = new Map<string, HTMLImageElement>();
 let requestRedraw: () => void = () => {};
 function img(url: string): HTMLImageElement | null {
   if (imgCache.has(url)) {
     const i = imgCache.get(url)!;
     return i && i.complete && i.naturalWidth > 0 ? i : null;
   }
+  if (imgCache.size > 1500) imgCache.clear(); // zooming makes new sizes; keep memory bounded
   const i = new Image();
   i.onload = () => requestRedraw();
   i.onerror = () => imgCache.set(url, null);
@@ -318,24 +321,40 @@ export function Timeline() {
     if (m && r.track.kind === "video" && (m.kind === "video" || m.kind === "image" || m.kind === "svg") && w > 30) {
       const tw = Math.max(40, Math.round(((h - 16) * m.w) / Math.max(1, m.h)));
       const sp = speedOf(it);
+      const back = !!staticVal(it.props?.reverse);
       for (let tx = x; tx < x + w; tx += tw) {
         if (tx + tw < 0 || tx > g.canvas.width) continue;
         const local = (tx - x) / zoom.value;
-        let st = (it.in || 0) + local * sp;
+        // a reversed clip plays its source range backwards
+        let st = (it.in || 0) + (back ? Math.max(0, it.dur - local) : local) * sp;
         st = m.kind === "video" ? Math.round(Math.min(st, Math.max(0, m.dur - 0.1)) * 2) / 2 : 0;
         const im = img(`/api/thumb?media=${m.id}&t=${st}&w=96`);
         if (im) g.drawImage(im, tx, y + 14, tw, h - 14);
       }
       g.fillStyle = "rgba(0,0,0,0.25)";
       g.fillRect(x, y + 14, w, h - 14);
-    } else if (m && m.has_audio && r.track.kind === "audio" && w > 10) {
-      const im = img(`/api/waveform?media=${m.id}&w=1600&h=80`);
-      if (im && m.dur > 0) {
-        const sp = speedOf(it);
-        const s0 = ((it.in || 0) / m.dur) * im.naturalWidth;
-        const s1 = (((it.in || 0) + it.dur * sp) / m.dur) * im.naturalWidth;
+    } else if (m && m.has_audio && r.track.kind === "audio" && w > 10 && m.dur > 0) {
+      // just this clip's part of the file, at the width it is drawn (rounded to a power of
+      // two so zooming reuses images); the server draws it from the file's peak data
+      const sp = speedOf(it);
+      const from = it.in || 0;
+      const to = Math.min(m.dur, from + it.dur * sp);
+      const shown = ((to - from) / sp) * zoom.value;
+      const qw = Math.min(4096, 2 ** Math.ceil(Math.log2(Math.max(64, shown))));
+      const range = `${m.id}|${from.toFixed(3)}|${to.toFixed(3)}`;
+      let im = img(`/api/waveform?media=${m.id}&w=${qw}&h=64&from=${from.toFixed(3)}&to=${to.toFixed(3)}`);
+      if (im) waveLast.set(range, im);
+      else im = waveLast.get(range) || null;
+      if (im && to > from) {
         g.globalAlpha *= 0.9;
-        g.drawImage(im, s0, 0, Math.max(1, s1 - s0), im.naturalHeight, x, y + 12, (Math.min(m.dur, (it.in || 0) + it.dur * sp) - (it.in || 0)) / sp * zoom.value, h - 12);
+        if (staticVal(it.props?.reverse)) {
+          // reversed clip: mirror the waveform so it lines up with what you hear
+          g.save();
+          g.translate(x + shown, 0);
+          g.scale(-1, 1);
+          g.drawImage(im, 0, y + 12, shown, h - 12);
+          g.restore();
+        } else g.drawImage(im, x, y + 12, shown, h - 12);
       }
     }
     // label
@@ -345,7 +364,7 @@ export function Timeline() {
     g.font = "600 10.5px Inter, system-ui";
     const label = itemLabel(it, it.kind === "comp" ? project.value?.comps.find((c) => c.id === it.src)?.name : m?.name);
     const sp = speedOf(it);
-    const extra = (sp !== 1 ? ` ${sp}x` : "") + (it.props?.reverse ? " ⟲" : "") + ((it.fx || []).length ? " ƒ" : "");
+    const extra = (sp !== 1 ? ` ${sp}x` : "") + (staticVal(it.props?.reverse) ? " ⟲" : "") + ((it.fx || []).length ? " ƒ" : "");
     g.fillText(label + extra, x + 5, y + 10.5, Math.max(10, w - 8));
     // keyframes of the selected item
     if (selected) {

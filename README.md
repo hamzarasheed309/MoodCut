@@ -1,8 +1,20 @@
-# MoodCut
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/moodcut-logo-dark.svg">
+    <img src="assets/brand/moodcut-logo-light.svg" alt="MoodCut" width="420">
+  </picture>
+</p>
 
-**A local video editor and motion graphics engine that ChatGPT and Claude can drive over MCP.**
-Premiere-style editing and After Effects-style motion design in one small Windows executable,
-with FFmpeg doing the heavy lifting and a compact edit language built so an AI can edit fast and cheaply.
+<p align="center"><b>The AI-native video editor.</b> Premiere-style editing and After Effects-style motion design that<br>
+Claude, ChatGPT and other AI apps can drive over MCP, in one small Windows app with FFmpeg doing the heavy lifting.</p>
+
+<p align="center">
+  <a href="#install-windows"><b>Install</b></a> ·
+  <a href="#connect-your-ai">Connect your AI</a> ·
+  <a href="#smooth-on-any-pc">Performance</a> ·
+  <a href="docs/REFERENCE.md">Script reference</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
+</p>
 
 ![MoodCut editor](docs/screenshot.jpg)
 
@@ -78,18 +90,35 @@ alpha), GIF, PNG sequences and audio formats, with NVENC, QuickSync and AMF enco
 SRT and WebVTT captions, a YouTube chapter list from markers, an FCP7 XML timeline that Premiere Pro and DaVinci
 Resolve open with the original media, and a CMX3600 EDL.
 
-## Quick start (Windows)
+## Install (Windows)
 
-1. Get [`release/windows-x64/moodcut.exe`](release/windows-x64/) from this repository (or the `moodcut-windows-x64`
-   artifact of the [latest CI build](../../actions/workflows/ci.yml)). It's a single 64-bit exe with nothing to install;
-   put it wherever you like, ideally in a folder on your `PATH` so AI clients and terminals can start it.
-2. Double-click it. The editor opens in its own window (Edge app mode, no browser chrome).
-3. The first time, MoodCut offers to **Install FFmpeg**: one click downloads a portable build (about 100 MB) into
-   `%APPDATA%\MoodCut\ffmpeg`, with no admin rights or PATH changes, and it's used right away. From a terminal, `moodcut setup`
-   does the same. An FFmpeg you already have (on `PATH`, winget, Chocolatey, Scoop, or next to the exe) is found automatically.
-   HTML graphics use the Microsoft Edge that comes with Windows.
+**Installer (recommended).** Download [`MoodCut-Setup-x64.exe`](../../releases/latest/download/MoodCut-Setup-x64.exe)
+(also in [`release/windows-x64`](release/windows-x64/)) and run it. It installs for your user with no admin prompt and,
+in the same few clicks, can:
 
-Check everything with `moodcut doctor`, then connect your AI (below).
+- add Start menu and desktop shortcuts, and put `moodcut` on your `PATH` so AI apps and terminals can start it,
+- open `.mcut` project files with MoodCut,
+- download a portable **FFmpeg** with a progress bar (about 100 MB, kept next to MoodCut),
+- **connect the AI apps it finds**: Claude Desktop (including the Microsoft Store build), Claude Code, Cursor, VS Code,
+  Windsurf, LM Studio, Gemini CLI and Codex.
+
+Uninstalling (Settings → Apps) reverses all of it, including the AI apps' settings.
+
+**One line in PowerShell** does the same without clicking through:
+
+```powershell
+irm https://raw.githubusercontent.com/hamzarasheed309/MoodCut/HEAD/install.ps1 | iex
+```
+
+**Portable:** [`moodcut.exe`](release/windows-x64/) alone also works: put it anywhere and double-click it; it offers to
+install FFmpeg into `%APPDATA%\MoodCut` on first run. Windows may show *"Windows protected your PC"* because the app
+isn't code-signed yet: **More info → Run anyway**.
+
+When MoodCut opens you land on **Home**: start a YouTube, Reel/TikTok, square or 4K project, reopen a recent one, and
+finish setup (FFmpeg, AI apps) with one click each. `moodcut doctor` checks everything from a terminal.
+
+Linux and macOS: `curl -fsSL https://raw.githubusercontent.com/hamzarasheed309/MoodCut/HEAD/install.sh | sh`
+(a prebuilt binary on Linux x64, otherwise a source build).
 
 Projects are plain JSON (`.mcut`) and autosave. Rendered graphics go next to the project in
 `<project> assets/graphics`. Optional: install [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
@@ -97,7 +126,26 @@ Projects are plain JSON (`.mcut`) and autosave. Rendered graphics go next to the
 
 ## Connect your AI
 
-The **Connect AI** button in the editor shows all of these with your actual port.
+**AI apps on your computer: one click.** Open **Connect AI** in the editor: every AI app found on the PC is listed with a
+**Connect** button (or **Connect all**). From a terminal, `moodcut install-ai` does the same and `moodcut install-ai --list`
+shows what is connected. MoodCut merges itself into each app's settings without touching your other tools or settings you added to its own
+entry (such as `env`), keeps the file's permissions and a backup of the original (refreshed when the file had comments,
+which a rewrite can't keep), and leaves a file it can't read alone, printing the snippet to paste instead. Then restart the app and ask it to "use MoodCut".
+
+| App | Where MoodCut registers |
+| --- | --- |
+| Claude Desktop | `claude_desktop_config.json` (classic and Microsoft Store builds) |
+| Claude Code | `claude mcp add --scope user` |
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code (Copilot) | user `mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| LM Studio | `~/.lmstudio/mcp.json` |
+| Gemini CLI | `~/.gemini/settings.json` |
+| Codex CLI | `~/.codex/config.toml` |
+
+The connection is forgiving: `moodcut mcp` attaches to the open editor so edits appear live, finds it on whatever port it
+runs, and if the editor is closed mid-conversation it carries on with its own engine and the same project instead of
+failing. Starting MoodCut a second time (or double-clicking a `.mcut` file) brings up the editor that's already running.
 
 ### Claude on the web (claude.ai) and ChatGPT
 
@@ -127,12 +175,12 @@ one connector URL for good.
 
 | Client | How |
 | --- | --- |
-| **Claude Desktop** | `moodcut install-claude`, then restart Claude. |
-| **Claude Code** | `claude mcp add moodcut -- moodcut mcp` |
-| **Any MCP client over HTTP** (Cursor, VS Code, LM Studio…) | `http://127.0.0.1:7878/mcp` (Streamable HTTP) |
+| **Desktop AI apps** | **Connect AI** in the editor, or `moodcut install-ai` (see above) |
+| **Any MCP client over stdio** | command `moodcut`, arguments `mcp` |
+| **Any MCP client over HTTP** (Open WebUI, MCP Inspector, your own agent…) | `http://127.0.0.1:7878/mcp` (Streamable HTTP; MCP Inspector's page is allowed from the browser, others via `MOODCUT_ALLOW_ORIGINS`) |
 
 `moodcut mcp` (stdio) attaches to the editor if it's already open, so AI edits appear live in the window; otherwise
-it runs the engine itself and serves the editor at `http://127.0.0.1:7878`.
+it runs the engine itself and serves the editor at `http://127.0.0.1:7878` (or the next free port).
 
 ### Ready-made prompts
 
@@ -141,6 +189,28 @@ TikTok or Shorts), **youtube-video**, **promo** (launch film or ad with kinetic 
 **edit-folder** (a folder of footage to a finished video), **talking-head**, **social-cutdown** (vertical versions),
 **motion-graphic**, **color-grade** and **review** (check an edit and fix it). Each one runs the full workflow below
 with your arguments.
+
+## Smooth on any PC
+
+MoodCut previews the way Premiere Pro and After Effects do, so heavy footage plays without a powerful graphics card:
+
+- **Proxies.** Importing 4K, HEVC/AV1/VP9 or high-frame-rate footage makes small H.264 copies in the background (up to
+  1280 px, short GOP, `fastdecode`), built one at a time at low priority on two threads. Previews read the proxy, exports
+  always read the original. **Proxies** in the Program monitor is Premiere's *Toggle Proxies*; the Project panel's
+  **Proxies** menu makes them for every video, deletes them, or changes what new imports get. A "P" marks clips that
+  have one. On a 4K HEVC test clip, random-access scrubbing went from 99 to 33 ms a frame and playback rendered twice as fast.
+- **Auto playback resolution.** The monitor plays at the smallest of Full, 1/2, 1/4 or 1/8 that still fills its pixels
+  (a 4K timeline in a laptop-sized monitor plays at 1/4); paused frames are always rendered sharp at the size shown.
+- **Dropped frames instead of stalls.** When a section renders slower than real time, playback repeats frames and keeps
+  the sound in sync rather than stopping to buffer.
+- **Caches.** Frames you've scrubbed over come back instantly (until something changes); thumbnails are kept on disk
+  between sessions; each audio file is decoded once into a peak file, and every waveform (any clip, zoom or size) is
+  drawn from it, sharp at any zoom.
+- **Gentle on the machine.** Background work (proxies, peaks) runs at below-normal priority, imports probe a bounded
+  number of files at once, decoding stays on the CPU (`MOODCUT_HWDEC=1` turns on hardware decoding for previews), and
+  HTML graphics render in software (`MOODCUT_BROWSER_GPU=1` to use the GPU) so the graphics card is left to you.
+
+The AI can manage proxies too: `media action=proxy ids=all` (status without ids).
 
 ## The editor
 
@@ -166,6 +236,7 @@ up in History, and is something the AI can do too.
 | Markers / History | colored markers with durations and comments; click any step to go back | `marker set`, `undo 3` |
 | Effects & Presets | effects, transitions, animations, titles, looks, audio effects and sound FX, applied to the selection or at the playhead | `fx`, `tr`, `anim`, `title`, `sfx whoosh at=…` |
 | Brand Kit, Character, Align | the brand's font and colors with presets; type settings of the selected text; After Effects' Align panel | `brand bold`, `set t3 tracking=-2`, `align t3 left to=safe` |
+| Audio Track Mixer effect chains | click an effect to bypass it, ⚙ for its settings, ✕ to remove it | `afx A1.a2 off`, `afx A1.a2 ratio=4`, `afx master.a1 del` |
 
 Shortcuts follow Premiere Pro and After Effects: Space, I / O (work area, or In / Out in the Source monitor),
 `;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+←/→ nudge clips a frame, Ctrl+arrows
@@ -178,12 +249,12 @@ selected" becomes `color sel cinematic` and "a title here" becomes `text 'Hi' at
 
 ## How the AI edits
 
-MoodCut exposes **10 tools** whose definitions total about 10.9 KB (~2,700 tokens), so connecting it costs little context:
+MoodCut exposes **10 tools** whose definitions total about 11.6 KB (~2,900 tokens), so connecting it costs little context:
 
 | Tool | Purpose |
 | --- | --- |
 | `project` | new / open / save / undo / redo / history |
-| `media` | import files, folders, globs or URLs; list with filters and paging; browse disk folders |
+| `media` | import files, folders, globs or URLs; list with filters and paging; browse disk folders; preview proxies |
 | `edit` | apply a **MoodCut Script**: many edits per call, all-or-nothing |
 | `view` | compact text views: timeline, one item, media, markers, transcript, library search |
 | `preview` | a frame, a contact sheet of the edit, poster sheets of the library or a clip's filmstrip, as small JPEGs |
@@ -305,11 +376,16 @@ moodcut render explainer.mcut
 | `moodcut graphic <file.html> -o out.mov [--dur 5] [--size 1920x1080] [--var k=v]… [--project p --place "V3 at=2"]` | render an HTML motion graphic (`--dur 0 --at 2` for a still) |
 | `moodcut check <project> [--fix] [--dur 30] [--size 1080x1920] [--strict]` | quality-check an edit; `--strict` fails on errors (CI) |
 | `moodcut doctor` / `moodcut setup [--force]` | check the setup / install (or update) the portable FFmpeg |
-| `moodcut install-claude` | register with Claude Desktop |
+| `moodcut setup --from <ffmpeg.zip> [--dest DIR]` | install FFmpeg from an archive you already downloaded (the installer uses this) |
+| `moodcut install-ai [apps…] [--list]` | connect MoodCut to the AI apps on this computer (all found when no names are given) |
+| `moodcut uninstall-ai [apps…]` | remove MoodCut from the AI apps' settings |
+| `moodcut install-claude` | same as `install-ai claude` |
 
 Environment: `MOODCUT_FFMPEG` (folder with ffmpeg/ffprobe, or `none` to run without), `MOODCUT_HOME` (data
 folder, default `%APPDATA%\MoodCut`), `MOODCUT_BROWSER` (Edge/Chrome for HTML graphics), `MOODCUT_CLOUDFLARED`,
-`MOODCUT_WHISPER_BIN`, `MOODCUT_WHISPER_MODEL`.
+`MOODCUT_WHISPER_BIN`, `MOODCUT_WHISPER_MODEL`, `MOODCUT_HWDEC=1` (hardware decoding for previews),
+`MOODCUT_BROWSER_GPU=1` (GPU for HTML graphics), `MOODCUT_ALLOW_ORIGINS` (extra local browser pages allowed to call
+`/mcp`, comma separated).
 
 Without FFmpeg, MoodCut still opens, edits projects and renders HTML graphics as PNG stills; anything that needs
 to decode or encode media explains how to install it, and the editor shows the one-click install.
@@ -323,6 +399,11 @@ cd gui && npm ci && npm run build && cd ..   # GUI -> gui/dist (embedded into th
 cargo build --release                         # target/release/moodcut(.exe)
 cargo test
 ```
+
+The Windows installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php): `iscc /DAppVersion=1.0.0
+installer\moodcut.iss` writes `dist\MoodCut-Setup-x64.exe` (CI builds it, installs it silently, checks FFmpeg, PATH and
+the file association, and uninstalls it again). `moodcut brand` regenerates the logos, icons and installer artwork from
+`crates/moodcut/src/brand.rs`; see [docs/BRAND.md](docs/BRAND.md).
 
 `npm run dev` in `gui/` serves the GUI with hot reload and proxies `/api` (including the WebSocket), `/mcp` and
 `/fonts` to a running `moodcut serve`. `moodcut docs > docs/REFERENCE.md` regenerates the reference (CI checks
