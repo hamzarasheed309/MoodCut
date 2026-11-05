@@ -159,7 +159,7 @@ export function Home({ onConnect }: { onConnect: () => void }) {
           <LogoMark size={96} />
           <Wordmark class="home-word" />
           <div class="home-tag">{TAGLINE}</div>
-          <div class="home-ver">Version {appVersion.value}</div>
+          <div class="home-ver">Version {appVersion.value} · A <a href="https://moodbook.uk" target="_blank" rel="noopener noreferrer">Moodbook Studio</a> project</div>
           <div class="home-tips">
             <b>Try asking your AI</b>
             <span>"Cut D:\Footage\Trip into a 30 s Reel with captions and music"</span>

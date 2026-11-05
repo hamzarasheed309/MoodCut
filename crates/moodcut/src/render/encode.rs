@@ -351,6 +351,10 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
             dir.join(format!("{stem}_%05d.png"))
         }
     };
+    if !preset.seq && !preset.gif {
+        // a plain credit in the file's metadata (visible in any media-info tool)
+        c.args(["-metadata", &format!("comment={}", crate::brand::credit()), "-metadata", &format!("encoded_by={}", crate::brand::MAKER)]);
+    }
     c.arg(&out_path);
     c.stdin(if has_video { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = c.spawn().context("starting ffmpeg encoder")?;

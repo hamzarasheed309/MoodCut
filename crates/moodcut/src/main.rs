@@ -35,7 +35,7 @@ use std::path::PathBuf;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "moodcut", version, about = "MoodCut — AI-native video editor & motion graphics engine (FFmpeg + MCP)")]
+#[command(name = "moodcut", version, about = "MoodCut — AI-native video editor & motion graphics engine (FFmpeg + MCP)", after_help = "A Moodbook Studio project — https://moodbook.uk")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,

@@ -445,4 +445,8 @@ and the reasons behind it.
 
 ## License
 
-MIT. The bundled Inter font is under the SIL Open Font License (`crates/moodcut/assets/fonts/OFL.txt`).
+MIT, copyright Moodbook Studio (see `LICENSE` and `NOTICE`; the MoodCut name and logo are Moodbook Studio marks). The bundled Inter font is under the SIL Open Font License (`crates/moodcut/assets/fonts/OFL.txt`).
+
+---
+
+MoodCut is a [Moodbook Studio](https://moodbook.uk) project.
