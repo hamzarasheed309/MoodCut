@@ -76,14 +76,21 @@ export const selectedItem = computed(() => {
 });
 
 let toastId = 0;
-export function toast(msg: string, err = false) {
+export function toast(msg: string, err = false, ms?: number) {
   const id = ++toastId;
   toasts.value = [...toasts.value, { id, msg, err }];
-  setTimeout(() => (toasts.value = toasts.value.filter((t) => t.id !== id)), err ? 7000 : 3500);
+  setTimeout(() => (toasts.value = toasts.value.filter((t) => t.id !== id)), ms ?? (err ? 7000 : 3500));
 }
 
+const OFFLINE = "Can't reach the MoodCut engine. Is MoodCut still running?";
+
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, init);
+  let r: Response;
+  try {
+    r = await fetch(url, init);
+  } catch {
+    throw new Error(OFFLINE);
+  }
   if (!r.ok && r.status !== 200) {
     let msg = r.statusText;
     try {
@@ -114,6 +121,10 @@ function coalesce(fn: () => Promise<void>): () => Promise<void> {
   };
 }
 
+/** Revision at which the shown project was opened (or created): a new one resets the view. */
+let openedAt = -1;
+let noticeShown = "";
+
 export const refresh = coalesce(async () => {
   const s = await j<any>("/api/state");
   project.value = s.project;
@@ -125,9 +136,22 @@ export const refresh = coalesce(async () => {
   redoN.value = s.redo;
   ffVersion.value = s.ffmpeg;
   appVersion.value = s.version || "";
-  // drop selections that no longer exist
-  const sel = selection.value.filter((id) => findItem(id));
-  if (sel.length !== selection.value.length) selection.value = sel;
+  if (s.opened !== openedAt) {
+    // another project: its ids mean other things, and it opens where it was saved
+    openedAt = s.opened;
+    selection.value = [];
+    sourceMedia.value = null;
+    setPlayhead(typeof s.restore === "number" ? s.restore : 0);
+  } else {
+    // drop selections that no longer exist
+    const sel = selection.value.filter((id) => findItem(id));
+    if (sel.length !== selection.value.length) selection.value = sel;
+  }
+  // e.g. the project MoodCut was started with couldn't be opened
+  if (s.notice && s.notice !== noticeShown) {
+    noticeShown = s.notice;
+    toast(s.notice, true, 20000);
+  }
 });
 
 export const refreshLogs = coalesce(async () => {
@@ -144,7 +168,14 @@ export async function refreshJobs() {
 
 /** Runs MoodCut Script through the same path the AI uses. */
 export async function run(script: string, quiet = false): Promise<{ ok: boolean; log?: string[]; error?: string }> {
-  const r = await j<any>("/api/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ script, source: "gui" }) });
+  let r: any;
+  try {
+    r = await j<any>("/api/edit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ script, source: "gui" }) });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    toast(error, true);
+    return { ok: false, error };
+  }
   if (!r.ok) toast(r.error, true);
   else if (!quiet && r.log?.length) toast(r.log.slice(0, 3).join("  ·  "));
   await refresh();
@@ -158,16 +189,46 @@ export function createdIds(log: string[] | undefined): string[] {
   return (log || []).map((l) => /^\+([a-z]\d+)\b/.exec(l)?.[1]).filter((x): x is string => !!x);
 }
 
-export async function project_(body: any) {
-  const r = await j<any>("/api/project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  toast(r.text, !r.ok);
-  await refresh();
+export async function project_(body: any): Promise<{ ok: boolean; text: string }> {
+  let r: { ok: boolean; text: string };
+  try {
+    r = await j<any>("/api/project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  } catch (e) {
+    const text = e instanceof Error ? e.message : String(e);
+    toast(text, true);
+    return { ok: false, text };
+  }
+  // opening can report repairs and missing media ("! ..." lines): give those time to be read
+  const warn = !r.ok || r.text.includes("\n! ");
+  toast(r.text, warn, warn ? 15000 : undefined);
+  await refresh().catch(() => {});
   return r;
+}
+
+/** Save (Ctrl+S) to the project's file, asking where when it has none; Save As (Ctrl+Shift+S) always asks. */
+export async function saveProject(as = false): Promise<boolean> {
+  if (projectPath.value && !as) return (await project_({ action: "save" })).ok;
+  const f = await pickFiles("save", "project");
+  if (!f[0]) return false;
+  return (await project_({ action: "save", path: f[0] })).ok;
+}
+
+/** Before New / Open / Recover replace a project with unsaved work. */
+export function confirmLeave(): boolean {
+  if (!dirty.value) return true;
+  const name = project.value?.name || "Untitled";
+  if (projectPath.value) return confirm(`Some changes to "${name}" aren't saved yet. Leave it anyway?`);
+  return confirm(`"${name}" hasn't been saved to a file yet.\n\nContinue anyway? You can get it back later from Home > Unsaved projects.`);
 }
 
 export async function importPaths(paths: string[]) {
   if (!paths.length) return;
-  const r = await j<any>("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths }) });
+  let r: any;
+  try {
+    r = await j<any>("/api/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths }) });
+  } catch (e) {
+    return toast(e instanceof Error ? e.message : String(e), true);
+  }
   if (!r.ok) toast(r.error, true);
   else toast(r.log.find((l: string) => l.startsWith("making preview proxies")) ? `Imported. ${r.log[r.log.length - 1]}` : `Imported ${r.log.length} item(s)`);
   await refresh();
@@ -247,14 +308,23 @@ export function connectWS() {
         if (e.source === "mcp") aiPulse.value++;
         // imports (by the AI too) queue proxies for heavy footage
         if (e.source !== "gui" || /import/.test(e.text || "")) refreshProxies();
-      } else if (e.kind === "setup") {
+      } else if (e.kind === "setup" || e.kind === "saved") {
         refresh();
+      } else if (e.kind === "autosave") {
+        // the project file couldn't be written (disk full, read-only, ...), or it works again
+        const failed = /failed/.test(e.text || "");
+        toast(e.text, failed, failed ? 20000 : undefined);
+        refresh();
+      } else if (e.kind === "notice") {
+        noticeShown = e.text;
+        toast(e.text, true, 20000);
       } else if (e.kind === "proxy") {
         viewGen.value++;
         refreshProxies();
       } else if (e.kind === "job") {
         refreshJobs();
-        if (e.text?.includes("done") || e.text?.includes("failed")) toast(e.text, e.text.includes("failed"));
+        const t: string = e.text || "";
+        if (/ done| failed|retrying/.test(t)) toast(t, t.includes("failed") && !t.includes("retrying"), t.includes("failed") ? 12000 : undefined);
       }
     } catch {}
   };

@@ -1,6 +1,6 @@
 // Editor actions shared by panels and keyboard shortcuts. Every edit is a MoodCut Script
 // line sent through `run`, the same path the AI uses over MCP.
-import { clipboard, comp, findItem, fps, mediaById, monitorTab, playhead, playing, project_, projectPath, run, scrollX, selection, setPlayhead, showRender, snapping, sourceIn, sourceMedia, sourceOut, sourceT, toast, tool, zoom } from "./store";
+import { clipboard, comp, findItem, fps, mediaById, monitorTab, playhead, playing, run, saveProject, scrollX, selection, setPlayhead, showRender, snapping, sourceIn, sourceMedia, sourceOut, sourceT, toast, tool, zoom } from "./store";
 import type { Tool } from "./store";
 import { focusedPanel, groupOf, maximized, shown } from "./dock";
 import type { Comp, Item } from "./types";
@@ -211,6 +211,12 @@ export const TOOL_KEYS: Record<string, Tool> = { v: "select", a: "track", b: "ri
 /** Premiere Pro / After Effects keyboard shortcuts. */
 export function installShortcuts(): () => void {
   const onKey = (e: KeyboardEvent) => {
+    // Save works from anywhere, a text field too (else the browser offers to save the page)
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      saveProject(e.shiftKey); // Ctrl+Shift+S: Save As
+      return;
+    }
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     const mod = e.ctrlKey || e.metaKey;
@@ -230,9 +236,6 @@ export function installShortcuts(): () => void {
     } else if ((mod && k === "k") || (mod && e.shiftKey && k === "d")) {
       done();
       splitAtPlayhead();
-    } else if (mod && k === "s") {
-      done();
-      if (projectPath.value) project_({ action: "save" });
     } else if (mod && k === "m") {
       done();
       // Ctrl+Shift+M previous marker, Ctrl+M export (Premiere)

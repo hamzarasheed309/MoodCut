@@ -21,22 +21,38 @@ export function RenderPanel() {
   const [out, setOut] = useState("");
   const [range, setRange] = useState("");
   const [scale, setScale] = useState("1");
-  const [hw, setHw] = useState("off");
+  const [hw, setHw] = useState("auto");
   useEffect(() => {
     refreshJobs();
     const h = setInterval(() => {
-      if (jobs.value.some((j) => j.state === "running")) refreshJobs();
+      if (jobs.value.some((j) => j.state === "running")) refreshJobs().catch(() => {});
     }, 700);
     return () => clearInterval(h);
   }, []);
   if (!showRender.value) return null;
-  const start = async () => {
-    const r = await fetch("/api/render", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preset, out: out || undefined, range: range || undefined, scale: parseFloat(scale), hw, comp: c?.id }) });
-    const j = await r.json();
-    if (j.ok === false) toast(j.error, true);
-    else toast(`Render ${j.id} started → ${j.out}`);
-    refreshJobs();
+  const post = async (body: unknown) => {
+    try {
+      return await (await fetch("/api/render", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+    } catch {
+      return { ok: false, error: "Can't reach the MoodCut engine. Is MoodCut still running?" };
+    }
   };
+  const start = async () => {
+    const j = await post({ preset, out: out || undefined, range: range || undefined, scale: parseFloat(scale), hw, comp: c?.id });
+    if (j.ok === false) toast(j.error, true, 12000);
+    else toast(`Render ${j.id} started → ${j.out}`);
+    refreshJobs().catch(() => {});
+  };
+  const cancel = async (id: string) => {
+    const j = await post({ action: "cancel", id });
+    if (j.ok === false) toast(j.error, true);
+    refreshJobs().catch(() => {});
+  };
+  const reveal = (path: string) =>
+    fetch("/api/reveal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) })
+      .then((r) => r.json())
+      .then((r) => r.ok === false && toast(r.error, true))
+      .catch(() => {});
   return (
     <div class="modal-bg" onClick={() => (showRender.value = false)}>
       <div class="modal" onClick={(e) => e.stopPropagation()}>
@@ -85,8 +101,8 @@ export function RenderPanel() {
           <div class="field">
             <label>Encoder</label>
             <select value={hw} onChange={(e) => setHw((e.target as HTMLSelectElement).value)}>
-              <option value="off">CPU (best quality)</option>
-              <option value="auto">GPU auto (NVENC / QuickSync / AMF)</option>
+              <option value="auto">GPU, fastest (best GPU in this PC)</option>
+              <option value="off">CPU (best quality, slower)</option>
               <option value="nvenc">NVIDIA NVENC</option>
               <option value="qsv">Intel QuickSync</option>
               <option value="amf">AMD AMF</option>
@@ -101,13 +117,24 @@ export function RenderPanel() {
                 <div class="meta">
                   <b>{j.id}</b>
                   <span>{j.preset}</span>
-                  <span style={{ color: j.state === "error" ? "var(--danger)" : j.state === "done" ? "var(--ok)" : "var(--warn)" }}>{j.state}</span>
+                  <span style={{ color: j.state === "error" ? "var(--danger)" : j.state === "done" ? "var(--ok)" : "var(--warn)" }}>{j.cancelling ? "cancelling" : j.state}</span>
                   <span style={{ marginLeft: "auto" }}>{j.state === "running" ? `${j.pct}% · ${j.frames} · eta ${j.eta_s}s` : j.state === "done" ? (j.note ? j.note : `${fmtNum((j.bytes || 0) / 1e6, 1)} MB · ${j.secs}s · ${j.render_fps} fps`) : ""}</span>
+                  {j.state === "running" && (
+                    <button class="btn sm ghost" disabled={j.cancelling} title="Stop this export (its unfinished file is deleted)" onClick={() => cancel(j.id)}>
+                      Cancel
+                    </button>
+                  )}
+                  {j.state === "done" && (
+                    <button class="btn sm ghost" title="Show the file in its folder" onClick={() => reveal(j.out)}>
+                      Show
+                    </button>
+                  )}
                 </div>
                 <div class="progress">
                   <div style={{ width: `${j.pct ?? 100}%` }} />
                 </div>
-                <div style={{ fontSize: "11px", color: "var(--faint)", wordBreak: "break-all", userSelect: "text" }}>{j.error || j.out}</div>
+                {j.state === "running" && j.stage && j.stage !== "rendering" && <div style={{ fontSize: "11px", color: "var(--warn)" }}>{j.stage}</div>}
+                <div style={{ fontSize: "11px", color: j.state === "error" ? "var(--danger)" : "var(--faint)", wordBreak: "break-word", userSelect: "text", whiteSpace: "pre-wrap" }}>{j.error || j.out}</div>
               </div>
             ))}
         </div>

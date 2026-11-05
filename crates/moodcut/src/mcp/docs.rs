@@ -331,7 +331,7 @@ pub fn help(topic: &str) -> String {
         }
         "expr" | "expressions" => EXPR.to_string(),
         "render" | "export" | "presets" => {
-            let mut s = String::from("render tool: preset=<name> [out=path] [range=a-b] [scale=0.5] [hw=auto|nvenc|qsv|amf] [wait=true]. Output defaults to <Videos>/MoodCut Renders. Resolution = comp size × scale.\n");
+            let mut s = String::from("render tool: preset=<name> [out=path] [range=a-b] [scale=0.5] [hw=auto (default: the best GPU)|off (CPU)|nvenc|qsv|amf] [wait=true]. Output defaults to <Videos>/MoodCut Renders. Resolution = comp size × scale.\n");
             for (n, d) in PRESETS {
                 s.push_str(&format!(" {n}: {d}\n"));
             }

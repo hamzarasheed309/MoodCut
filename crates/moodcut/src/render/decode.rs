@@ -8,6 +8,7 @@ use resvg::tiny_skia::{IntSize, Pixmap};
 use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::Arc;
 use std::time::Instant;
@@ -92,11 +93,24 @@ pub struct VideoReader {
     chunk: Option<(i64, Vec<FrameRef>)>,
     last_req: Option<i64>,
     pub used: Instant,
+    /// FFmpeg decoding threads (0: FFmpeg's choice, one per core).
+    threads: usize,
+    /// Held while this reader may decode on the GPU.
+    _gpu: Option<GpuSlot>,
+}
+
+/// One of the GPU decoders allowed at a time; given back when its reader closes.
+struct GpuSlot(Arc<AtomicUsize>);
+
+impl Drop for GpuSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl VideoReader {
     pub fn new(ff: Arc<Ff>, spec: ReaderSpec) -> VideoReader {
-        VideoReader { spec, ff, proc: None, next: 0, last: None, eof_at: None, chunk: None, last_req: None, used: Instant::now() }
+        VideoReader { spec, ff, proc: None, next: 0, last: None, eof_at: None, chunk: None, last_req: None, used: Instant::now(), threads: 0, _gpu: None }
     }
 
     fn frame_bytes(&self) -> usize {
@@ -121,7 +135,10 @@ impl VideoReader {
         self.ff.need()?;
         let mut c = self.ff.cmd();
         if self.spec.hw {
-            c.args(["-hwaccel", "auto"]);
+            c.args(self.ff.hwdec_args());
+        }
+        if self.threads > 0 {
+            c.args(["-threads", &self.threads.to_string()]);
         }
         if t > 0.0 {
             c.args(["-ss", &format!("{:.6}", t)]);
@@ -202,6 +219,8 @@ impl VideoReader {
         if backwards {
             return self.reverse_chunk(idx);
         }
+        // playing forward again (or seeking): the reverse buffer can go
+        self.chunk = None;
         if let Some(e) = self.eof_at {
             if idx >= e {
                 if let Some((_, f)) = &self.last {
@@ -254,7 +273,7 @@ impl VideoReader {
 
     fn reverse_chunk(&mut self, idx: i64) -> Result<FrameRef> {
         let fb = self.frame_bytes().max(1);
-        let n = ((512usize << 20) / fb).clamp(4, 60) as i64;
+        let n = ((256usize << 20) / fb).clamp(4, 60) as i64;
         let first = (idx - n + 1).max(self.first_index());
         self.start(first)?;
         let mut frames = Vec::with_capacity(n as usize);
@@ -280,16 +299,48 @@ pub struct FrameServer {
     pub ff: Arc<Ff>,
     readers: Mutex<HashMap<String, Arc<Mutex<VideoReader>>>>,
     stills: Mutex<HashMap<String, (FrameRef, Instant)>>,
-    pub hw: bool,
+    /// When video decodes on the GPU.
+    pub hwdec: super::gpu::HwDec,
+    /// GPU decoders open now (capped: each holds video memory).
+    gpu_live: Arc<AtomicUsize>,
     /// Preview proxies (the editor's frame server only; exports never use them).
     pub proxies: Option<Arc<super::proxy::Proxies>>,
     /// Video start offsets by path.
     starts: Mutex<HashMap<String, f64>>,
 }
 
+/// Open decoders above this are closed when idle (each is an FFmpeg process with frames buffered).
+const MAX_READERS: usize = 32;
+/// A decoder used this recently is never closed for the cap: every layer of a big comp keeps its own.
+const READER_IDLE_SECS: f64 = 2.0;
+
+/// GPU decoders at a time (`MOODCUT_HWDEC_MAX`, default 6); more decode on the CPU.
+fn max_gpu_decoders() -> usize {
+    std::env::var("MOODCUT_HWDEC_MAX").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(6)
+}
+
+/// Decoding threads per reader: the cores shared among the open decoders. FFmpeg
+/// keeps a frame in flight per thread, so this bounds memory when many clips play at once.
+fn decode_threads(open: usize) -> usize {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    (cores / open.max(1)).clamp(2, 16)
+}
+
+/// Memory for cached stills, images and graphics (`MOODCUT_IMAGE_CACHE_MB`, default 768).
+fn still_budget() -> usize {
+    std::env::var("MOODCUT_IMAGE_CACHE_MB").ok().and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(768) << 20
+}
+
 impl FrameServer {
+    /// `hw`: whether video may decode on the GPU at all (then as `MOODCUT_HWDEC` says).
     pub fn new(ff: Arc<Ff>, hw: bool) -> FrameServer {
-        FrameServer { ff, readers: Mutex::new(HashMap::new()), stills: Mutex::new(HashMap::new()), hw, proxies: None, starts: Mutex::new(HashMap::new()) }
+        let hwdec = if hw { super::gpu::HwDec::from_env() } else { super::gpu::HwDec::Off };
+        FrameServer { ff, readers: Mutex::new(HashMap::new()), stills: Mutex::new(HashMap::new()), hwdec, gpu_live: Arc::new(AtomicUsize::new(0)), proxies: None, starts: Mutex::new(HashMap::new()) }
+    }
+
+    /// Whether `m` decodes on the GPU here.
+    pub fn hw_for(&self, m: &crate::model::project::Media) -> bool {
+        self.ff.gpu_decode(m, self.hwdec)
     }
 
     /// Where a file's video starts after the file's start (measured once per file).
@@ -302,11 +353,10 @@ impl FrameServer {
         v
     }
 
-    /// A frame server for previews: proxies, and hardware decoding only when asked
-    /// for with MOODCUT_HWDEC=1 (CPU decoding keeps the GPU free by default).
+    /// A frame server for previews: proxies, and heavy footage without one decodes
+    /// on a discrete GPU (its video engine is separate from the one drawing the editor).
     pub fn for_preview(ff: Arc<Ff>, proxies: Arc<super::proxy::Proxies>) -> FrameServer {
-        let hw = std::env::var("MOODCUT_HWDEC").is_ok_and(|v| matches!(v.as_str(), "1" | "on" | "auto" | "true"));
-        FrameServer { proxies: Some(proxies), ..FrameServer::new(ff, hw) }
+        FrameServer { proxies: Some(proxies), ..FrameServer::new(ff, true) }
     }
 
     /// `owner` scopes a reader to one timeline item so parallel clips of the
@@ -315,7 +365,25 @@ impl FrameServer {
         let key = format!("{owner}|{}", spec.key());
         let r = {
             let mut g = self.readers.lock();
-            g.entry(key).or_insert_with(|| Arc::new(Mutex::new(VideoReader::new(self.ff.clone(), spec.clone())))).clone()
+            let open = g.get(&key).cloned();
+            if let Some(r) = open {
+                r
+            } else {
+                let mut vr = VideoReader::new(self.ff.clone(), spec.clone());
+                if vr.spec.hw {
+                    if self.gpu_live.fetch_add(1, Ordering::Relaxed) < max_gpu_decoders() {
+                        vr._gpu = Some(GpuSlot(self.gpu_live.clone()));
+                    } else {
+                        self.gpu_live.fetch_sub(1, Ordering::Relaxed);
+                        vr.spec.hw = false;
+                    }
+                }
+                vr.threads = decode_threads(g.len() + 1);
+                let r = Arc::new(Mutex::new(vr));
+                g.insert(key.clone(), r.clone());
+                close_idle_readers(&mut g, &key);
+                r
+            }
         };
         let mut r = r.lock();
         r.frame_at(t)
@@ -324,22 +392,40 @@ impl FrameServer {
     /// A single still frame (freeze frames / hold), cached.
     pub fn video_still(&self, spec: &ReaderSpec, t: f64) -> Result<FrameRef> {
         let key = format!("still|{}|{:.4}", spec.key(), t);
-        if let Some((f, _)) = self.stills.lock().get(&key) {
-            return Ok(f.clone());
+        if let Some(f) = self.get_still(&key) {
+            return Ok(f);
         }
-        let mut r = VideoReader::new(self.ff.clone(), spec.clone());
+        let mut spec = spec.clone();
+        spec.hw = false; // one frame: not worth starting a GPU decoder
+        let mut r = VideoReader::new(self.ff.clone(), spec);
         let f = r.frame_at(t)?;
         self.put_still(key, f.clone());
         Ok(f)
     }
 
-    fn put_still(&self, key: String, f: FrameRef) {
+    fn get_still(&self, key: &str) -> Option<FrameRef> {
         let mut g = self.stills.lock();
-        if g.len() > 256 {
-            let mut v: Vec<(String, Instant)> = g.iter().map(|(k, (_, t))| (k.clone(), *t)).collect();
+        let e = g.get_mut(key)?;
+        e.1 = Instant::now();
+        Some(e.0.clone())
+    }
+
+    /// Caches a still, dropping the least recently used ones to stay within the
+    /// memory budget (a 4K frame is 33 MB, a 24-megapixel photo 96 MB).
+    fn put_still(&self, key: String, f: FrameRef) {
+        let budget = still_budget();
+        let mut g = self.stills.lock();
+        g.remove(&key);
+        let mut total: usize = g.values().map(|(s, _)| s.data().len()).sum::<usize>() + f.data().len();
+        if total > budget || g.len() >= 256 {
+            let mut v: Vec<(String, Instant, usize)> = g.iter().map(|(k, (s, t))| (k.clone(), *t, s.data().len())).collect();
             v.sort_by_key(|x| x.1);
-            for (k, _) in v.into_iter().take(64) {
+            for (k, _, n) in v {
+                if total <= budget && g.len() < 256 {
+                    break;
+                }
                 g.remove(&k);
+                total = total.saturating_sub(n);
             }
         }
         g.insert(key, (f, Instant::now()));
@@ -348,8 +434,8 @@ impl FrameServer {
     /// Decoded image scaled to (w, h).
     pub fn image(&self, path: &str, w: u32, h: u32) -> Result<FrameRef> {
         let key = format!("img|{path}|{w}x{h}");
-        if let Some((f, _)) = self.stills.lock().get(&key) {
-            return Ok(f.clone());
+        if let Some(f) = self.get_still(&key) {
+            return Ok(f);
         }
         let native = self.image_native(path)?;
         let f = if native.width() == w && native.height() == h {
@@ -363,8 +449,8 @@ impl FrameServer {
 
     fn image_native(&self, path: &str) -> Result<FrameRef> {
         let key = format!("imgn|{path}");
-        if let Some((f, _)) = self.stills.lock().get(&key) {
-            return Ok(f.clone());
+        if let Some(f) = self.get_still(&key) {
+            return Ok(f);
         }
         let pm = match image::open(path) {
             Ok(img) => {
@@ -389,8 +475,8 @@ impl FrameServer {
     /// SVG rasterized at (w, h).
     pub fn svg(&self, path: &str, w: u32, h: u32) -> Result<FrameRef> {
         let key = format!("svg|{path}|{w}x{h}");
-        if let Some((f, _)) = self.stills.lock().get(&key) {
-            return Ok(f.clone());
+        if let Some(f) = self.get_still(&key) {
+            return Ok(f);
         }
         let data = std::fs::read(path)?;
         let mut opt = resvg::usvg::Options::default();
@@ -414,6 +500,25 @@ impl FrameServer {
     pub fn clear(&self) {
         self.readers.lock().clear();
         self.stills.lock().clear();
+    }
+}
+
+/// Above [`MAX_READERS`], closes the decoders idle longest (not `keep`, the one just
+/// opened, nor any used in the last [`READER_IDLE_SECS`]).
+fn close_idle_readers(g: &mut HashMap<String, Arc<Mutex<VideoReader>>>, keep: &str) {
+    if g.len() <= MAX_READERS {
+        return;
+    }
+    let mut idle: Vec<(String, Instant)> = g
+        .iter()
+        .filter(|(k, _)| k.as_str() != keep)
+        .filter_map(|(k, r)| r.try_lock().map(|r| (k.clone(), r.used)))
+        .filter(|(_, used)| used.elapsed().as_secs_f64() > READER_IDLE_SECS)
+        .collect();
+    idle.sort_by_key(|x| x.1);
+    let excess = g.len() - MAX_READERS;
+    for (k, _) in idle.into_iter().take(excess) {
+        g.remove(&k);
     }
 }
 

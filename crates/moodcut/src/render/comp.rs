@@ -27,6 +27,20 @@ pub struct RenderCtx<'a> {
     pub draft: bool,
 }
 
+/// A clip whose file is missing, in previews: Premiere's offline red, with darker
+/// diagonal stripes so it can't pass for a red shot.
+fn offline_frame(w: u32, h: u32) -> FrameRef {
+    let (w, h) = (w.max(2), h.max(2));
+    let Some(mut pm) = Pixmap::new(w, h) else { return std::sync::Arc::new(Pixmap::new(2, 2).unwrap()) };
+    let stripe = (w.max(h) / 12).max(4);
+    for (i, px) in pm.data_mut().chunks_exact_mut(4).enumerate() {
+        let (x, y) = (i as u32 % w, i as u32 / w);
+        let c: [u8; 4] = if (x + y) / stripe % 2 == 0 { [120, 18, 26, 255] } else { [170, 30, 40, 255] };
+        px.copy_from_slice(&c);
+    }
+    std::sync::Arc::new(pm)
+}
+
 /// Output size for a comp at a preview scale (even dimensions for encoders).
 pub fn out_size(comp: &Comp, scale: f32) -> (u32, u32) {
     let w = ((comp.w as f32 * scale).round() as u32 / 2 * 2).max(2);
@@ -521,7 +535,16 @@ impl<'a> CompR<'a> {
                 let dw = ((m.w as f32 * ds).round() as u32).max(2);
                 let dh = ((m.h as f32 * ds).round() as u32).max(2);
                 let (dw, dh) = if m.kind == MediaKind::Video { ((dw + 1) / 2 * 2, (dh + 1) / 2 * 2) } else { (dw, dh) };
-                match m.kind {
+                // the file is gone (moved, deleted, a drive unplugged): previews show where it
+                // was, like Premiere's Media Offline, instead of failing the whole frame; an
+                // export stops and names the clip
+                if m.is_visual() && !std::path::Path::new(&m.path).exists() {
+                    if self.rc.draft {
+                        return Ok(Some(offline_frame(dw, dh)));
+                    }
+                    anyhow::bail!("clip {} uses {} ({}), whose file is missing: {} (relink it with `relink {} <new path>`)", it.id, m.id, m.name, m.path, m.id);
+                }
+                let decoded = (|| -> Result<Option<FrameRef>> { match m.kind {
                     MediaKind::Image => Ok(Some(self.rc.frames.image(&m.path, dw, dh)?)),
                     MediaKind::Svg => {
                         let k = need.clamp(0.05, 4.0);
@@ -539,7 +562,7 @@ impl<'a> CompR<'a> {
                             rate,
                             vf: effects::ff_filters(&it.fx),
                             alpha: m.alpha,
-                            hw: self.rc.frames.hw,
+                            hw: self.rc.frames.hw_for(m),
                             src_dur: m.dur,
                             start: 0.0,
                             interp: ev.str(&it.props, "interp"),
@@ -550,6 +573,7 @@ impl<'a> CompR<'a> {
                         if self.rc.draft && spec.vf.is_empty() {
                             if let Some((p, offset)) = self.rc.frames.proxies.as_ref().and_then(|px| px.for_preview(m, dw)) {
                                 spec.path = p;
+                                spec.hw = false; // a small H.264 proxy decodes faster on the CPU
                                 shift = offset;
                             }
                         }
@@ -565,7 +589,8 @@ impl<'a> CompR<'a> {
                         Ok(Some(self.rc.frames.video(&owner, &spec, st)?))
                     }
                     MediaKind::Audio => Ok(None),
-                }
+                } })();
+                decoded.map_err(|e| e.context(format!("clip {} ({})", it.id, m.name)))
             }
             ItemKind::Comp => {
                 let Some(c) = it.src.as_deref().and_then(|s| self.rc.p.comp(s)) else { return Ok(None) };

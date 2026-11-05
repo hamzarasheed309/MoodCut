@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { activate, closeGroup, closePanel, dock, float, focusedPanel, groups, maximized, moveFloat, narrow, PANEL_TITLES, resize, setLayout, shown } from "../dock";
 import type { Floating, Group, Node, PanelId, Split, Zone } from "../dock";
 import { PANELS } from "../panels";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 type Target = { group: string; zone: Zone; index?: number; rect: { x: number; y: number; w: number; h: number } };
 const drag = signal<{ panel: PanelId; from: string; x: number; y: number; target: Target | null } | null>(null);
@@ -185,7 +186,15 @@ function GroupView({ gr, floating = false, onHeaderDown }: { gr: Group; floating
         <span class="dock-tabs-fill" onPointerDown={onHeaderDown} onDblClick={() => !floating && (maximized.value = maximized.value === gr.id ? null : gr.id)} />
         <GroupMenu gr={gr} floating={floating} />
       </div>
-      <div class="dock-body">{Body ? <Body /> : <div class="empty">Empty group: drag a panel here or use Window.</div>}</div>
+      <div class="dock-body">
+        {Body && p ? (
+          <ErrorBoundary key={p} name={PANEL_TITLES[p]}>
+            <Body />
+          </ErrorBoundary>
+        ) : (
+          <div class="empty">Empty group: drag a panel here or use Window.</div>
+        )}
+      </div>
     </div>
   );
 }

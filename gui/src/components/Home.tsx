@@ -3,7 +3,7 @@
 import { effect, signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
 import { LogoMark, TAGLINE, Wordmark } from "../brand";
-import { appVersion, ffVersion, pickFiles, project, project_, projectPath, refresh, toast } from "../store";
+import { appVersion, confirmLeave, ffVersion, pickFiles, project, project_, projectPath, refresh, toast } from "../store";
 
 const RECENT_KEY = "mc.recent";
 const HOME_KEY = "mc.home";
@@ -37,10 +37,19 @@ effect(() => {
 });
 
 /** Opens Home at launch when there's nothing to edit yet (unless turned off). */
-export function maybeShowHome() {
+export async function maybeShowHome() {
   const p = project.value;
   const empty = !p || (p.media.length === 0 && p.comps.every((c) => c.tracks.every((t) => t.items.length === 0)));
-  if (empty && load(HOME_KEY, true)) showHome.value = true;
+  if (!empty) return;
+  if (load(HOME_KEY, true)) {
+    showHome.value = true;
+    return;
+  }
+  // Home is turned off: still say when there's unsaved work to recover (after a crash, say)
+  try {
+    const r = await fetch("/api/unsaved").then((x) => x.json());
+    if (r.ok && r.unsaved?.length) toast(`"${r.unsaved[0].name}" was never saved to a file. Recover it from Home (click the MoodCut logo).`, false, 12000);
+  } catch {}
 }
 
 const PRESETS = [
@@ -103,20 +112,45 @@ function Setup({ onConnect }: { onConnect: () => void }) {
   );
 }
 
+type Unsaved = { path: string; name: string; modified: number; items: number; media: number };
+
+function ago(secs: number): string {
+  const s = Math.max(0, Date.now() / 1000 - secs);
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 172800) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+
 export function Home({ onConnect }: { onConnect: () => void }) {
   const [name, setName] = useState("Untitled");
   const [startup, setStartup] = useState(load(HOME_KEY, true));
-  if (!showHome.value) return null;
+  const [unsaved, setUnsaved] = useState<Unsaved[]>([]);
+  const shown = showHome.value;
+  // untitled projects autosaved in earlier sessions (after a crash, or never saved)
+  useEffect(() => {
+    if (!shown) return;
+    fetch("/api/unsaved")
+      .then((r) => r.json())
+      .then((r) => r.ok && setUnsaved(r.unsaved || []))
+      .catch(() => {});
+  }, [shown]);
+  if (!shown) return null;
   const close = () => (showHome.value = false);
   const create = async (size: string, fps: number) => {
+    if (!confirmLeave()) return;
     close();
     await project_({ action: "new", name: name.trim() || "Untitled", size, fps });
   };
   const open = async (path?: string) => {
     const p = path || (await pickFiles("open", "project"))[0];
-    if (!p) return;
+    if (!p || !confirmLeave()) return;
     close();
     await project_({ action: "open", path: p });
+  };
+  const recover = async (path: string) => {
+    if (!confirmLeave()) return;
+    close();
+    await project_({ action: "recover", path });
   };
   return (
     <div class="modal-bg home-bg" onClick={close}>
@@ -161,6 +195,23 @@ export function Home({ onConnect }: { onConnect: () => void }) {
               </button>
             ))}
           </div>
+          {unsaved.length > 0 && (
+            <>
+              <div class="home-h" title="Projects that were never saved to a file. MoodCut autosaves them, so they survive a crash or closing the window.">
+                Unsaved projects
+              </div>
+              <div class="home-recent">
+                {unsaved.slice(0, 3).map((u) => (
+                  <button key={u.path} class="home-file" title={`Recover: ${u.path}`} onClick={() => recover(u.path)}>
+                    <b>{u.name}</b>
+                    <small>
+                      {u.items} clip{u.items === 1 ? "" : "s"}, {u.media} media · autosaved {ago(u.modified)} · click to recover
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <div class="home-h">Get set up</div>
           <Setup onConnect={() => (close(), onConnect())} />
           <div class="home-foot">

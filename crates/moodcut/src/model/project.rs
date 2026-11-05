@@ -697,6 +697,106 @@ impl Project {
         self.locate(key).map(move |(c, t, i)| &mut self.comps[c].tracks[t].items[i])
     }
 
+    /// Makes a project read from a file consistent (hand edits, older versions, a tool
+    /// that was interrupted): a main comp exists, comps have a usable size, frame rate
+    /// and work area, items have a length, every item id is unique and the id counters
+    /// are past every id in use (so new items never collide with old ones). Returns
+    /// what had to change, in words.
+    pub fn repair(&mut self) -> Vec<String> {
+        let mut notes = vec![];
+        if self.comps.is_empty() {
+            let id = self.next_comp_id();
+            self.comps.push(Comp::new(&id, "Main", 1920, 1080, 30.0));
+            notes.push("the project had no sequence: added an empty 1920x1080 one".to_string());
+        }
+        if self.comp(&self.main).is_none() {
+            self.main = self.comps[0].id.clone();
+            notes.push(format!("its main sequence was missing: {} is the main one now", self.main));
+        }
+        let num = |id: &str| id.trim_start_matches(|c: char| c.is_ascii_alphabetic()).parse::<u64>().ok();
+        let max_item = self.comps.iter().flat_map(|c| c.items()).filter_map(|i| num(&i.id)).max().unwrap_or(0);
+        let max_media = self.media.iter().filter_map(|m| m.id.strip_prefix('m').and_then(|n| n.parse().ok())).max().unwrap_or(0);
+        let max_comp = self.comps.iter().filter_map(|c| c.id.strip_prefix('s').and_then(|n| n.parse().ok())).max().unwrap_or(0);
+        self.seq = self.seq.max(max_item);
+        self.mseq = self.mseq.max(max_media);
+        self.cseq = self.cseq.max(max_comp);
+        // two items with one id can't be told apart by any edit: renumber the later one
+        let mut seen = std::collections::HashSet::new();
+        let mut renamed = vec![];
+        for ci in 0..self.comps.len() {
+            for ti in 0..self.comps[ci].tracks.len() {
+                for ii in 0..self.comps[ci].tracks[ti].items.len() {
+                    let id = self.comps[ci].tracks[ti].items[ii].id.clone();
+                    if !seen.insert(id.clone()) {
+                        let kind = self.comps[ci].tracks[ti].items[ii].kind;
+                        let new = self.next_item_id(kind);
+                        seen.insert(new.clone());
+                        self.comps[ci].tracks[ti].items[ii].id = new.clone();
+                        renamed.push(format!("{id}->{new}"));
+                    }
+                }
+            }
+        }
+        if !renamed.is_empty() {
+            notes.push(format!("renumbered items that shared an id: {}", renamed.join(", ")));
+        }
+        let mut fixed_items = 0;
+        for c in &mut self.comps {
+            if !(c.fps.is_finite() && c.fps > 0.0 && c.fps <= 1000.0) {
+                notes.push(format!("{} had an unusable frame rate ({}): set to 30 fps", c.id, c.fps));
+                c.fps = 30.0;
+            }
+            if c.w == 0 || c.h == 0 {
+                notes.push(format!("{} had no frame size: set to 1920x1080", c.id));
+                c.w = 1920;
+                c.h = 1080;
+            }
+            if !c.shutter.is_finite() {
+                c.shutter = 180.0;
+            }
+            if c.dur.is_some_and(|d| !(d.is_finite() && d > 0.0)) {
+                c.dur = None;
+            }
+            if c.work.is_some_and(|(a, b)| !(a.is_finite() && b.is_finite() && b > a)) {
+                c.work = None;
+            }
+            let frame = c.frame_dur();
+            for t in &mut c.tracks {
+                for it in &mut t.items {
+                    if !it.start.is_finite() {
+                        it.start = 0.0;
+                        fixed_items += 1;
+                    }
+                    if !(it.dur.is_finite() && it.dur > 0.0) {
+                        it.dur = frame;
+                        fixed_items += 1;
+                    }
+                    if !it.src_in.is_finite() {
+                        it.src_in = 0.0;
+                        fixed_items += 1;
+                    }
+                }
+            }
+        }
+        if fixed_items > 0 {
+            notes.push(format!("fixed {fixed_items} item time{} that couldn't be used (no length or no start)", if fixed_items == 1 { "" } else { "s" }));
+        }
+        let unknown = self
+            .comps
+            .iter()
+            .flat_map(|c| c.items())
+            .filter(|it| match (it.kind, it.src.as_deref()) {
+                (ItemKind::Clip, Some(s)) => self.media(s).is_none(),
+                (ItemKind::Comp, Some(s)) => self.comp(s).is_none(),
+                _ => false,
+            })
+            .count();
+        if unknown > 0 {
+            notes.push(format!("{unknown} clip{} refer to media or sequences that aren't in the project (they show nothing)", if unknown == 1 { "" } else { "s" }));
+        }
+        notes
+    }
+
     /// True if `comp` (directly or transitively) nests `target`.
     pub fn comp_contains(&self, comp: &str, target: &str, depth: usize) -> bool {
         if depth > 32 {

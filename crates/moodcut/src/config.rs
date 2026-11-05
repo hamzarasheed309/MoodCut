@@ -8,6 +8,10 @@ pub fn data_dir() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("MOODCUT_HOME") {
         return Some(PathBuf::from(d));
     }
+    // unit tests must never touch the user's autosaves, caches or settings
+    if cfg!(test) {
+        return Some(std::env::temp_dir().join(format!("moodcut-test-{}", std::process::id())));
+    }
     if cfg!(windows) {
         std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("MoodCut"))
     } else if cfg!(target_os = "macos") {

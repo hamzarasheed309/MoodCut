@@ -6,6 +6,7 @@ pub mod ffmpeg;
 pub mod fx_color;
 pub mod fx_distort;
 pub mod fx_stylize;
+pub mod gpu;
 pub mod lut;
 pub mod masks;
 pub mod noise;

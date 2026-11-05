@@ -44,9 +44,9 @@ pub fn tools() -> Value {
     json!([
         {
             "name": "project",
-            "description": "Create/open/save a MoodCut project, undo/redo. action: new | open | save | info | undo | redo | history. new takes name, size (1920x1080, 9:16, 4k...), fps, optional path (.mcut).",
+            "description": "Create/open/save a MoodCut project, undo/redo. action: new | open | save | info | undo | redo | history | recover. new takes name, size (1920x1080, 9:16, 4k...), fps, optional path (.mcut). save with path = Save As. A .mcut keeps everything (media, every comp, track, clip, effect, keyframe, mask, transition, text, marker, mix and the brand kit) and autosaves after every edit; open reports media it relinked or couldn't find and anything it repaired. recover lists untitled projects autosaved before a crash or never saved; recover path=<file> brings one back.",
             "inputSchema": {"type": "object", "properties": {
-                "action": {"type": "string", "enum": ["new", "open", "save", "info", "undo", "redo", "history"]},
+                "action": {"type": "string", "enum": ["new", "open", "save", "info", "undo", "redo", "history", "recover"]},
                 "path": {"type": "string"}, "name": {"type": "string"}, "size": {"type": "string"}, "fps": {"type": "number"}, "n": {"type": "integer"}
             }, "required": ["action"]},
             "annotations": {"title": "Project", "destructiveHint": false, "openWorldHint": false}
@@ -118,7 +118,7 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "render",
-            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b or work (the work area), scale, hw=auto (GPU), wait=true to block until done.",
+            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b or work (the work area), scale, hw (auto, the default: the best GPU's encoder; off: CPU encoding; nvenc | qsv | amf), wait=true to block until done.",
             "inputSchema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["start", "status", "list", "cancel"]},
                 "preset": {"type": "string"}, "out": {"type": "string"}, "range": {"type": "string"}, "scale": {"type": "number"},
@@ -283,6 +283,25 @@ impl Mcp {
             }
             "open" => eng.open(&s(a, "path").ok_or_else(|| anyhow::anyhow!("open needs path"))?),
             "save" => eng.save(s(a, "path").as_deref()),
+            "recover" => match s(a, "path") {
+                Some(p) => eng.recover(&p),
+                None => {
+                    let list = eng.unsaved();
+                    if list.is_empty() {
+                        return Ok("no unsaved projects to recover".into());
+                    }
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    let lines: Vec<String> = list
+                        .iter()
+                        .map(|u| {
+                            let ago = now.saturating_sub(u.modified);
+                            let when = if ago < 3600 { format!("{} min ago", ago / 60) } else if ago < 172_800 { format!("{} h ago", ago / 3600) } else { format!("{} days ago", ago / 86400) };
+                            format!("'{}' ({} clips, {} media, {when}): {}", u.name, u.items, u.media, u.path)
+                        })
+                        .collect();
+                    Ok(format!("unsaved projects (recover path=<file>):\n{}", lines.join("\n")))
+                }
+            },
             "undo" => Ok(eng.undo(a["n"].as_u64().unwrap_or(1) as usize, "mcp")?.log.join("\n")),
             "redo" => Ok(eng.redo(a["n"].as_u64().unwrap_or(1) as usize, "mcp")?.log.join("\n")),
             "history" => {
@@ -643,7 +662,7 @@ impl Mcp {
                     preset: s(a, "preset").unwrap_or_else(|| "mp4".into()),
                     out: s(a, "out").map(std::path::PathBuf::from).unwrap_or_default(),
                     scale: a["scale"].as_f64().unwrap_or(1.0) as f32,
-                    hw: s(a, "hw").unwrap_or_else(|| "off".into()),
+                    hw: s(a, "hw").unwrap_or_else(|| "auto".into()),
                 };
                 let job = eng.start_render(opts)?;
                 if a["wait"].as_bool().unwrap_or(false) {

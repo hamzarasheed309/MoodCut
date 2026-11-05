@@ -155,6 +155,12 @@ impl Proxies {
                 }
             }
         }
+        crate::cache::trim_in_background();
+        // find the GPUs now (about a second) rather than on the first heavy frame or export
+        let ff = self.ff.clone();
+        let _ = std::thread::Builder::new().name("gpu-detect".into()).spawn(move || {
+            ff.hw();
+        });
     }
 
     fn changed(&self, msg: String) {
@@ -205,6 +211,9 @@ impl Proxies {
         let s = match offset {
             Some(offset) if eligible(m) && f.metadata().map(|x| x.len() > 1024).unwrap_or(false) => {
                 let (w, h) = proxy_size(m);
+                // used again: keep it through cache trimming
+                crate::cache::touch(&f);
+                crate::cache::touch(&f.with_extension("json"));
                 State::Ready { path: f.to_string_lossy().to_string(), w, h, offset }
             }
             _ => State::Absent,
@@ -382,9 +391,13 @@ impl Proxies {
         } else {
             vec!["-c:v", "mpeg4", "-q:v", "4", "-g", "15", "-bf", "0", "-pix_fmt", "yuv420p"]
         };
+        // 4K / HEVC sources decode on the GPU, which is most of a proxy's cost
+        let hwdec = if self.ff.gpu_decode(m, super::gpu::HwDec::from_env()) { self.ff.hwdec_args() } else { vec![] };
         let attempt = |timing: &[&str]| -> anyhow::Result<(bool, String)> {
             let mut c = background_command(&self.ff.ffmpeg_path());
-            c.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"]).arg(&m.path);
+            c.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"]);
+            c.args(&hwdec);
+            c.arg("-i").arg(&m.path);
             c.args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &format!("scale={w}:{h}:flags=bilinear")]);
             c.args(timing);
             c.args(&codec);

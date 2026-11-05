@@ -8,7 +8,8 @@ import { Home, showHome } from "./components/Home";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
 import { LogoMark, Wordmark } from "./brand";
 import { ALL_PANELS, closePanel, isOpen, maximized, narrow, PANEL_TITLES, resetWorkspace, setLayout, showPanel, switchWorkspace, workspace, WORKSPACES } from "./dock";
-import { aiPulse, connected, dirty, logs, pickFiles, project, project_, projectPath, redoN, rev, run, showCheck, showRender, undoN } from "./store";
+import { aiPulse, confirmLeave, connected, dirty, logs, pickFiles, project, project_, projectPath, redoN, rev, run, saveProject, showCheck, showRender, undoN } from "./store";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 /** Workspace switcher, like the tabs at the top of Premiere Pro and After Effects. */
 function Workspaces() {
@@ -92,25 +93,25 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
         <Wordmark />
       </div>
       <button class="btn sm ghost" onClick={async () => {
+        if (!confirmLeave()) return;
         const name = prompt("Project name", "Untitled");
         if (name) project_({ action: "new", name, size: "1920x1080", fps: 30 });
       }}>
         New
       </button>
-      <button class="btn sm ghost" onClick={async () => {
+      <button class="btn sm ghost" title="Open a .mcut project" onClick={async () => {
         const f = await pickFiles("open", "project");
-        if (f[0]) project_({ action: "open", path: f[0] });
+        if (f[0] && confirmLeave()) project_({ action: "open", path: f[0] });
       }}>
         Open
       </button>
-      <button class="btn sm ghost" onClick={async () => {
-        if (projectPath.value) return project_({ action: "save" });
-        const f = await pickFiles("save", "project");
-        if (f[0]) project_({ action: "save", path: f[0] });
-      }}>
+      <button class="btn sm ghost" title={projectPath.value ? `Save (Ctrl+S): ${projectPath.value}` : "Save (Ctrl+S): choose where to keep this project"} onClick={() => saveProject()}>
         Save{dirty.value ? " •" : ""}
       </button>
-      <span class="proj" title={projectPath.value || "not saved yet (autosaved)"}>
+      <button class="btn sm ghost" title="Save As (Ctrl+Shift+S): save a copy under a new name and keep working on it" onClick={() => saveProject(true)}>
+        Save As…
+      </button>
+      <span class="proj" title={projectPath.value || "not saved to a file yet (autosaved; recover it from Home)"}>
         {p?.name} <span style={{ color: "var(--faint)" }}>· rev {rev.value}</span>
       </span>
       <WindowMenu />
@@ -145,15 +146,33 @@ export function App() {
   useEffect(installShortcuts, []);
   return (
     <div class="app">
-      <TopBar onConnect={() => setConnect(true)} />
+      <ErrorBoundary name="The top bar">
+        <TopBar onConnect={() => setConnect(true)} />
+      </ErrorBoundary>
       <FfmpegBanner />
-      <Dock />
-      <RenderPanel />
-      <FileBrowser />
-      <GraphicEditor />
-      <CheckPanel />
-      <Home onConnect={() => setConnect(true)} />
-      {connect && <ConnectAI onClose={() => setConnect(false)} />}
+      <ErrorBoundary name="The workspace">
+        <Dock />
+      </ErrorBoundary>
+      <ErrorBoundary name="Export" floating>
+        <RenderPanel />
+      </ErrorBoundary>
+      <ErrorBoundary name="The file browser" floating>
+        <FileBrowser />
+      </ErrorBoundary>
+      <ErrorBoundary name="The graphic editor" floating>
+        <GraphicEditor />
+      </ErrorBoundary>
+      <ErrorBoundary name="Check" floating>
+        <CheckPanel />
+      </ErrorBoundary>
+      <ErrorBoundary name="Home" floating>
+        <Home onConnect={() => setConnect(true)} />
+      </ErrorBoundary>
+      {connect && (
+        <ErrorBoundary name="Connect AI" floating>
+          <ConnectAI onClose={() => setConnect(false)} />
+        </ErrorBoundary>
+      )}
       <Toasts />
     </div>
   );

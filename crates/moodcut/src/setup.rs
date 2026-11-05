@@ -34,11 +34,27 @@ pub fn doctor() -> Result<()> {
             for (f, what) in [("rubberband", "pitch shifting"), ("sidechaincompress", "auto ducking"), ("loudnorm", "loudness normalization"), ("whisper", "built-in speech-to-text (FFmpeg 8+)"), ("minterpolate", "optical-flow slow motion")] {
                 println!("  {} {what} ({f})", if ff.has_filter(f) { "✔" } else { "–" });
             }
-            let hw = ff.hw_encoders();
-            if hw.is_empty() {
+            let hw = ff.hw();
+            if crate::render::gpu::Pref::from_env() == crate::render::gpu::Pref::Off {
+                println!("  – GPU off (MOODCUT_GPU=off): CPU decoding and encoding");
+            } else if hw.gpus.is_empty() {
+                println!("  – no GPU found: CPU decoding and encoding");
+            }
+            for (i, g) in hw.gpus.iter().enumerate() {
+                println!("  {} GPU: {}{}", if i == 0 { "✔" } else { " " }, g.label(), if i == 0 && hw.gpus.len() > 1 { "  ← used (MOODCUT_GPU picks another)" } else { "" });
+            }
+            if hw.encoders.is_empty() {
                 println!("  – no working GPU encoder (CPU encoding is used)");
             } else {
-                println!("  ✔ GPU encoders: {} (use hw=auto when rendering)", hw.join(", "));
+                println!("  ✔ GPU encoding: {} (exports use the first; hw=off for CPU)", hw.encoders.join(", "));
+            }
+            for n in &hw.notes {
+                println!("  ! {n}");
+            }
+            if ff.hwdec_default() {
+                println!("  ✔ GPU decoding of 4K / HEVC / 10-bit footage");
+            } else if !hw.gpus.is_empty() {
+                println!("  – GPU decoding off: no discrete GPU (MOODCUT_HWDEC=on to use this one)");
             }
         }
         Err(e) => println!("✘ {e}"),
@@ -64,13 +80,17 @@ pub fn which(name: &str) -> Option<PathBuf> {
     std::env::var("PATH").ok().and_then(|p| std::env::split_paths(&p).map(|d| d.join(&exe)).find(|p| p.is_file()))
 }
 
-/// curl / tar: on PATH, or Windows 10+'s built-in copies (AI clients may start
-/// MoodCut with a minimal environment).
+/// curl / tar: Windows 10+'s built-in copies first, then PATH. The built-in
+/// ones come first because Git for Windows puts GNU tar on many PATHs (Git Bash,
+/// Claude Code, "Unix tools" installs), and GNU tar can't open .zip files and
+/// reads `C:\...` as a remote host. AI clients may also start MoodCut with a
+/// minimal environment.
 pub fn sys_tool(name: &str) -> Option<PathBuf> {
-    which(name).or_else(|| {
+    let builtin = || {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
         Some(PathBuf::from(root).join("System32").join(format!("{name}.exe"))).filter(|p| cfg!(windows) && p.is_file())
-    })
+    };
+    builtin().or_else(|| which(name))
 }
 
 /// Portable FFmpeg builds for this platform, best first.
@@ -101,7 +121,7 @@ pub fn install_ffmpeg(progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
     let work = home.join("ffmpeg-download");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
-    let mut last_err = String::new();
+    let mut errs: Vec<String> = vec![];
     for url in urls {
         let name = url.rsplit('/').next().unwrap_or("ffmpeg.zip");
         let archive = work.join(name);
@@ -120,7 +140,8 @@ pub fn install_ffmpeg(progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
             if let Some(mut e) = child.stderr.take() {
                 let _ = std::io::Read::read_to_string(&mut e, &mut err);
             }
-            last_err = format!("{name}: {}", err.trim());
+            errs.push(format!("{name}: {}", err.trim()));
+            let _ = std::fs::remove_file(&archive);
             continue;
         }
         match install_ffmpeg_archive(&archive, &home.join("ffmpeg").join("bin"), progress) {
@@ -128,11 +149,13 @@ pub fn install_ffmpeg(progress: &(dyn Fn(String) + Sync)) -> Result<PathBuf> {
                 let _ = std::fs::remove_dir_all(&work);
                 return Ok(dest);
             }
-            Err(e) => last_err = format!("{e:#}"),
+            Err(e) => errs.push(format!("{e:#}")),
         }
+        // don't keep a 100+ MB archive that didn't work while the next one downloads
+        let _ = std::fs::remove_file(&archive);
     }
     let _ = std::fs::remove_dir_all(&work);
-    bail!("couldn't download FFmpeg ({last_err})")
+    bail!("couldn't download FFmpeg ({})", errs.join("; "))
 }
 
 /// Unpacks an FFmpeg build archive (.zip / .tar.xz, as downloaded by the
@@ -150,9 +173,11 @@ pub fn install_ffmpeg_archive(archive: &std::path::Path, dest: &std::path::Path,
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
     let result = (|| -> Result<PathBuf> {
-        let st = command(&tar).arg("-xf").arg(archive).arg("-C").arg(&work).stdout(Stdio::null()).stderr(Stdio::piped()).status().context("running tar")?;
-        if !st.success() {
-            bail!("couldn't unpack {name}");
+        let out = command(&tar).arg("-xf").arg(archive).arg("-C").arg(&work).stdout(Stdio::null()).stderr(Stdio::piped()).output().context("running tar")?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let why = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            bail!("couldn't unpack {name} with {}{}", tar.display(), if why.is_empty() { String::new() } else { format!(": {why}") });
         }
         let bin = find_ffmpeg_bin(&work, 0).ok_or_else(|| anyhow::anyhow!("{name} has no ffmpeg/ffprobe"))?;
         // check the unpacked copy itself before it replaces anything

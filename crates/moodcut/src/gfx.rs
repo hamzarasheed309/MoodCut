@@ -845,7 +845,7 @@ impl crate::engine::Engine {
             let o = self.run_ops(&mut work, &active, &format!("add {id} {pl}"))?;
             log.extend(o.log);
         }
-        self.commit(work, None, &format!("graphic {name}"), source, &log);
+        self.commit(work, None, &format!("graphic {name}"), source, &log)?;
 
         // report: what the AI needs to judge the result without guessing
         let mut text = log.join("\n");

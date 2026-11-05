@@ -88,6 +88,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/state", get(api_state))
         .route("/api/edit", post(api_edit))
         .route("/api/project", post(api_project))
+        .route("/api/unsaved", get(api_unsaved))
         .route("/api/import", post(api_import))
         .route("/api/frame", get(api_frame))
         .route("/api/thumb", get(api_thumb))
@@ -382,20 +383,68 @@ fn err(code: StatusCode, msg: impl ToString) -> Response {
     (code, Json(json!({"ok": false, "error": msg.to_string()}))).into_response()
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    tokio::task::spawn_blocking(f).await.expect("blocking task panicked")
+/// What a request answers when the work it ran panicked.
+trait FromPanic {
+    fn from_panic(msg: String) -> Self;
+}
+
+impl<T> FromPanic for anyhow::Result<T> {
+    fn from_panic(msg: String) -> Self {
+        Err(anyhow::anyhow!(msg))
+    }
+}
+
+/// An MCP tool result.
+impl FromPanic for Value {
+    fn from_panic(msg: String) -> Self {
+        json!({"content": [{"type": "text", "text": msg}], "isError": true})
+    }
+}
+
+/// A JSON-RPC reply.
+impl FromPanic for Option<Value> {
+    fn from_panic(msg: String) -> Self {
+        Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32603, "message": msg}}))
+    }
+}
+
+impl<T> FromPanic for Vec<T> {
+    fn from_panic(_: String) -> Self {
+        vec![]
+    }
+}
+
+/// Runs blocking work off the async threads. A bug in it (a panic) answers the request
+/// with an error instead of dropping the connection, and the editor keeps working.
+async fn blocking<T: FromPanic + Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let r = tokio::task::spawn_blocking(move || std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))).await;
+    match r {
+        Ok(Ok(v)) => v,
+        Ok(Err(panic)) => T::from_panic(format!("MoodCut hit an internal error ({}). Your project is safe; the crash log in the data folder has the details", crate::engine::panic_message(&*panic))),
+        Err(e) => T::from_panic(format!("MoodCut hit an internal error ({e})")),
+    }
 }
 
 async fn api_state(State(st): State<St>) -> Response {
     let (p, rev, active, path) = st.eng.snapshot();
-    let dirty = st.eng.st.read().dirty;
-    let undo = st.eng.st.read().undo.len();
-    let redo = st.eng.st.read().redo.len();
+    let (dirty, undo, redo, opened, restore) = {
+        let s = st.eng.st.read();
+        (s.dirty, s.undo.len(), s.redo.len(), s.opened, s.restore)
+    };
+    let notice = st.eng.notice.lock().clone();
     Json(json!({
         "project": p, "rev": rev, "active": active, "path": path, "dirty": dirty,
-        "undo": undo, "redo": redo, "ffmpeg": st.eng.ff.version(), "version": crate::VERSION
+        "undo": undo, "redo": redo, "ffmpeg": st.eng.ff.version(), "version": crate::VERSION,
+        "opened": opened, "restore": restore, "notice": notice
     }))
     .into_response()
+}
+
+/// Untitled projects from earlier sessions that can be recovered (Home).
+async fn api_unsaved(State(st): State<St>) -> Response {
+    let eng = st.eng.clone();
+    let list = blocking(move || eng.unsaved()).await;
+    Json(json!({"ok": true, "unsaved": list})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -416,9 +465,17 @@ async fn api_edit(State(st): State<St>, Json(r): Json<EditReq>) -> Response {
 
 async fn api_project(State(st): State<St>, Json(a): Json<Value>) -> Response {
     let mcp = st.mcp.clone();
+    // a project handed over by a second launch (double-clicked .mcut): nobody in the
+    // editor asked, so a failure must show up there by itself
+    let launch = a["source"].as_str() == Some("launch");
     let r = blocking(move || mcp.call("project", &a)).await;
     let txt = r["content"][0]["text"].as_str().unwrap_or("").to_string();
-    Json(json!({"ok": r.get("isError").is_none(), "text": txt})).into_response()
+    let ok = r.get("isError").is_none();
+    if launch && !ok {
+        *st.eng.notice.lock() = Some(txt.clone());
+        st.eng.emit("notice", st.eng.st.read().rev, "project", txt.clone());
+    }
+    Json(json!({"ok": ok, "text": txt})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -707,6 +764,12 @@ async fn api_stream(State(st): State<St>, Query(q): Query<StreamQ>) -> Response 
 
 async fn api_render(State(st): State<St>, Json(a): Json<Value>) -> Response {
     let s = |k: &str| a[k].as_str().map(|x| x.to_string());
+    if s("action").as_deref() == Some("cancel") {
+        return match st.eng.cancel_render(&s("id").unwrap_or_default()) {
+            Ok(t) => Json(json!({"ok": true, "text": t})).into_response(),
+            Err(e) => err(StatusCode::NOT_FOUND, format!("{e:#}")),
+        };
+    }
     let (t0, t1) = match s("range").filter(|r| !r.trim().is_empty()) {
         Some(r) => match st.eng.render_range(&s("comp").unwrap_or_default(), &r) {
             Ok(x) => x,
@@ -721,7 +784,7 @@ async fn api_render(State(st): State<St>, Json(a): Json<Value>) -> Response {
         preset: s("preset").unwrap_or_else(|| "mp4".into()),
         out: s("out").map(std::path::PathBuf::from).unwrap_or_default(),
         scale: a["scale"].as_f64().unwrap_or(1.0) as f32,
-        hw: s("hw").unwrap_or_else(|| "off".into()),
+        hw: s("hw").unwrap_or_else(|| "auto".into()),
     };
     match st.eng.start_render(opts) {
         Ok(j) => Json(j.status()).into_response(),

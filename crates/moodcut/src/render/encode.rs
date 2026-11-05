@@ -58,17 +58,44 @@ fn sv(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
-fn h264(ff: &Ff, hw: &str, crf: u32, speed: &str) -> Vec<String> {
+/// Whether `hw` (a render's encoder option) allows the GPU at all.
+pub fn hw_allowed(hw: &str) -> bool {
+    !matches!(hw.trim().to_ascii_lowercase().as_str(), "off" | "cpu" | "none")
+}
+
+/// The hardware H.264 encoder for `hw`: "auto" (the default, also "") takes the
+/// best GPU's, "nvenc" / "qsv" / "amf" ask for one, "off" uses the CPU.
+fn pick_hw(ff: &Ff, hw: &str) -> Option<String> {
+    let hw = hw.trim().to_ascii_lowercase();
+    if !hw_allowed(&hw) {
+        return None;
+    }
     let hw_list = ff.hw_encoders();
-    let pick = match hw {
-        "auto" | "on" | "gpu" => hw_list.first().cloned(),
-        "off" | "" | "cpu" | "none" => None,
+    match hw.as_str() {
+        "" | "auto" | "on" | "gpu" => hw_list.first().cloned(),
         other => {
             let want = if other.starts_with("h264_") { other.to_string() } else { format!("h264_{other}") };
             hw_list.iter().find(|e| **e == want).cloned()
         }
-    };
-    if let Some(enc) = pick {
+    }
+}
+
+/// The same GPU's HEVC encoder, when it has one that works.
+fn hevc_hw(ff: &Ff, hw: &str) -> Option<Vec<String>> {
+    let enc = pick_hw(ff, hw)?.replacen("h264_", "hevc_", 1);
+    if !ff.has_encoder(&enc) || ff.try_encoder(&enc).is_err() {
+        return None;
+    }
+    Some(match enc.as_str() {
+        "hevc_nvenc" => sv(&["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "23", "-b:v", "0", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]),
+        "hevc_qsv" => sv(&["-c:v", "hevc_qsv", "-global_quality", "23", "-pix_fmt", "nv12", "-tag:v", "hvc1"]),
+        "hevc_amf" => sv(&["-c:v", "hevc_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "23", "-qp_p", "23", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]),
+        _ => return None,
+    })
+}
+
+fn h264(ff: &Ff, hw: &str, crf: u32, speed: &str) -> Vec<String> {
+    if let Some(enc) = pick_hw(ff, hw) {
         let q = (crf + 1).to_string();
         return match enc.as_str() {
             "h264_nvenc" => sv(&["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", &q, "-b:v", "0", "-pix_fmt", "yuv420p"]),
@@ -113,8 +140,8 @@ pub fn resolve_preset(name: &str, ff: &Ff, hw: &str) -> Result<Preset> {
             p("draft", "mp4", Some(v), aac("128k"), false)
         }
         "hevc" | "h265" | "x265" => {
-            let v = if hw != "off" && ff.hw_encoders().iter().any(|e| e == "h264_nvenc") && ff.has_encoder("hevc_nvenc") {
-                sv(&["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "23", "-b:v", "0", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"])
+            let v = if let Some(v) = hevc_hw(ff, hw) {
+                v
             } else if ff.has_encoder("libx265") {
                 sv(&["-c:v", "libx265", "-preset", "medium", "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"])
             } else {
@@ -195,6 +222,60 @@ fn tail(s: &str) -> String {
     l[l.len().saturating_sub(6)..].join(" | ")
 }
 
+/// The end of FFmpeg's log, led by the cause in plain words when it's a common one.
+fn explain_ffmpeg(log: &str) -> String {
+    let l = log.to_ascii_lowercase();
+    let why = if l.contains("no space left") || l.contains("disk full") {
+        Some("the disk is full")
+    } else if l.contains("permission denied") {
+        Some("MoodCut may not write there (read-only file or protected folder)")
+    } else if l.contains("no such file or directory") {
+        Some("a file the export needs is missing")
+    } else if ["nvenc", "_qsv", "_amf", "nvcuda", "libmfx"].iter().any(|k| l.contains(k)) {
+        Some("the GPU encoder failed: export again with Encoder set to CPU (hw=off)")
+    } else {
+        None
+    };
+    match why {
+        Some(w) => format!("{w} ({})", tail(log)),
+        None => tail(log),
+    }
+}
+
+/// Same file, as far as paths tell (Windows paths ignore case).
+fn same_path(a: &Path, b: &Path) -> bool {
+    let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let (a, b) = (abs(a), abs(b));
+    if cfg!(windows) {
+        a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+    } else {
+        a == b
+    }
+}
+
+/// Deletes an unfinished export.
+fn discard(partial: Option<&Path>) {
+    if let Some(p) = partial {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Moves a finished export into place, retrying while a player or the search
+/// indexer briefly holds an older file of that name.
+fn put_in_place(part: &Path, out: &Path) -> Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(part, out) {
+            Ok(()) => return Ok(()),
+            Err(_) if tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50 << tries));
+            }
+            Err(e) => bail!("the export finished but couldn't replace {} ({}): it's saved as {}", out.display(), crate::projfile::describe_io(&e), part.display()),
+        }
+    }
+}
+
 /// Renders a comp range to a file.
 pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -> Result<RenderResult> {
     let started = Instant::now();
@@ -209,6 +290,10 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
     let mut out = o.out.clone();
     if out.extension().is_none() {
         out.set_extension(preset.ext);
+    }
+    // encoding over a file the render is reading would destroy the footage
+    if let Some(m) = p.media.iter().find(|m| same_path(Path::new(&m.path), &out)) {
+        bail!("the output file {} is the project's media {} ({}): choose another file name", out.display(), m.id, m.name);
     }
     if let Some(dir) = out.parent() {
         if !dir.as_os_str().is_empty() {
@@ -251,12 +336,20 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
         c.args(["-map", &format!("[{}]", ap.label)]);
         c.args(preset.audio.clone().unwrap());
     }
-    let out_path = if preset.seq {
-        let stem = out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "frame".into());
-        let dir = out.parent().map(|d| d.to_path_buf()).unwrap_or_default();
-        dir.join(format!("{stem}_%05d.png"))
-    } else {
-        out.clone()
+    // encode into a temporary file and rename it once complete: a failed or cancelled
+    // export never leaves half a video behind, nor destroys an earlier export of that name
+    let partial = (!preset.seq).then(|| {
+        let stem = out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "render".into());
+        let ext = out.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| preset.ext.to_string());
+        out.with_file_name(format!("{stem}.moodcut-partial.{ext}"))
+    });
+    let out_path = match &partial {
+        Some(part) => part.clone(),
+        None => {
+            let stem = out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "frame".into());
+            let dir = out.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+            dir.join(format!("{stem}_%05d.png"))
+        }
     };
     c.arg(&out_path);
     c.stdin(if has_video { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::null()).stderr(Stdio::piped());
@@ -271,15 +364,34 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
             }
             Ok(())
         });
-        let frames = FrameServer::new(ff.clone(), false);
+        // heavy footage decodes on the GPU too, unless the render asked for the CPU only
+        let frames = FrameServer::new(ff.clone(), hw_allowed(&o.hw));
         let rc = RenderCtx { p, frames: &frames, draft: false };
         let mut send_err = None;
+        let mut failed: Option<anyhow::Error> = None;
         for i in 0..n {
             if prog.cancel.load(Ordering::Relaxed) {
                 break;
             }
+            // close the decoders of clips the render has moved past (each holds an
+            // FFmpeg process and buffered frames), so long timelines don't pile them up
+            if i % 32 == 31 {
+                frames.gc(4.0);
+            }
             let t = t0 + i as f64 / fps;
-            let pm = render_frame(&rc, &o.comp, t, o.scale)?;
+            // a frame that can't be drawn (or a bug in an effect) stops the export cleanly
+            let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render_frame(&rc, &o.comp, t, o.scale)));
+            let pm = match drawn {
+                Ok(Ok(pm)) => pm,
+                Ok(Err(e)) => {
+                    failed = Some(e.context(format!("can't draw the frame at {}s", crate::model::time::fmt_t(t))));
+                    break;
+                }
+                Err(panic) => {
+                    failed = Some(anyhow!("MoodCut hit an internal error drawing the frame at {}s ({})", crate::model::time::fmt_t(t), crate::engine::panic_message(&*panic)));
+                    break;
+                }
+            };
             let data = if preset.alpha { pm.take_demultiplied() } else { pm.take() };
             if tx.send(data).is_err() {
                 send_err = Some(());
@@ -288,21 +400,35 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
             prog.done.store(i + 1, Ordering::Relaxed);
         }
         drop(tx);
+        if let Some(e) = failed {
+            // stop the encoder before it finishes a file that's missing the rest
+            let _ = child.kill();
+            let _ = writer.join();
+            let _ = child.wait();
+            let _ = err_t.join();
+            discard(partial.as_deref());
+            return Err(e);
+        }
         let _ = writer.join();
         if send_err.is_some() {
             let _ = child.wait();
             let e = err_t.join().unwrap_or_default();
-            bail!("encoder stopped early: {}", tail(&e));
+            discard(partial.as_deref());
+            bail!("the encoder stopped early: {}", explain_ffmpeg(&e));
         }
     }
     let st = child.wait()?;
     let e = err_t.join().unwrap_or_default();
     if prog.cancel.load(Ordering::Relaxed) {
-        let _ = std::fs::remove_file(&out);
+        discard(partial.as_deref());
         bail!("render cancelled");
     }
     if !st.success() {
-        bail!("ffmpeg failed: {}", tail(&e));
+        discard(partial.as_deref());
+        bail!("ffmpeg failed: {}", explain_ffmpeg(&e));
+    }
+    if let Some(part) = &partial {
+        put_in_place(part, &out)?;
     }
     prog.done.store(prog.total.load(Ordering::Relaxed), Ordering::Relaxed);
     *prog.stage.lock() = "done".into();
@@ -513,7 +639,8 @@ fn dirs_videos() -> Option<PathBuf> {
     }
 }
 
-fn chrono_like() -> String {
+/// The time now as `yyyymmdd-hhmmss` (UTC): sortable, safe in file names.
+pub(crate) fn chrono_like() -> String {
     let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     // yyyymmdd-hhmmss in UTC without a date crate
     let days = s / 86400;

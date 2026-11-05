@@ -194,3 +194,23 @@ fn cube_spin_faces_fill_the_frame() {
         }
     }
 }
+
+#[test]
+fn offline_media_shows_red_in_previews_and_stops_exports() {
+    let mut p = Project::new("t", 640, 360, 30.0);
+    p.media.push(serde_json::from_value(serde_json::json!({"id": "m1", "path": "/nowhere/gone.png", "name": "gone.png", "kind": "image", "w": 640, "h": 360, "has_video": true})).unwrap());
+    let mut it = Item::new("c1".into(), ItemKind::Clip, 0.0, 2.0);
+    it.src = Some("m1".into());
+    p.comps[0].tracks[0].items.push(it);
+    p.seq = 1;
+    p.mseq = 1;
+    // a preview keeps working and shows where the clip is
+    let pm = frame(&p, 0.5);
+    let [r, g, b, a] = px(&pm, pm.width() / 2, pm.height() / 2);
+    assert!(a == 255 && r > 100 && g < 60 && b < 60, "offline red expected, got {:?}", [r, g, b, a]);
+    // an export stops and names the clip
+    let frames = FrameServer::new(Arc::new(Ff::missing()), false);
+    let rc = RenderCtx { p: &p, frames: &frames, draft: false };
+    let e = format!("{:#}", render_frame(&rc, &p.main, 0.5, 0.5).unwrap_err());
+    assert!(e.contains("missing") && e.contains("c1") && e.contains("relink"), "{e}");
+}

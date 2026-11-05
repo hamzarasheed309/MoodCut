@@ -178,4 +178,7 @@ export interface Job {
   render_fps?: number;
   /** set on caption / chapter / XML / EDL exports */
   note?: string;
+  /** while running: "rendering", or e.g. that the GPU encoder failed and the CPU took over */
+  stage?: string;
+  cancelling?: boolean;
 }

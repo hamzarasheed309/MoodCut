@@ -10,6 +10,7 @@
 
 pub mod analyze;
 pub mod brand;
+pub mod cache;
 pub mod check;
 pub mod clients;
 pub mod config;
@@ -20,6 +21,7 @@ pub mod library;
 pub mod mcp;
 pub mod model;
 pub mod ops;
+pub mod projfile;
 pub mod render;
 pub mod server;
 pub mod setup;
@@ -104,8 +106,8 @@ enum Cmd {
         scale: f32,
         #[arg(long)]
         comp: Option<String>,
-        /// Hardware encoder: off | auto | nvenc | qsv | amf
-        #[arg(long, default_value = "off")]
+        /// GPU encoder: auto (the best GPU's) | off (CPU) | nvenc | qsv | amf
+        #[arg(long, default_value = "auto")]
         hw: String,
     },
     /// Apply a MoodCut Script (inline or @file) to a project and save it.
@@ -238,9 +240,40 @@ enum Cmd {
 }
 
 fn main() {
+    install_crash_log();
     if let Err(e) = real_main() {
         eprintln!("error: {e:#}");
         std::process::exit(1);
+    }
+}
+
+/// Every panic (caught or not) is also appended to `crash.log` in the data folder,
+/// with its location and a backtrace: the editor window has no console to show it.
+fn install_crash_log() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default(info);
+        use std::io::Write;
+        let f = config::ensure_data_dir().join("crash.log");
+        // keep it small: start over past 1 MB
+        if std::fs::metadata(&f).is_ok_and(|m| m.len() > 1 << 20) {
+            let _ = std::fs::remove_file(&f);
+        }
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+        let entry = format!("--- {} UTC  MoodCut {VERSION}  thread '{thread}'\n{info}\n{}\n", render::encode::chrono_like(), std::backtrace::Backtrace::force_capture());
+        if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open(&f) {
+            let _ = fh.write_all(entry.as_bytes());
+        }
+    }));
+}
+
+/// Opens the project the editor was started with; a damaged or missing file must
+/// not keep the editor from starting, so the problem is shown in it instead.
+fn open_at_start(eng: &engine::Engine, path: &str) {
+    if let Err(e) = eng.open(path) {
+        let msg = format!("{e:#}");
+        eprintln!("moodcut: {msg}");
+        *eng.notice.lock() = Some(msg);
     }
 }
 
@@ -268,7 +301,7 @@ fn real_main() -> Result<()> {
             if let Some((p, _)) = server::find_instance(port) {
                 if let Some(path) = &project {
                     let abs = std::fs::canonicalize(path).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| path.clone());
-                    server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": abs}).to_string()), 3000);
+                    server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": abs, "source": "launch"}).to_string()), 3000);
                 }
                 server::open_window(&format!("http://127.0.0.1:{p}"));
                 return Ok(());
@@ -277,7 +310,7 @@ fn real_main() -> Result<()> {
             let project_path = project.as_ref().map(|p| std::fs::canonicalize(p).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| p.clone()));
             let eng = load_engine()?;
             if let Some(p) = project {
-                eng.open(&p)?;
+                open_at_start(&eng, &p);
             }
             let rt = tokio::runtime::Runtime::new()?;
             let r = rt.block_on(async move {
@@ -291,7 +324,7 @@ fn real_main() -> Result<()> {
                     std::thread::sleep(std::time::Duration::from_millis(400));
                     if let Some((p, _)) = server::find_instance(port) {
                         if let Some(path) = &project_path {
-                            server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path}).to_string()), 3000);
+                            server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path, "source": "launch"}).to_string()), 3000);
                         }
                         server::open_window(&format!("http://127.0.0.1:{p}"));
                         return Ok(());
@@ -303,7 +336,7 @@ fn real_main() -> Result<()> {
         Cmd::Serve { port, host, token, public, allow, project } => {
             let eng = load_engine()?;
             if let Some(p) = project {
-                eng.open(&p)?;
+                open_at_start(&eng, &p);
             }
             if !allow.is_empty() {
                 let roots: Vec<PathBuf> = allow.iter().map(|a| engine::resolve_path(std::path::Path::new(a))).collect();
@@ -343,7 +376,7 @@ fn real_main() -> Result<()> {
             let port = server::free_port(port);
             let eng = load_engine()?;
             if let Some(p) = project {
-                eng.open(&p)?;
+                open_at_start(&eng, &p);
             }
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async move {

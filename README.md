@@ -86,7 +86,8 @@ what was asked (duration, size, captions, music, shot lengths). Each problem com
 `fix=true` applies them as one undoable edit, and a contact sheet shows the problem frames with safe-area guides.
 
 **Deliverables**: MP4/H.264 (YouTube and social presets), HEVC, AV1, ProRes (incl. 4444 alpha), WebM (incl.
-alpha), GIF, PNG sequences and audio formats, with NVENC, QuickSync and AMF encoding. Besides the video:
+alpha), GIF, PNG sequences and audio formats, encoded on the best GPU in the computer (NVENC, AMF or QuickSync;
+`hw=off` for CPU encoding). Besides the video:
 SRT and WebVTT captions, a YouTube chapter list from markers, an FCP7 XML timeline that Premiere Pro and DaVinci
 Resolve open with the original media, and a CMX3600 EDL.
 
@@ -120,8 +121,21 @@ finish setup (FFmpeg, AI apps) with one click each. `moodcut doctor` checks ever
 Linux and macOS: `curl -fsSL https://raw.githubusercontent.com/hamzarasheed309/MoodCut/HEAD/install.sh | sh`
 (a prebuilt binary on Linux x64, otherwise a source build).
 
-Projects are plain JSON (`.mcut`) and autosave. Rendered graphics go next to the project in
-`<project> assets/graphics`. Optional: install [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+Projects are plain JSON (`.mcut`) and autosave after every edit. Rendered graphics go next to the project in
+`<project> assets/graphics`.
+
+**Saving, recovery and crashes.** A `.mcut` keeps the whole edit: media, every sequence, track, clip, effect, keyframe,
+expression, mask, transition, text, marker, the audio mix and the brand kit, plus the open sequence and playhead.
+**Save** (Ctrl+S) asks where to keep a new project; **Save As** (Ctrl+Shift+S) saves a copy under a new name.
+- Files are written safely: a crash or power cut mid-save leaves the previous version intact, and a backup is kept at
+  most every 5 minutes (the last 10) in `%APPDATA%\MoodCut\autosave\backups`. A damaged project names its newest backup.
+- Projects never saved to a file autosave too; **Home → Unsaved projects** brings them back after a crash.
+- Moved a project folder to another drive or PC? Media saved inside or beside it are found again on open. Anything still
+  missing is listed (relink it with `relink m3 <new path>`), shows red in previews, and stops an export before it starts.
+- Exports encode to a temporary file, so a failed or cancelled export never leaves half a video or replaces an older one.
+  If the GPU encoder fails, MoodCut finishes the export on the CPU.
+- A bug in one panel or command shows an error instead of taking the editor down; details go to
+  `%APPDATA%\MoodCut\crash.log`. Optional: install [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
 (`whisper-cli` on `PATH`, model in `%APPDATA%\MoodCut\models` or `MOODCUT_WHISPER_MODEL`) for captions.
 
 ## Connect your AI
@@ -206,9 +220,18 @@ MoodCut previews the way Premiere Pro and After Effects do, so heavy footage pla
 - **Caches.** Frames you've scrubbed over come back instantly (until something changes); thumbnails are kept on disk
   between sessions; each audio file is decoded once into a peak file, and every waveform (any clip, zoom or size) is
   drawn from it, sharp at any zoom.
+- **The best GPU, found for you.** MoodCut lists the GPUs and uses the strongest: a graphics card before integrated
+  graphics, then the one with the most video memory (`moodcut doctor` shows which, and why one is skipped, such as a
+  driver too old for FFmpeg's encoder). Exports encode on it, and on a graphics card, 4K, HEVC and 10-bit footage
+  decodes on it too. On a 4K HEVC test clip that cut the CPU time spent decoding by more than half, leaving the
+  CPU to the compositor. Proxies for such footage are built the same way. `MOODCUT_GPU=nvidia|amd|intel|<part of the
+  name>` picks another GPU, `MOODCUT_GPU=off` keeps everything on the CPU.
+- **Memory that stays bounded on big projects.** Exports close each clip's decoder once the render has moved past it,
+  at most 32 decoders stay open (idle ones close first), decoding threads are shared out among the clips playing at
+  once, at most 6 decoders use the GPU at a time (each holds video memory), and cached stills and images keep to
+  768 MB, least recently used out first.
 - **Gentle on the machine.** Background work (proxies, peaks) runs at below-normal priority, imports probe a bounded
-  number of files at once, decoding stays on the CPU (`MOODCUT_HWDEC=1` turns on hardware decoding for previews), and
-  HTML graphics render in software (`MOODCUT_BROWSER_GPU=1` to use the GPU) so the graphics card is left to you.
+  number of files at once, and HTML graphics render in software (`MOODCUT_BROWSER_GPU=1` to use the GPU).
 
 The AI can manage proxies too: `media action=proxy ids=all` (status without ids).
 
@@ -383,9 +406,13 @@ moodcut render explainer.mcut
 
 Environment: `MOODCUT_FFMPEG` (folder with ffmpeg/ffprobe, or `none` to run without), `MOODCUT_HOME` (data
 folder, default `%APPDATA%\MoodCut`), `MOODCUT_BROWSER` (Edge/Chrome for HTML graphics), `MOODCUT_CLOUDFLARED`,
-`MOODCUT_WHISPER_BIN`, `MOODCUT_WHISPER_MODEL`, `MOODCUT_HWDEC=1` (hardware decoding for previews),
+`MOODCUT_WHISPER_BIN`, `MOODCUT_WHISPER_MODEL`, `MOODCUT_GPU` (`nvidia`, `amd`, `intel`, part of a GPU's name, or
+`off`), `MOODCUT_HWDEC` (`on`: decode every video on the GPU, even an integrated one; `off`: CPU only; default: heavy
+footage on a graphics card), `MOODCUT_HWDEC_MAX` (GPU decoders at once, default 6), `MOODCUT_IMAGE_CACHE_MB`
+(memory for cached stills and images, default 768),
 `MOODCUT_BROWSER_GPU=1` (GPU for HTML graphics), `MOODCUT_ALLOW_ORIGINS` (extra local browser pages allowed to call
-`/mcp`, comma separated).
+`/mcp`, comma separated), `MOODCUT_CACHE_DAYS` / `MOODCUT_CACHE_GB` (the cache of proxies, thumbnails and waveforms
+in the data folder is trimmed at start to files used in the last 14 days and at most 5 GB, oldest first).
 
 Without FFmpeg, MoodCut still opens, edits projects and renders HTML graphics as PNG stills; anything that needs
 to decode or encode media explains how to install it, and the editor shows the one-click install.

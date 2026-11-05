@@ -67,14 +67,17 @@ impl Ease {
         if l == "hold" || l == "step" || l == "constant" {
             return Ok(Ease::Hold);
         }
-        if let Some(args) = l.strip_prefix("bezier(").or_else(|| l.strip_prefix("cubicbezier(")).or_else(|| l.strip_prefix("cb(")) {
+        // the numbers keep their signs (`l` has every '-' removed): bezier(.36,0,.66,-.56)
+        let compact = raw.to_ascii_lowercase().replace(' ', "");
+        let args = ["bezier(", "cubic-bezier(", "cubic_bezier(", "cubicbezier(", "cb("].iter().find_map(|p| compact.strip_prefix(*p));
+        if let Some(args) = args {
             let nums: Vec<f64> = args
                 .trim_end_matches(')')
                 .split(',')
                 .map(|p| p.trim().parse::<f64>())
                 .collect::<std::result::Result<_, _>>()
                 .map_err(|_| anyhow!("bad bezier '{raw}'"))?;
-            if nums.len() != 4 {
+            if nums.len() != 4 || nums.iter().any(|n| !n.is_finite()) {
                 bail!("bezier needs 4 numbers: bezier(x1,y1,x2,y2)");
             }
             return Ok(Ease::Bezier(nums[0], nums[1], nums[2], nums[3]));
@@ -268,7 +271,14 @@ pub fn cubic_bezier(x1: f64, y1: f64, x2: f64, y2: f64, x: f64) -> f64 {
 
 impl Serialize for Ease {
     fn serialize<S: Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        s.serialize_str(&self.name())
+        match *self {
+            // full precision: `name()` rounds to 3 decimals for display
+            Ease::Bezier(a, b, c, d) if self.name().starts_with("bezier") => {
+                let n = |v: f64| if v.is_finite() { format!("{v}") } else { "0".into() };
+                s.serialize_str(&format!("bezier({},{},{},{})", n(a), n(b), n(c), n(d)))
+            }
+            _ => s.serialize_str(&self.name()),
+        }
     }
 }
 
@@ -504,6 +514,10 @@ impl Serialize for Anim {
             m.serialize_entry("v", &self.v)?;
         } else {
             m.serialize_entry("k", &self.k)?;
+            // the static value comes back when the keys are removed: keep it when it isn't the first key's
+            if self.v != self.k[0].v {
+                m.serialize_entry("v", &self.v)?;
+            }
         }
         if let Some(x) = &self.x {
             m.serialize_entry("x", x)?;
@@ -521,12 +535,13 @@ impl<'de> Deserialize<'de> for Anim {
         if let serde_json::Value::Object(map) = &raw {
             if map.contains_key("k") || map.contains_key("x") || map.contains_key("v") {
                 let mut a = Anim::default();
-                if let Some(v) = map.get("v") {
-                    a.v = serde_json::from_value(v.clone()).map_err(de::Error::custom)?;
-                }
                 if let Some(k) = map.get("k") {
                     let keys: Vec<Key> = serde_json::from_value(k.clone()).map_err(de::Error::custom)?;
                     a.set_keys(keys);
+                }
+                // after the keys: a saved static value wins over the first key's
+                if let Some(v) = map.get("v") {
+                    a.v = serde_json::from_value(v.clone()).map_err(de::Error::custom)?;
                 }
                 if let Some(serde_json::Value::String(x)) = map.get("x") {
                     a.x = Some(x.clone());
@@ -592,5 +607,25 @@ mod tests {
         assert_eq!(b.k[1].e, Ease::Out(Curve::Back));
         let s = serde_json::to_string(&b).unwrap();
         assert_eq!(s, r#"{"k":[[0.0,0],[1.0,10,"outBack"]]}"#);
+    }
+
+    #[test]
+    fn eases_round_trip_exactly() {
+        for name in ["anticipate", "overshoot", "ease", "bezier(0.123456,-0.25,0.987654,1.5)", "cubic-bezier(.2, .8, .2, 1)", "inOutSine", "hold"] {
+            let e = Ease::parse(name).unwrap();
+            let json = serde_json::to_string(&e).unwrap();
+            assert_eq!(serde_json::from_str::<Ease>(&json).unwrap(), e, "{name} -> {json}");
+        }
+        assert_eq!(Ease::parse("anticipate").unwrap(), Ease::parse("bezier(0.36,0,0.66,-0.56)").unwrap());
+    }
+
+    #[test]
+    fn static_value_is_kept_beside_keys() {
+        let mut a = Anim::new(Val::N(0.0));
+        a.set_keys(vec![Key { t: 0.0, v: Val::N(10.0), e: Ease::Linear }, Key { t: 1.0, v: Val::N(20.0), e: Ease::Linear }]);
+        assert_eq!(serde_json::from_str::<Anim>(&serde_json::to_string(&a).unwrap()).unwrap(), a, "v = first key: not repeated");
+        a.v = Val::N(55.0);
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(serde_json::from_str::<Anim>(&json).unwrap(), a, "{json}");
     }
 }

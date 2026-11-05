@@ -12,7 +12,20 @@ use std::process::{Command, Stdio};
 /// install made from the editor works without restarting MoodCut.
 pub struct Ff {
     tools: RwLock<Arc<Tools>>,
-    hw_cache: Mutex<Option<Vec<String>>>,
+    hw_cache: Mutex<Option<Arc<HwInfo>>>,
+}
+
+/// The GPUs and what FFmpeg can do with them (found once, see [`Ff::hw`]).
+#[derive(Debug, Default)]
+pub struct HwInfo {
+    /// Best first ([`super::gpu::rank`]); empty with `MOODCUT_GPU=off`.
+    pub gpus: Vec<super::gpu::Gpu>,
+    /// Hardware H.264 encoders that work here, the best GPU's first.
+    pub encoders: Vec<String>,
+    /// Why a GPU's encoder doesn't work (an outdated driver, say).
+    pub notes: Vec<String>,
+    /// FFmpeg's hardware decoding methods (cuda, d3d11va, vaapi, ...).
+    pub hwaccels: HashSet<String>,
 }
 
 struct Tools {
@@ -255,29 +268,106 @@ impl Ff {
         c
     }
 
-    /// Hardware H.264 encoders that actually work on this machine (tested once).
+    /// Hardware H.264 encoders that actually work on this machine, the best GPU's first.
     pub fn hw_encoders(&self) -> Vec<String> {
+        self.hw().encoders.clone()
+    }
+
+    /// The GPUs, working hardware encoders and decoding methods (found once, in
+    /// about a second; `proxy::Proxies::set_active` starts it in the background).
+    pub fn hw(&self) -> Arc<HwInfo> {
         let mut g = self.hw_cache.lock();
-        if let Some(v) = &*g {
-            return v.clone();
+        if let Some(h) = &*g {
+            return h.clone();
         }
-        let mut ok = vec![];
-        for enc in ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "h264_vaapi"] {
+        let h = Arc::new(self.detect_hw());
+        *g = Some(h.clone());
+        h
+    }
+
+    fn detect_hw(&self) -> HwInfo {
+        use super::gpu::{self, Pref, Vendor};
+        let pref = Pref::from_env();
+        if !self.available() || pref == Pref::Off {
+            return HwInfo::default();
+        }
+        let ffmpeg = self.ffmpeg_path();
+        let mut gpus = gpu::detect(&ffmpeg);
+        gpu::rank(&mut gpus, pref.name());
+        let mut encoders = vec![];
+        let mut notes = vec![];
+        for enc in ["h264_nvenc", "h264_amf", "h264_qsv", "h264_videotoolbox", "h264_vaapi"] {
             if !self.has_encoder(enc) {
                 continue;
             }
-            let st = self
-                .cmd()
-                .args(["-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2", "-frames:v", "3", "-c:v", enc, "-f", "null", "-"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            if st.map(|s| s.success()).unwrap_or(false) {
-                ok.push(enc.to_string());
+            match self.try_encoder(enc) {
+                Ok(()) => encoders.push(enc.to_string()),
+                Err(why) => {
+                    // only worth saying when that GPU is here (FFmpeg builds carry every vendor's encoder)
+                    let v = Vendor::of_encoder(enc);
+                    if let Some(g) = gpus.iter().find(|g| g.vendor == v) {
+                        notes.push(format!("{}: {enc} doesn't start: {why}", g.name));
+                    }
+                }
             }
         }
-        *g = Some(ok.clone());
-        ok
+        let place = |e: &String| {
+            let v = Vendor::of_encoder(e);
+            (gpus.iter().position(|g| g.vendor == v).unwrap_or(usize::MAX), std::cmp::Reverse(v.tiebreak()))
+        };
+        encoders.sort_by_key(place);
+        let out = command(&ffmpeg).args(["-hide_banner", "-hwaccels"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).output();
+        let hwaccels = out.map(|o| parse_hwaccels(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default();
+        HwInfo { gpus, encoders, notes, hwaccels }
+    }
+
+    /// Encodes three tiny frames with `enc`; the error is FFmpeg's reason, shortened.
+    pub fn try_encoder(&self, enc: &str) -> std::result::Result<(), String> {
+        let out = self
+            .cmd()
+            .args(["-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2", "-frames:v", "3", "-c:v", enc, "-f", "null", "-"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output();
+        match out {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => Err(encoder_error(&String::from_utf8_lossy(&o.stderr))),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Whether heavy footage is decoded on the GPU by default: when the best GPU is a discrete one.
+    /// (An integrated GPU decodes 4K slower than the CPU once frames are copied back.)
+    pub fn hwdec_default(&self) -> bool {
+        self.hw().gpus.first().is_some_and(|g| g.discrete())
+    }
+
+    /// Whether to decode `m` on the GPU under `mode`.
+    pub fn gpu_decode(&self, m: &Media, mode: super::gpu::HwDec) -> bool {
+        match mode {
+            super::gpu::HwDec::Off => false,
+            super::gpu::HwDec::All => true,
+            super::gpu::HwDec::Auto => super::proxy::heavy(m) && self.hwdec_default(),
+        }
+    }
+
+    /// Input options that decode on the best GPU (frames still come back as
+    /// ordinary pixels, so every filter works); FFmpeg falls back to the CPU for
+    /// anything the GPU can't decode.
+    pub fn hwdec_args(&self) -> Vec<String> {
+        use super::gpu::Vendor;
+        let h = self.hw();
+        let has = |m: &str| h.hwaccels.contains(m);
+        let v: Vec<&str> = match h.gpus.first() {
+            // CUDA numbers NVIDIA cards fastest first
+            Some(g) if g.vendor == Vendor::Nvidia && has("cuda") => vec!["-hwaccel", "cuda"],
+            Some(g) if g.vendor == Vendor::Apple && has("videotoolbox") => vec!["-hwaccel", "videotoolbox"],
+            Some(g) if cfg!(windows) && has("d3d11va") && g.device.is_some() => vec!["-hwaccel", "d3d11va", "-hwaccel_device", g.device.as_deref().unwrap_or("0")],
+            Some(g) if !cfg!(windows) && has("vaapi") && g.device.is_some() => vec!["-hwaccel", "vaapi", "-hwaccel_device", g.device.as_deref().unwrap_or("")],
+            _ => vec!["-hwaccel", "auto"],
+        };
+        v.into_iter().map(String::from).collect()
     }
 
     /// Hardware AV1 encoders that actually work here (tested on each call; only
@@ -444,6 +534,30 @@ impl Ff {
 /// Names from `ffmpeg -encoders` / `-filters`: lines whose first column is the
 /// flag column (`...`, `TS`, `V....D`; its width varies by FFmpeg version),
 /// skipping the legend (`T.. = Timeline support`).
+/// `ffmpeg -hwaccels`: a header line, then one method per line.
+fn parse_hwaccels(out: &str) -> HashSet<String> {
+    out.lines().map(str::trim).filter(|l| !l.is_empty() && !l.ends_with(':')).map(str::to_string).collect()
+}
+
+/// The useful line of a failed encoder test: the driver's complaint when there is
+/// one ("The minimum required Nvidia driver for nvenc is 610.00 or newer").
+fn encoder_error(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let pick = lines
+        .iter()
+        .find(|l| l.contains("minimum required"))
+        .or_else(|| lines.iter().find(|l| l.to_ascii_lowercase().contains("driver")))
+        .or(lines.first())
+        .copied()
+        .unwrap_or("failed");
+    // drop FFmpeg's "[h264_nvenc @ 0x...] " prefix
+    let msg = match pick.split_once("] ") {
+        Some((head, rest)) if head.starts_with('[') => rest,
+        _ => pick,
+    };
+    msg.chars().take(200).collect()
+}
+
 fn parse_list(out: &str) -> HashSet<String> {
     out.lines()
         .filter_map(|l| {
@@ -499,5 +613,16 @@ mod tests {
         assert!(super::parse_list(enc).contains("libx264") && super::parse_list(enc).contains("aac"));
         let l6 = super::parse_list(v6);
         assert!(l6.contains("abench") && l6.contains("acompressor") && l6.len() == 2, "{l6:?}");
+    }
+
+    #[test]
+    fn hardware_lists_and_encoder_errors() {
+        let hw = super::parse_hwaccels("Hardware acceleration methods:\r\ncuda\r\nd3d11va\r\n\r\n");
+        assert!(hw.contains("cuda") && hw.contains("d3d11va") && hw.len() == 2, "{hw:?}");
+        let nv = "[h264_nvenc @ 000001c5801550c0] Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0\n\
+[h264_nvenc @ 000001c5801550c0] The minimum required Nvidia driver for nvenc is 610.00 or newer\n\
+[vost#0:0/h264_nvenc @ 000001c580151600] [enc:h264_nvenc @ 000001c580118680] Error while opening encoder\n";
+        assert_eq!(super::encoder_error(nv), "The minimum required Nvidia driver for nvenc is 610.00 or newer");
+        assert_eq!(super::encoder_error(""), "failed");
     }
 }
