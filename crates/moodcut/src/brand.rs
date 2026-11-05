@@ -11,6 +11,14 @@ use std::path::Path;
 pub const EMBER: &str = "#E76C33";
 pub const INK: &str = "#010101";
 pub const TAGLINE: &str = "The AI-native video editor";
+/// Who makes MoodCut. Shown in `--version`/`about`, the app's Home screen and
+/// the metadata of exported files (a plain, visible credit, never hidden).
+pub const MAKER: &str = "Moodbook Studio";
+pub const MAKER_URL: &str = "https://moodbook.uk";
+/// One-line credit used in CLI output and file metadata.
+pub fn credit() -> String {
+    format!("MoodCut {} by {MAKER} ({MAKER_URL})", env!("CARGO_PKG_VERSION"))
+}
 
 /// The mark, drawn on a 1778 px canvas: a black disc holding four reels in a
 /// 2x2 grid (ember top-left and bottom-right, white the other two), each a
