@@ -118,6 +118,39 @@ jobs:
         run: cargo test --release
       - name: Build
         run: cargo build --release
+      - name: Make MoodCutApp.exe (the same program as a windowless Windows app)
+        shell: pwsh
+        run: |
+          .\installer\make-app-exe.ps1
+          $b = [System.IO.File]::ReadAllBytes("$PWD\target\release\MoodCutApp.exe")
+          $pe = [BitConverter]::ToInt32($b, 0x3C)
+          if ([BitConverter]::ToUInt16($b, $pe + 24 + 68) -ne 2) { Write-Error "MoodCutApp.exe is not a GUI-subsystem program"; exit 1 }
+      - name: The editor opens in its own native window and quits with it
+        shell: pwsh
+        env:
+          MOODCUT_HOME: ${{ runner.temp }}\moodcut-window-home
+        run: |
+          $p = Start-Process .\target\release\MoodCutApp.exe -PassThru
+          try {
+            $up = $false
+            for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+              Start-Sleep -Milliseconds 500
+              try { $up = (Invoke-RestMethod http://127.0.0.1:7878/api/ping -TimeoutSec 2).app -eq "moodcut" } catch {}
+            }
+            if (-not $up) { Write-Error "the editor never answered"; exit 1 }
+            # the window appears once the page has loaded
+            $title = ""
+            for ($i = 0; $i -lt 40 -and -not $title; $i++) { Start-Sleep -Milliseconds 500; $p.Refresh(); $title = $p.MainWindowTitle }
+            Write-Host "window title: '$title'"
+            $r = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:7878/api/shell -Body '{"action":"focus"}' -ContentType application/json
+            Write-Host "native window: $($r.native)"
+            if (-not $r.native) { Write-Error "the editor has no native window of its own"; exit 1 }
+            if ($title -notlike "*MoodCut*") { Write-Error "the window has no MoodCut title"; exit 1 }
+            [void]$p.CloseMainWindow()
+            if (-not $p.WaitForExit(15000)) { Write-Error "MoodCut didn't quit when its window was closed"; exit 1 }
+          } finally {
+            if (-not $p.HasExited) { $p.Kill() }
+          }
       - name: Smoke test
         shell: pwsh
         run: |
@@ -177,13 +210,14 @@ jobs:
           $p = Start-Process dist\MoodCut-Setup-x64.exe -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"", "/TASKS=addtopath,assoc,ffmpeg,connectai", "/LOG=`"$log`"") -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content $log -Tail 80; exit 1 }
           if (-not (Test-Path "$dir\moodcut.exe")) { Get-Content $log -Tail 80; Write-Error "moodcut.exe missing"; exit 1 }
+          if (-not (Test-Path "$dir\MoodCutApp.exe")) { Get-Content $log -Tail 80; Write-Error "MoodCutApp.exe missing"; exit 1 }
           if (-not (Test-Path "$dir\ffmpeg\bin\ffmpeg.exe")) { Get-Content $log -Tail 80; Write-Error "FFmpeg was not installed"; exit 1 }
           & "$dir\moodcut.exe" doctor
           $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
           if ($userPath -notlike "*$dir*") { Write-Error "PATH was not updated"; exit 1 }
           $cmd = (Get-ItemProperty "HKCU:\Software\Classes\MoodCut.Project\shell\open\command").'(default)'
           Write-Host "open command: $cmd"
-          if ($cmd -notlike "*moodcut.exe*gui*") { Write-Error "file association missing"; exit 1 }
+          if ($cmd -notlike "*MoodCutApp.exe*gui*") { Write-Error "file association missing"; exit 1 }
           Start-Process "$dir\unins000.exe" -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait
           # the uninstaller finishes from a temporary copy of itself
           for ($i = 0; $i -lt 30 -and (Test-Path "$dir\moodcut.exe"); $i++) { Start-Sleep -Seconds 1 }
@@ -197,6 +231,7 @@ jobs:
           name: moodcut-windows-x64
           path: |
             target/release/moodcut.exe
+            target/release/MoodCutApp.exe
             dist/MoodCut-Setup-x64.exe
             README.md
             LICENSE
@@ -221,6 +256,7 @@ jobs:
         run: |
           mkdir -p release/windows-x64
           cp artifact/target/release/moodcut.exe release/windows-x64/moodcut.exe
+          cp artifact/target/release/MoodCutApp.exe release/windows-x64/MoodCutApp.exe
           cp artifact/dist/MoodCut-Setup-x64.exe release/windows-x64/MoodCut-Setup-x64.exe
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           {
@@ -261,7 +297,7 @@ jobs:
         run: |
           mkdir -p out
           cp dist/dist/MoodCut-Setup-x64.exe out/MoodCut-Setup-x64.exe
-          (cd dist && zip -r ../out/moodcut-${{ github.ref_name }}-windows-x64-portable.zip target/release/moodcut.exe README.md LICENSE)
+          (cd dist && zip -r ../out/moodcut-${{ github.ref_name }}-windows-x64-portable.zip target/release/moodcut.exe target/release/MoodCutApp.exe README.md LICENSE)
           cp linux/moodcut-linux-x64.tar.gz out/moodcut-linux-x64.tar.gz
           (cd out && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
       - uses: softprops/action-gh-release@v2

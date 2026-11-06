@@ -1,7 +1,8 @@
 # MoodCut for Windows
 
-`windows-x64/MoodCut-Setup-x64.exe` is the installer and `windows-x64/moodcut.exe` the same program as a single portable
-file: editor, MCP server for Claude, ChatGPT and other AI apps, command line and HTML graphics renderer. Both are built
+`windows-x64/MoodCut-Setup-x64.exe` is the installer. `windows-x64/MoodCutApp.exe` is the editor as a Windows app (its
+own native window, no console) and `windows-x64/moodcut.exe` the same program as a command line: editor, MCP server for
+Claude, ChatGPT and other AI apps, and HTML graphics renderer. Each works as a portable file. Both are built
 and tested by CI on Windows (unit tests, a render, the quality check and exports on a machine without FFmpeg, and a
 silent install, setup and uninstall of the installer); `windows-x64/BUILD.txt` names the source commit and the SHA-256
 of each file.
@@ -20,13 +21,15 @@ MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopat
 Add `/ALLUSERS` to install for everyone (asks for admin rights). Uninstall from Settings → Apps → MoodCut: it removes
 MoodCut from the AI apps' settings and PATH too.
 
-**Portable:** copy `moodcut.exe` anywhere (ideally a folder on your `PATH`) and double-click it. Click **Install FFmpeg**
+**Portable:** copy `MoodCutApp.exe` and `moodcut.exe` to one folder (ideally on your `PATH`) and double-click
+`MoodCutApp.exe`. Click **Install FFmpeg**
 when MoodCut offers it (about 100 MB, no admin rights), then **Connect AI** to set up your AI apps.
 
 Windows may show *"Windows protected your PC"* because the files aren't code-signed yet: choose **More info → Run
 anyway** (once).
 
-Requirements: Windows 10 (1803) or 11, 64-bit, and Microsoft Edge (preinstalled). Everything MoodCut stores (settings,
+Requirements: Windows 10 (1803) or 11, 64-bit, and the Microsoft WebView2 runtime (preinstalled on Windows 11; the
+installer adds it on Windows 10 if missing; without it MoodCut opens in an Edge or Chrome window). Everything MoodCut stores (settings,
 proxies, caches, a portable FFmpeg when installed from the editor) lives in `%APPDATA%\MoodCut`; projects live wherever
 you save them.
 

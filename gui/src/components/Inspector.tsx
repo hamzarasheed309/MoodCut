@@ -1,9 +1,11 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { easeSelected, gotoKey } from "../actions";
-import { catalog, comp, mediaById, playhead, run, selectedItem, selection, setPlayhead } from "../store";
-import type { Anim, Effect, Item, PDef, Val } from "../types";
+import { api, type GfxDetail, type Vars } from "../gfx";
+import { catalog, comp, graphicEditor, mediaById, playhead, refresh, refreshHistory, refreshLogs, run, selectedItem, selection, setPlayhead, toast } from "../store";
+import type { Anim, Effect, Item, Media, PDef, Val } from "../types";
 import { fmtNum, isAnimated, kindColor, q, staticVal, valToScript } from "../util";
 import { NumField, TextField } from "./Controls";
+import { GraphicFields } from "./GraphicFields";
 
 function stepFor(p: PDef): number {
   if (p.max !== null && p.min !== null && p.max - p.min <= 2) return 0.01;
@@ -101,6 +103,141 @@ function Group({ title, children, open = true, acts }: { title: string; children
       </div>
       {o && <div class="group-b">{children}</div>}
     </div>
+  );
+}
+
+/** An HTML graphic's fields, like Essential Graphics: edit, then Apply renders it again. */
+function GraphicGroup({ item, media }: { item: Item; media: Media }) {
+  const [info, setInfo] = useState<GfxDetail | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [pending, setPending] = useState<Record<string, string | null>>({});
+  const [scope, setScope] = useState<"all" | "clip">("all");
+  const [busy, setBusy] = useState(false);
+  // a re-render changes the file, the values or the brand state: read the fields again
+  const key = `${media.id}|${media.path}|${JSON.stringify(media.gfx?.vars || {})}|${media.gfx?.stale ? 1 : 0}`;
+  useEffect(() => {
+    let live = true;
+    api<GfxDetail>(`/api/graphic?id=${encodeURIComponent(media.id)}`).then((g) => {
+      if (!live) return;
+      if (g.ok) {
+        setInfo(g);
+        setFailed(null);
+      } else setFailed(g.error);
+    });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  useEffect(() => {
+    setPending({});
+    setScope("all");
+  }, [media.id, item.id]);
+  const vars = useMemo(() => {
+    const v: Vars = { ...(info?.vars || {}) };
+    for (const [k, x] of Object.entries(pending)) {
+      if (x === null) delete v[k];
+      else v[k] = x;
+    }
+    return v;
+  }, [info, pending]);
+  const changed = Object.keys(pending).length > 0;
+  const setP = (n: string, v: string | null) =>
+    setPending((p) => {
+      const x = { ...p };
+      if (v === null && !(n in (info?.vars || {}))) delete x[n];
+      else x[n] = v;
+      return x;
+    });
+  const apply = async () => {
+    if (!changed || busy) return;
+    setBusy(true);
+    const set: Vars = {};
+    const unset: string[] = [];
+    for (const [k, x] of Object.entries(pending)) {
+      if (x === null) unset.push(k);
+      else set[k] = x;
+    }
+    const body: Record<string, unknown> = { vars: set, unset, preview: 0, editable: false };
+    if (scope === "clip" && (info?.uses || 0) > 1) {
+      body.from = media.id;
+      body.replace = item.id;
+      body.name = `${media.name} · ${item.name || item.id}`;
+    } else body.id = media.id;
+    const r = await api<{ text: string }>("/api/graphic", body);
+    setBusy(false);
+    if (!r.ok) return toast(r.error, true);
+    toast(r.text.split("\n")[0]);
+    setPending({});
+    await refresh();
+    refreshLogs();
+    refreshHistory();
+  };
+  const rerender = async () => {
+    setBusy(true);
+    const r = await api<{ text: string }>("/api/graphic/refresh", { ids: [media.id] });
+    setBusy(false);
+    if (!r.ok) return toast(r.error, true);
+    toast(r.text.split("\n")[0]);
+    await refresh();
+    refreshLogs();
+    refreshHistory();
+  };
+  const edit = () => (graphicEditor.value = { id: media.id, item: item.id });
+  return (
+    <Group
+      title="Graphic"
+      acts={
+        <button class="btn sm ghost" title="Edit with a live preview, the code and the settings" onClick={edit}>
+          Edit…
+        </button>
+      }
+    >
+      {failed && <div class="hint">{failed}</div>}
+      {!info && !failed && <div class="hint">Loading the fields…</div>}
+      {info?.stale && (
+        <div class="gf-note">
+          Rendered with older brand colors.
+          <button class="btn sm" disabled={busy} onClick={rerender}>
+            Re-render
+          </button>
+        </div>
+      )}
+      {info &&
+        (info.fields.length ? (
+          <GraphicFields fields={info.fields} vars={vars} onChange={setP} onApply={apply} />
+        ) : (
+          <div class="hint">
+            No editable fields: its text and colors are written into the code.{" "}
+            <a href="#" onClick={(e) => (e.preventDefault(), edit())}>
+              Open the editor
+            </a>{" "}
+            to make them editable.
+          </div>
+        ))}
+      {changed && info && info.uses > 1 && (
+        <div class="row">
+          <label>apply to</label>
+          <div class="ctl">
+            <select value={scope} onChange={(e) => setScope((e.target as HTMLSelectElement).value as "all" | "clip")}>
+              <option value="all">all {info.uses} clips using it</option>
+              <option value="clip">this clip only</option>
+            </select>
+          </div>
+          <span />
+        </div>
+      )}
+      {changed && (
+        <div class="gf-apply">
+          <span class="hint">Renders the graphic again</span>
+          <button class="btn sm" disabled={busy} onClick={() => setPending({})}>
+            Discard
+          </button>
+          <button class="btn sm primary" disabled={busy} onClick={apply}>
+            {busy ? "Rendering…" : "Apply"}
+          </button>
+        </div>
+      )}
+    </Group>
   );
 }
 
@@ -477,10 +614,11 @@ export function Inspector() {
         )}
         {media && (
           <div style={{ color: "var(--faint)", fontSize: "11px", marginTop: "4px", wordBreak: "break-all" }}>
-            {media.name} · {media.kind} {media.w ? `${media.w}×${media.h}` : ""} {media.dur ? `${fmtNum(media.dur, 2)}s` : ""}
+            {media.name} · {media.gfx ? "html graphic" : media.kind} {media.w ? `${media.w}×${media.h}` : ""} {media.dur ? `${fmtNum(media.dur, 2)}s` : ""}
           </div>
         )}
       </Group>
+      {it.kind === "clip" && media?.gfx && <GraphicGroup key={media.id} item={it} media={media} />}
       {it.kind === "text" && (
         <Group title="Text">
           <textarea

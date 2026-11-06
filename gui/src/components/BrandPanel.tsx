@@ -1,7 +1,34 @@
 // Brand Kit: the font and colors titles, captions, shapes and HTML graphics use by default.
-import { catalog, project, run } from "../store";
+import { useState } from "preact/hooks";
+import { api } from "../gfx";
+import { catalog, project, refresh, refreshHistory, refreshLogs, run, toast } from "../store";
 import { q } from "../util";
 import { TextField } from "./Controls";
+
+/** HTML graphics are rendered videos: after a brand change they keep the old colors until rendered again. */
+function StaleGraphics() {
+  const [busy, setBusy] = useState(false);
+  const stale = (project.value?.media || []).filter((m) => m.gfx?.stale);
+  if (!stale.length) return null;
+  const go = async () => {
+    setBusy(true);
+    const r = await api<{ text: string }>("/api/graphic/refresh", {});
+    setBusy(false);
+    if (!r.ok) return toast(r.error, true);
+    toast(r.text.split("\n").length > 1 ? `${r.text.split("\n").length} graphics re-rendered` : r.text);
+    await refresh();
+    refreshLogs();
+    refreshHistory();
+  };
+  return (
+    <div class="gf-note" style={{ padding: "0 10px" }} title={stale.map((m) => `${m.id} ${m.name}`).join("\n")}>
+      {stale.length} HTML graphic{stale.length === 1 ? " has" : "s have"} the old brand colors.
+      <button class="btn sm" disabled={busy} onClick={go}>
+        {busy ? "Rendering…" : "Re-render"}
+      </button>
+    </div>
+  );
+}
 
 const WEIGHTS = ["light", "regular", "medium", "semibold", "bold", "extrabold", "black"];
 const FIELDS: [keyof Swatches, string][] = [
@@ -30,6 +57,7 @@ export function BrandPanel() {
         </span>
       </div>
       {empty && <div class="hint" style={{ padding: "0 10px" }}>No brand kit yet: titles use generic defaults. Pick a preset or set your own font and colors.</div>}
+      <StaleGraphics />
       <div class="group-b">
         <div class="row">
           <label>Font</label>

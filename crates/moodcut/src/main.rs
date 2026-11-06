@@ -26,6 +26,7 @@ pub mod render;
 pub mod server;
 pub mod setup;
 pub mod sfx;
+pub mod shell;
 pub mod tunnel;
 
 use anyhow::{bail, Context, Result};
@@ -292,6 +293,29 @@ fn parse_range(r: &str) -> Result<(f64, f64)> {
     Ok((a.trim().parse()?, b.trim().parse()?))
 }
 
+/// The editor window onto the server at `port`: MoodCut's own native window where there is one
+/// (Windows), which ends the process when it is closed; else a browser app window.
+fn show_window(port: u16) {
+    let url = format!("http://127.0.0.1:{port}");
+    let e = shell::run(&url, port);
+    if cfg!(windows) {
+        eprintln!("moodcut: couldn't open the native window ({e:#}); using a browser window instead");
+    }
+    server::open_window(&url);
+}
+
+/// A second launch: bring the editor that is already open to the front. A server without a
+/// window of its own (started by an AI app or `moodcut serve`) gets one here.
+fn show_editor(port: u16) {
+    shell::allow_foreground();
+    let native = server::local_request(port, "POST", "/api/shell", Some(r#"{"action":"focus"}"#), 1500)
+        .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .is_some_and(|v| v["native"] == true);
+    if !native {
+        show_window(port);
+    }
+}
+
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Gui { port: 7878, project: None }) {
@@ -303,7 +327,7 @@ fn real_main() -> Result<()> {
                     let abs = std::fs::canonicalize(path).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| path.clone());
                     server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": abs, "source": "launch"}).to_string()), 3000);
                 }
-                server::open_window(&format!("http://127.0.0.1:{p}"));
+                show_editor(p);
                 return Ok(());
             }
             let port = server::free_port(port);
@@ -312,26 +336,53 @@ fn real_main() -> Result<()> {
             if let Some(p) = project {
                 open_at_start(&eng, &p);
             }
-            let rt = tokio::runtime::Runtime::new()?;
-            let r = rt.block_on(async move {
-                let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: true, tunnel: false, public_url: None };
-                server::serve(eng, opts).await
-            });
-            // started at the same moment as another MoodCut (two files opened at once):
-            // the other one got the port, so hand this file over to it
-            if let Err(e) = &r {
-                if e.to_string().contains("can't listen") {
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    if let Some((p, _)) = server::find_instance(port) {
-                        if let Some(path) = &project_path {
-                            server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path, "source": "launch"}).to_string()), 3000);
+            // the engine and its server run on a background thread; this one is the window's
+            let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
+            std::thread::Builder::new().name("server".into()).spawn(move || {
+                let r = tokio::runtime::Runtime::new().map_err(anyhow::Error::from).and_then(|rt| {
+                    rt.block_on(async move {
+                        let opts = server::ServeOpts { host: "127.0.0.1".into(), port, token: None, open_window: false, tunnel: false, public_url: None };
+                        server::serve(eng, opts).await
+                    })
+                });
+                let _ = tx.send(r);
+            })?;
+            // wait until it answers (or has already failed)
+            let t0 = std::time::Instant::now();
+            let ended = loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                    Ok(r) => break Some(r),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("the editor's server stopped unexpectedly"),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if server::running_instance(port).is_some() {
+                            break None;
                         }
-                        server::open_window(&format!("http://127.0.0.1:{p}"));
-                        return Ok(());
+                        if t0.elapsed() > std::time::Duration::from_secs(20) {
+                            bail!("the editor's server didn't start within 20 seconds");
+                        }
                     }
                 }
+            };
+            if let Some(r) = ended {
+                // started at the same moment as another MoodCut (two files opened at once):
+                // the other one got the port, so hand this file over to it
+                if let Err(e) = &r {
+                    if e.to_string().contains("can't listen") {
+                        std::thread::sleep(std::time::Duration::from_millis(400));
+                        if let Some((p, _)) = server::find_instance(port) {
+                            if let Some(path) = &project_path {
+                                server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path, "source": "launch"}).to_string()), 3000);
+                            }
+                            show_editor(p);
+                            return Ok(());
+                        }
+                    }
+                }
+                return r;
             }
-            r
+            // closing the window quits MoodCut, like any desktop editor
+            show_window(port);
+            rx.recv().unwrap_or(Ok(()))
         }
         Cmd::Serve { port, host, token, public, allow, project } => {
             let eng = load_engine()?;
@@ -470,9 +521,9 @@ fn real_main() -> Result<()> {
                 None => {
                     let ff = if dur > 0.0 { Some(render::ffmpeg::Ff::find()?) } else { render::ffmpeg::Ff::find().ok() };
                     let out = PathBuf::from(out.unwrap_or_else(|| format!("{}.{}", html.trim_end_matches(".html"), if dur > 0.0 { "mov" } else { "png" })));
-                    let page = gfx::prepare_html(&src, &vars);
+                    let page = gfx::build_page(&src, &vars, &gfx::PageOpts { w, h, fps, dur, extra_css: "", base: "", preview: false });
                     let dir = std::path::Path::new(&html).parent().map(|d| d.to_path_buf()).filter(|d| !d.as_os_str().is_empty()).unwrap_or_else(|| PathBuf::from("."));
-                    let spec = gfx::RenderSpec { html: &page, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &vars, keep: (0..6).map(|i| (i as f64 + 0.5) * dur / 6.0).collect(), still_at: at.unwrap_or(0.0) };
+                    let spec = gfx::RenderSpec { html: &page.html, dir: &dir, media: Default::default(), w, h, fps, dur, alpha: !opaque, vars: &page.vars, keep: (0..6).map(|i| (i as f64 + 0.5) * dur / 6.0).collect(), still_at: at.unwrap_or(0.0) };
                     let r = gfx::render(ff.as_ref(), &spec, &out, None)?;
                     println!("wrote {} ({} frames in {:.1}s)", out.display(), r.frames, r.secs);
                     if r.empty {
@@ -480,6 +531,9 @@ fn real_main() -> Result<()> {
                     }
                     for e in r.errors {
                         println!("! {e}");
+                    }
+                    if !page.missing.is_empty() {
+                        println!("! unset fields (rendered empty): {} (pass --var name=value)", page.missing.join(", "));
                     }
                 }
             }

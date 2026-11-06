@@ -9,6 +9,7 @@ export default defineConfig({
       "/api": { target: "http://127.0.0.1:7878", ws: true },
       "/mcp": "http://127.0.0.1:7878",
       "/fonts": "http://127.0.0.1:7878",
+      "/gfx-preview": "http://127.0.0.1:7878",
     },
   },
 });

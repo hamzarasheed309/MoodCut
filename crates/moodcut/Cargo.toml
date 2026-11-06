@@ -31,7 +31,10 @@ mime_guess = "2"
 clap = { version = "4", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+# the editor window: WebView2 (built into Windows 10/11) hosted in a native tao window
+wry = "0.57"
+tao = "0.37"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
 
 # app icon and version info in moodcut.exe
 [target.'cfg(windows)'.build-dependencies]

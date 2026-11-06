@@ -322,8 +322,10 @@ impl Engine {
     pub fn undo(&self, n: usize, source: &str) -> Result<EditOutcome> {
         let mut done = vec![];
         let rev;
+        let sources;
         {
             let mut s = self.st.write();
+            let before = crate::gfx::sources(&s.p);
             for _ in 0..n {
                 let Some((prev, label)) = s.undo.pop() else { break };
                 let cur = std::mem::replace(&mut s.p, prev);
@@ -339,7 +341,10 @@ impl Engine {
             s.rev += 1;
             s.dirty = true;
             rev = s.rev;
+            sources = (before, crate::gfx::sources(&s.p));
         }
+        // a graphic's .html file holds the source the project has now
+        crate::gfx::mirror_sources(&sources.0, &sources.1);
         self.autosave();
         self.emit("changed", rev, source, "undo".into());
         Ok(EditOutcome { log: done, rev, ops: 1 })
@@ -348,8 +353,10 @@ impl Engine {
     pub fn redo(&self, n: usize, source: &str) -> Result<EditOutcome> {
         let mut done = vec![];
         let rev;
+        let sources;
         {
             let mut s = self.st.write();
+            let before = crate::gfx::sources(&s.p);
             for _ in 0..n {
                 let Some((next, label)) = s.redo.pop() else { break };
                 let cur = std::mem::replace(&mut s.p, next);
@@ -365,7 +372,9 @@ impl Engine {
             s.rev += 1;
             s.dirty = true;
             rev = s.rev;
+            sources = (before, crate::gfx::sources(&s.p));
         }
+        crate::gfx::mirror_sources(&sources.0, &sources.1);
         self.autosave();
         self.emit("changed", rev, source, "redo".into());
         Ok(EditOutcome { log: done, rev, ops: 1 })
@@ -1073,6 +1082,38 @@ mod tests {
         assert!(e.edit("undo", "test").is_err());
         assert_eq!(std::fs::read_to_string(&fb).unwrap(), b_before);
         assert!(!std::fs::read_to_string(&fb).unwrap().contains("only in A"));
+    }
+
+    #[test]
+    fn undo_and_redo_put_a_graphics_html_back() {
+        let d = scratch("gfx-undo");
+        let html = d.join("title.html");
+        let e = engine();
+        e.new_project("G", 1920, 1080, 30.0, Some(d.join("g.mcut"))).unwrap();
+        let media = |src: &str| -> Media {
+            let mut m = Mock.probe(d.join("title.mov").to_str().unwrap()).unwrap();
+            m.id = "m1".into();
+            m.gfx = Some(crate::gfx::Gfx { html: html.to_string_lossy().to_string(), w: 1920, h: 1080, fps: 30.0, dur: 4.0, alpha: true, src: src.into(), ..Default::default() });
+            m
+        };
+        // what `graphic` does: commit the media, then write the page next to it
+        let mut p = e.snapshot().0;
+        p.media.push(media("<h1>{{t|One}}</h1>"));
+        e.commit(p, None, "graphic title", "test", &[]).unwrap();
+        std::fs::write(&html, "<h1>{{t|One}}</h1>").unwrap();
+        let mut p = e.snapshot().0;
+        p.media[0] = media("<h1>{{t|Two}}</h1>");
+        e.commit(p, None, "graphic title", "test", &[]).unwrap();
+        std::fs::write(&html, "<h1>{{t|Two}}</h1>").unwrap();
+
+        e.edit("undo", "test").unwrap();
+        assert_eq!(std::fs::read_to_string(&html).unwrap(), "<h1>{{t|One}}</h1>", "a re-render after undo must not bring the undone html back");
+        e.edit("redo", "test").unwrap();
+        assert_eq!(std::fs::read_to_string(&html).unwrap(), "<h1>{{t|Two}}</h1>");
+        e.edit("text 'unrelated' at=0 dur=1", "test").unwrap();
+        std::fs::write(&html, "edited in a text editor").unwrap();
+        e.edit("undo", "test").unwrap();
+        assert_eq!(std::fs::read_to_string(&html).unwrap(), "edited in a text editor", "undoing something else leaves the file alone");
     }
 
     #[test]

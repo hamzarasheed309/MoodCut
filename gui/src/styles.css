@@ -884,21 +884,133 @@ input[type="checkbox"] {
   }
 }
 
-/* HTML graphic editor */
+/* HTML graphic editor: live preview, fields, code, settings */
 .modal.gfx-editor {
-  width: min(1180px, calc(100vw - 32px));
-  height: min(760px, calc(100vh - 48px));
+  width: min(1280px, calc(100vw - 32px));
+  height: min(820px, calc(100vh - 40px));
 }
 .gfx-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) 380px;
   gap: 12px;
   flex: 1;
   min-height: 0;
 }
+.gfx-body.code-wide {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+}
+.gfx-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+.gfx-stage {
+  flex: 1;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0b0d;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.gfx-frame {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 0 0 1px var(--line-2);
+}
+.gfx-frame.checker {
+  background: repeating-conic-gradient(#2b2b2b 0% 25%, #1d1d1d 0% 50%) 0 0 / 16px 16px;
+}
+.gfx-frame iframe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 0;
+  transform-origin: 0 0;
+  background: transparent;
+  color-scheme: normal;
+  opacity: 0;
+  pointer-events: none;
+}
+.gfx-frame iframe.on {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.gfx-wait {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+  font-size: 12px;
+}
+.gfx-transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gfx-transport input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.gfx-transport .hint {
+  margin: 0;
+}
+.gfx-time {
+  font: 11.5px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.gfx-console {
+  max-height: 160px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gfx-console:empty {
+  display: none;
+}
+.gfx-console .err {
+  color: var(--danger);
+  font: 11px/1.45 var(--mono);
+  word-break: break-word;
+}
+.gfx-console .warn {
+  color: var(--warn);
+  font-size: 11.5px;
+}
+.gfx-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.gfx-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .gfx-body textarea.code {
+  flex: 1;
   width: 100%;
-  height: 100%;
+  min-height: 240px;
   resize: none;
   font: 12.5px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
   background: #0b0b10;
@@ -908,19 +1020,53 @@ input[type="checkbox"] {
   padding: 10px;
   tab-size: 2;
 }
-.gfx-side {
+.gfx-codebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gfx-codebar .hint {
+  flex: 1;
+  margin: 0;
+}
+.gfx-codebar code {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.gfx-settings {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow: auto;
-  min-height: 0;
 }
-.gfx-side .check {
+.gfx-settings .field {
+  grid-template-columns: 70px 1fr;
+}
+.gfx-settings .check,
+.gfx-scope {
   display: flex;
   gap: 6px;
   align-items: center;
   font-size: 12px;
   color: var(--muted);
+}
+.gfx-scope {
+  margin-right: auto;
+}
+.gfx-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.gfx-empty p {
+  margin: 0;
+}
+.gfx-dirty {
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--warn);
 }
 .gfx-sheet {
   width: 100%;
@@ -934,11 +1080,6 @@ input[type="checkbox"] {
   word-break: break-all;
   margin: 0;
   user-select: text;
-}
-.gfx-side .hint {
-  font-size: 12px;
-  color: var(--faint);
-  line-height: 1.5;
 }
 .bin-thumb.gfx-thumb {
   background-color: #2a2a33;
@@ -954,9 +1095,131 @@ input[type="checkbox"] {
 .bin-item:hover .edit-gfx {
   opacity: 1;
 }
-@media (max-width: 760px) {
-  .gfx-body {
+.bin-thumb .gfx-stale {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  z-index: 1;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  background: rgba(251, 191, 36, 0.9);
+  color: #1a1400;
+}
+
+/* fields of an HTML graphic (editor window and Inspector) */
+.gf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gf-group {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  margin: 8px 0 2px;
+}
+.gf-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 1px 4px;
+  margin: 0 -4px;
+  border-radius: 6px;
+}
+.gf-row > label {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gf-row.set > label {
+  color: var(--text);
+}
+.gf-row.flash {
+  animation: gf-flash 1.4s ease-out;
+}
+@keyframes gf-flash {
+  from {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+}
+.gf-ctl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.gf-ctl > input:not([type="color"]):not([type="checkbox"]):not([type="range"]),
+.gf-ctl > textarea,
+.gf-ctl > select {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.gf-ctl > input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+.gf-ctl > input[type="range"] + .num {
+  flex: 0 0 58px;
+}
+.gf-ctl > input[type="color"],
+.gf-ctl > input[type="checkbox"] {
+  flex: 0 0 auto;
+}
+.gf-ctl textarea {
+  resize: vertical;
+  font: inherit;
+}
+.gf-unit {
+  color: var(--faint);
+  font-size: 11px;
+}
+.gf-brand {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 3px 6px;
+  border: 1px dashed var(--line-2);
+  border-radius: 5px;
+}
+.gf-row .kf:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.gf-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 6px;
+  font-size: 11.5px;
+  color: var(--warn);
+}
+.gf-apply {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.gf-apply .hint {
+  margin: 0 auto 0 0;
+}
+@media (max-width: 860px) {
+  .gfx-body,
+  .gfx-body.code-wide {
     grid-template-columns: 1fr;
+  }
+  .gfx-stage {
+    min-height: 220px;
   }
 }
 

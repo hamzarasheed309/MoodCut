@@ -20,7 +20,7 @@ The design aims for three things:
 | Compositor | **tiny-skia** (vector raster, via resvg) + custom SIMD-friendly pixel loops + **rayon** | Predictable CPU rendering that matches the preview exactly, with no GPU driver issues. The hot paths (affine warps, blends, blurs, LUTs) are parallel and allocation-free. |
 | Text | **rustybuzz** shaping + bundled Inter + system fonts | Correct kerning/ligatures/RTL, per-glyph layout for text animators. |
 | Server | **tokio + axum**: MCP Streamable HTTP, REST, WebSocket | One async server feeds the GUI, MCP clients and tunnels. |
-| GUI | **Preact + signals**, Vite, TypeScript, canvas timeline; embedded with rust-embed | About 58 KB gzipped with every panel and the dock. It opens as an Edge/Chrome `--app` window, so there's no WebView runtime to ship. |
+| GUI | **Preact + signals**, Vite, TypeScript, canvas timeline; embedded with rust-embed | About 58 KB gzipped with every panel and the dock. On Windows it runs in MoodCut's own native window: a WebView2 view (the Edge engine built into Windows 10/11, installed by the installer when missing) hosted by `tao`/`wry` in the same process as the engine (`shell.rs`). The window remembers its size and position, shows the project name in its title bar, asks before quitting with unsaved changes or a running render, and keeps links and stray file drops from navigating away from the editor. If WebView2 can't start, or off Windows, it opens as an Edge/Chrome `--app` window instead. |
 | Protocol | **MCP 2025-06-18** over stdio and Streamable HTTP | Works with Claude Desktop, Claude Code, claude.ai and ChatGPT connectors and other MCP clients. |
 | HTML graphics | **Headless Edge/Chrome** over the DevTools protocol (a small synchronous WebSocket client) | The best layout and animation engine there is, already installed on every Windows PC. No Node, Puppeteer or bundled Chromium. |
 | Web access | **cloudflared** quick tunnel, downloaded on first use | A public HTTPS URL for web AI clients without an account, port forwarding or certificates. |
@@ -35,7 +35,7 @@ The design aims for three things:
    editor if present)──────────────────────────────────►  moodcut gui / serve / connect
                                                           ├─ guard: local origin, or the secret for remote
                                                           ├─ /mcp        JSON-RPC (10 tools, 5 prompts)
-   Editor window (Edge/Chrome --app) ◄── /api, /api/ws ───┤
+   Editor window (native WebView2) ◄── /api, /api/ws ─────┤
                                                           ├─ Engine  (project, undo, autosave, log)
                                                           │   ├─ ops: MoodCut Script → edits
                                                           │   ├─ library: parallel cached probing, sheets, search
@@ -289,6 +289,39 @@ headless with a throwaway profile, and talks to it over the DevTools protocol:
 
 The source is kept with the media, so `id=` re-renders a graphic in place after a fix and `from=` makes variants.
 
+### Editable fields (`src/gfx/fields.rs`)
+
+A graphic is made editable by people the way After Effects' Essential Properties make a template editable: the
+page writes every value someone may change as a `{{name|default}}` placeholder, optionally described by a
+`<script type="application/json" id="mc-fields">` manifest (labels, ranges, choices, groups). A small HTML
+scanner finds the placeholders and where each stands; the field's type follows its default (text, color, number
+with unit, toggle, media) unless the manifest says otherwise. Values set on a graphic (`Gfx.vars`) are data and
+are escaped for their context: HTML text (newlines become `<br>`), attributes, CSS (inside or outside a string)
+and JavaScript (string literal, or a JSON literal in code); what is written inside `{{…|default}}` is the page's
+own code and goes in as is. Scripts read every value, defaults included, as `MC.vars`; `--mc-dur`, `--mc-w`,
+`--mc-h` and `--mc-fps` let a page time its outro from the graphic's length. A page without fields gets its
+visible texts and the colors of its CSS turned into fields whose defaults are the original values, so it renders
+byte for byte the same (the unit tests check this). The AI's reply lists the fields, and `graphic id=m7 vars=…`
+changes them without new html, so people and the AI edit the same values.
+
+The page source is also kept in the project (`Gfx.src`), so undo and redo restore it; after an undo the `.html`
+file is rewritten to match, because a re-render reads the file (edits made to it in another editor win). A
+graphic using the brand variables remembers which brand kit it was rendered with and shows as out of date after
+a brand change until it is re-rendered (`graphic refresh=true`, the Brand panel).
+
+### Live preview
+
+The graphic editor shows the page in an `<iframe sandbox="allow-scripts">` served from `/gfx-preview/<token>/`
+(the page, the bundled fonts, library media and files next to it, with byte ranges). The same virtual clock is
+inlined before the page's scripts, followed by a small bridge (`assets/gfx_preview.js`) the editor drives with
+`postMessage`: an exact seek plays frame by frame up to the time like the renderer, so the preview frame is the
+render's frame; going back reloads the page at that time, unless no script uses the clock (then any time is
+shown directly). Each change rebuilds the page and loads it behind the current one, which stays visible until
+the new one is ready. The preview runs in an opaque origin: the iframe is sandboxed without `allow-same-origin`
+and every preview response carries `Content-Security-Policy: sandbox allow-scripts`, so even when opened outside
+the editor its scripts can't send the editor's cookie or read the API; the unguessable token in its path, handed
+out only to the editor, is its only permission. Nothing renders until Render / Apply.
+
 ## Checking edits (`src/check.rs`)
 
 An AI can't watch its edit, so `check` measures it instead. It walks the timeline for structural problems
@@ -350,7 +383,8 @@ crates/moodcut/src/
   main.rs          CLI (clap)
   engine.rs        project state, transactions, undo, autosave, event log, renders
   library.rs       import at scale, probe cache, selectors, poster sheets, filmstrips, search
-  gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture
+  gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture, page building
+  gfx/fields.rs    editable fields: HTML scanner, placeholders, context escaping, manifest, make-editable
   sfx.rs           procedural sound effects (synthesis, WAV writer)
   check.rs         measured quality check, expectations, fixes
   export.rs        SRT / WebVTT / YouTube chapters / FCP7 XML / CMX3600 EDL
@@ -366,9 +400,11 @@ crates/moodcut/src/
   brand.rs         the logo and the generator for icons, .ico and installer art
   render/proxy.rs  preview proxies: heavy-footage detection, background builds, Toggle Proxies
 assets/gfx_shim.js virtual clock injected into HTML graphics
+assets/gfx_preview.js bridge that lets the editor drive a graphic's live preview
 installer/         Inno Setup script and wizard artwork; install.ps1 / install.sh at the root are the one-liners
 gui/src/           Preact app: dock.ts + Dock (workspaces), panels.tsx (registry), Timeline (canvas), Tools, Monitor
                    (program/source/scopes/gizmo), Inspector (+Align, Character), ColorPanel, AudioPanel, BrandPanel,
-                   Markers, History, LeftPanel (Project, Effects), Console, Modals (Connect AI), Home, GraphicEditor,
-                   CheckPanel; brand.tsx; actions.ts
+                   Markers, History, LeftPanel (Project, Effects), Console, Modals (Connect AI), Home, GraphicEditor
+                   (live preview), GraphicFields (field controls, also in the Inspector), CheckPanel; gfx.ts; brand.tsx;
+                   actions.ts
 ```
