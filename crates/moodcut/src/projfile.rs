@@ -584,6 +584,14 @@ fn relink(p: &mut Project, file: &Path, rels: &[(Option<String>, Option<String>)
                 let beside = Path::new(&m.path).parent().map(|d| d.join(base_name(&g.html))).filter(|b| b.is_file());
                 if let Some(f) = beside.map(|b| b.to_string_lossy().to_string()).or_else(|| find_moved(&g.html, html_rel.as_deref(), &dir, &stem, None)) {
                     g.html = f;
+                } else if !g.src.is_empty() {
+                    // the project keeps the page: put the file back next to its video
+                    if let Some(d) = Path::new(&m.path).parent().filter(|d| d.is_dir()) {
+                        let f = d.join(base_name(&g.html));
+                        if std::fs::write(&f, &g.src).is_ok() {
+                            g.html = f.to_string_lossy().to_string();
+                        }
+                    }
                 }
             }
         }
@@ -729,6 +737,24 @@ mod tests {
         assert!(Path::new(&l.project.media[0].path).is_file());
         assert!(Path::new(&l.project.media[1].path).is_file());
         assert!(Path::new(&l.project.media[1].gfx.as_ref().unwrap().html).is_file());
+    }
+
+    #[test]
+    fn a_lost_graphic_page_comes_back_from_the_project() {
+        let d = scratch("lost-html");
+        let dir = d.join("promo assets").join("graphics");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mov = dir.join("title.mov");
+        std::fs::write(&mov, "v").unwrap();
+        let mut p = Project::new("promo", 1920, 1080, 30.0);
+        let mut g = media("m1", &mov);
+        g.gfx = Some(serde_json::from_value(json!({"html": dir.join("title.html").to_string_lossy(), "w": 1920, "h": 1080, "fps": 30.0, "dur": 3.0, "src": "<h1>{{t|Hi}}</h1>"})).unwrap());
+        p.media.push(g);
+        let file = d.join("promo.mcut");
+        std::fs::write(&file, to_json(&p, Some(&file), &Session::default()).unwrap()).unwrap();
+        let l = load(&file).unwrap();
+        let html = &l.project.media[0].gfx.as_ref().unwrap().html;
+        assert_eq!(std::fs::read_to_string(html).unwrap(), "<h1>{{t|Hi}}</h1>");
     }
 
     #[test]

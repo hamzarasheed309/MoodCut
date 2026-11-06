@@ -188,6 +188,17 @@ pub fn media_line(p: &Project, m: &Media, detail: u8) -> String {
     if !analyses.is_empty() {
         let _ = write!(s, " {{{}}}", analyses.join(","));
     }
+    if let Some(g) = &m.gfx {
+        // what people (and the AI, with vars) can change without rewriting the html
+        let src = if g.src.is_empty() { std::fs::read_to_string(&g.html).unwrap_or_default() } else { g.src.clone() };
+        let names: Vec<String> = crate::gfx::fields::parse(&src).fields.into_iter().map(|f| f.name).collect();
+        if !names.is_empty() {
+            let _ = write!(s, " fields={}", names.join(","));
+        }
+        if g.is_stale(&p.brand) {
+            s.push_str(" old-brand");
+        }
+    }
     if detail >= 2 {
         let _ = write!(s, " path={} {}", m.path, fmt_bytes(m.size));
     }

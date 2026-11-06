@@ -22,7 +22,7 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26
 
 pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphics engine. Workflow: media(import) -> view -> edit (send MANY script lines per call; atomic) -> preview (small contact sheet to check) -> render. \
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
-Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media). \
+Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media); put every text, color and number people may change in a {{name|default}} field so they can edit it in the editor without code. \
 For a complete edit from one request follow help('workflow'); run check (with expect) before every render and fix what it reports. \
 Work like a senior editor and motion designer, never generic: read help('style') and the closest help('recipes') before building; set a brand kit (brand <preset> or the client's font/colors), one look, 2-3 reusable motion moves, and sound design (sfx whoosh/hit/riser); check target=reels|tiktok|shorts|youtube flags hooks, pacing, platform safe zones and craft issues. \
 Premiere/After Effects tools and panels (rolling edits, lift/extract, paste attributes, align, keyframe assistant, cameras, Lumetri, scopes, Essential Sound) are script commands: help('tools'). \
@@ -128,13 +128,14 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "graphic",
-            "description": "Design motion graphics as HTML/CSS/JS (like a web page or artifact) and import them as media. CSS animations/transitions, Web Animations, GSAP/anime.js/Lottie, canvas and SVG render frame-accurately in a headless browser, transparent by default. Returns the media id, layout checks, JS errors and a contact sheet.\n\
-html: full page or body fragment (Inter built in; {{key}} = vars; library media as src='mc://m3'; window.MC = {duration,fps,width,height,vars}). Optional: name, dur (s; 0 = still, captured at `at` s; default 5), size (default comp), fps, alpha (default true), vars, place ('V3 at=2' also adds a clip), id (re-render that graphic in place, e.g. fixed html), from (new variant, e.g. other vars), preview (frames in sheet, default 6). help('graphics') for patterns.",
+            "description": "Design motion graphics as HTML/CSS/JS (like a web page or artifact) and import them as media. CSS animations/transitions, Web Animations, GSAP/anime.js/Lottie, canvas and SVG render frame-accurately in a headless browser, transparent by default. Returns the media id, its editable fields, layout checks, JS errors and a contact sheet.\n\
+html: full page or body fragment (Inter built in; library media as src='mc://m3'; window.MC = {duration,fps,width,height,vars}). FIELDS: people edit graphics in the editor without code, so every visible text, color and number that may change is a {{name|default}} placeholder (<h1>{{title|Big launch}}</h1>, background:{{accent|var(--brand-accent)}}); the type follows the default; time outros from var(--mc-dur). Optional: name, dur (s; 0 = still, captured at `at` s; default 5), size (default comp), fps, alpha (default true), vars (field values; null resets one), place ('V3 at=2' also adds a clip), id (re-render that graphic in place: new html, or just vars), from (new variant, e.g. other vars), replace (clip id to point at the result), editable (default true: html without fields gets its texts and colors made into fields), preview (frames in sheet, default 6). id + source=true returns the current html and fields without rendering (people may have edited them); refresh=true re-renders every graphic rendered with an older brand kit. help('graphics') for patterns.",
             "inputSchema": {"type": "object", "properties": {
                 "html": {"type": "string"}, "name": {"type": "string"}, "dur": {"type": "number"}, "size": {"type": "string"}, "fps": {"type": "number"},
-                "alpha": {"type": "boolean"}, "vars": {"type": "object", "additionalProperties": {"type": ["string", "number"]}},
-                "place": {"type": "string"}, "id": {"type": "string"}, "from": {"type": "string"}, "preview": {"type": "integer", "minimum": 0, "maximum": 12},
-                "at": {"type": "number", "description": "stills: animation time to capture (s)"}
+                "alpha": {"type": "boolean"}, "vars": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean", "null"]}},
+                "place": {"type": "string"}, "id": {"type": "string"}, "from": {"type": "string"}, "replace": {"type": "string"}, "preview": {"type": "integer", "minimum": 0, "maximum": 12},
+                "at": {"type": "number", "description": "stills: animation time to capture (s)"},
+                "editable": {"type": "boolean"}, "source": {"type": "boolean"}, "refresh": {"type": ["boolean", "array"], "items": {"type": "string"}}
             }},
             "annotations": {"title": "HTML motion graphic", "destructiveHint": false, "openWorldHint": true}
         },
@@ -554,6 +555,20 @@ impl Mcp {
     }
 
     fn t_graphic(&self, eng: &Arc<Engine>, a: &Value) -> Value {
+        if a["source"].as_bool() == Some(true) {
+            let Some(id) = s(a, "id") else { return err_result("source=true needs id: the graphic to read") };
+            return match eng.graphic_source(&id) {
+                Ok(t) => text_result(t),
+                Err(e) => err_result(format!("{e:#}")),
+            };
+        }
+        if a["refresh"].as_bool() == Some(true) || a["refresh"].is_array() {
+            let ids = a["refresh"].as_array().map(|x| x.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+            return match eng.refresh_graphics(ids, "mcp") {
+                Ok(t) => text_result(t),
+                Err(e) => err_result(format!("{e:#}")),
+            };
+        }
         let req = graphic_req(a);
         match eng.graphic(req, "mcp") {
             Ok(o) => {
@@ -679,20 +694,22 @@ impl Mcp {
 
 /// Parses `graphic` tool / API arguments.
 pub fn graphic_req(a: &Value) -> crate::gfx::GraphicReq {
-    let vars = a["vars"]
-        .as_object()
-        .map(|o| {
-            o.iter()
-                .map(|(k, v)| {
-                    let vs = match v {
-                        Value::String(x) => x.clone(),
-                        other => other.to_string(),
-                    };
-                    (k.clone(), vs)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut vars = BTreeMap::new();
+    // a field set to null goes back to its default
+    let mut unset: Vec<String> = a["unset"].as_array().map(|x| x.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    if let Some(o) = a["vars"].as_object() {
+        for (k, v) in o {
+            match v {
+                Value::Null => unset.push(k.clone()),
+                Value::String(x) => {
+                    vars.insert(k.clone(), x.clone());
+                }
+                other => {
+                    vars.insert(k.clone(), other.to_string());
+                }
+            }
+        }
+    }
     crate::gfx::GraphicReq {
         html: s(a, "html"),
         name: s(a, "name"),
@@ -701,11 +718,14 @@ pub fn graphic_req(a: &Value) -> crate::gfx::GraphicReq {
         fps: a["fps"].as_f64(),
         alpha: a["alpha"].as_bool(),
         vars,
+        unset,
         id: s(a, "id"),
         from: s(a, "from"),
         place: s(a, "place"),
+        replace: s(a, "replace"),
         preview: a["preview"].as_u64().unwrap_or(6) as usize,
         at: a["at"].as_f64(),
+        editable: a["editable"].as_bool(),
     }
 }
 
@@ -875,9 +895,10 @@ pub fn prompts() -> Vec<Prompt> {
             build: |g| {
                 format!(
                     "Design this motion graphic for my MoodCut edit with the graphic tool: {brief}. Duration {dur} s. \
-                     Read help('graphics') first. Use a polished, modern style with eased entrance and exit animations, keep text in the \
-                     title-safe area, and check the returned contact sheet; fix anything off (overflow, timing, JS errors) with id= and \
-                     render again. {place}",
+                     Read help('graphics') first. Use a polished, modern style with eased entrance and exit animations (the exit timed from \
+                     var(--mc-dur)), keep text in the title-safe area, and make every text and color I may want to change a {{{{name|default}}}} \
+                     field so I can edit it without code. Check the returned contact sheet; fix anything off (overflow, timing, JS errors) \
+                     with id= and render again. {place}",
                     brief = opt(g("brief"), "?"),
                     dur = opt(g("dur"), "4"),
                     place = g("at").map(|t| format!("Place it at {t} s on a track above the video.")).unwrap_or_else(|| "Then place it where it fits best in the edit.".into()),

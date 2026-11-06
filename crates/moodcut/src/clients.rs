@@ -133,6 +133,12 @@ fn installed(c: &Client) -> bool {
 pub fn server_command() -> Result<String> {
     let exe = std::env::current_exe().context("can't find the MoodCut executable")?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    // the windowless launcher (MoodCutApp.exe) has no console to speak MCP over: AI apps use
+    // the console build installed beside it
+    let exe = match (exe.file_name().and_then(|n| n.to_str()), exe.parent()) {
+        (Some(n), Some(dir)) if n.eq_ignore_ascii_case("MoodCutApp.exe") && dir.join("moodcut.exe").is_file() => dir.join("moodcut.exe"),
+        _ => exe,
+    };
     Ok(crate::render::ffmpeg::strip_unc(&exe))
 }
 

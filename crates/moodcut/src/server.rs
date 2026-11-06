@@ -54,9 +54,29 @@ struct AppState {
     wave_slots: tokio::sync::Semaphore,
     /// FFmpeg install from the editor: (running, last status line, error)
     ff_setup: Arc<Mutex<(bool, String, Option<String>)>>,
+    /// Live previews of HTML graphics open in the editor, by their unguessable token.
+    previews: Mutex<HashMap<String, PreviewSession>>,
+}
+
+/// One live preview page (`/gfx-preview/<token>/`) and what it may load.
+struct PreviewSession {
+    page: Arc<String>,
+    dir: std::path::PathBuf,
+    media: Arc<std::collections::BTreeMap<String, std::path::PathBuf>>,
+    touched: std::time::Instant,
 }
 
 type St = Arc<AppState>;
+
+/// The running server's state, so the window can clean up when the program quits.
+static LIVE: std::sync::OnceLock<St> = std::sync::OnceLock::new();
+
+/// Stops what outlives a closed window: a web link (tunnel process) started from the editor.
+pub fn shutdown() {
+    if let Some(st) = LIVE.get() {
+        *st.tunnel.lock() = None;
+    }
+}
 
 pub fn random_token() -> String {
     crate::tunnel::random_token()
@@ -82,7 +102,9 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         thumb_slots: tokio::sync::Semaphore::new(4),
         wave_slots: tokio::sync::Semaphore::new(2),
         ff_setup: Arc::new(Mutex::new((false, String::new(), None))),
+        previews: Mutex::new(HashMap::new()),
     });
+    let _ = LIVE.set(st.clone());
     let app = Router::new()
         .route("/api/ping", get(api_ping))
         .route("/api/state", get(api_state))
@@ -104,7 +126,13 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/ws", get(api_ws))
         .route("/fonts/{name}", get(font_file))
         .route("/api/reveal", post(api_reveal))
+        .route("/api/shell", post(api_shell))
         .route("/api/graphic", get(api_graphic_get).post(api_graphic))
+        .route("/api/graphic/preview", post(api_graphic_preview))
+        .route("/api/graphic/editable", post(api_graphic_editable))
+        .route("/api/graphic/refresh", post(api_graphic_refresh))
+        .route("/gfx-preview/{tok}/", get(gfx_preview_index))
+        .route("/gfx-preview/{tok}/{*rest}", get(gfx_preview_file))
         .route("/api/check", post(api_check))
         .route("/api/scope", get(api_scope))
         .route("/api/history", get(api_history))
@@ -208,6 +236,11 @@ async fn guard(State(st): State<St>, req: Request, next: Next) -> Response {
     };
     if remote && st.token.is_none() && remote_tok.is_none() {
         return (StatusCode::FORBIDDEN, "remote access is off: start it with `moodcut connect` (or Connect AI > web link)").into_response();
+    }
+    // a graphic's live preview runs sandboxed (no origin, no cookies): its unguessable
+    // token in the path is the permission, given out only to the editor by /api/graphic/preview
+    if path.starts_with("/gfx-preview/") && matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+        return next.run(req).await;
     }
     // browsers: only this app's own local pages may call it without a token; MCP
     // also answers allow-listed browser tools on this computer (MCP Inspector). Not
@@ -334,8 +367,25 @@ pub fn free_port(port: u16) -> u16 {
 }
 
 async fn api_ping(State(st): State<St>) -> Response {
-    let path = st.eng.st.read().path.as_ref().map(|p| p.to_string_lossy().to_string());
-    Json(json!({"app": "moodcut", "version": crate::VERSION, "port": st.port, "path": path})).into_response()
+    let (path, name, dirty) = {
+        let s = st.eng.st.read();
+        (s.path.as_ref().map(|p| p.to_string_lossy().to_string()), s.p.name.clone(), s.dirty)
+    };
+    let rendering = st.eng.jobs.lock().iter().filter(|j| j.result.lock().is_none()).count();
+    Json(json!({"app": "moodcut", "version": crate::VERSION, "port": st.port, "path": path, "name": name, "dirty": dirty, "rendering": rendering})).into_response()
+}
+
+/// Window control for a second launch: bring the open editor window to the front. `native` says
+/// whether this process has its own window (a headless server doesn't: the caller opens one).
+async fn api_shell(headers: HeaderMap, Json(a): Json<Value>) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "only from this computer");
+    }
+    let native = match a["action"].as_str() {
+        Some("focus") => crate::shell::focus(),
+        _ => false,
+    };
+    Json(json!({"ok": true, "native": native})).into_response()
 }
 
 /// AI apps on this computer and whether MoodCut is connected to them.
@@ -432,8 +482,20 @@ async fn api_state(State(st): State<St>) -> Response {
         (s.dirty, s.undo.len(), s.redo.len(), s.opened, s.restore)
     };
     let notice = st.eng.notice.lock().clone();
+    // graphics: the page source stays on the server (GET /api/graphic has it); say which are out of date
+    let mut pv = serde_json::to_value(&p).unwrap_or(Value::Null);
+    if let Some(list) = pv.get_mut("media").and_then(|m| m.as_array_mut()) {
+        for (m, media) in list.iter_mut().zip(&p.media) {
+            if let (Some(g), Some(gfx)) = (m.get_mut("gfx").and_then(|g| g.as_object_mut()), &media.gfx) {
+                g.remove("src");
+                if gfx.is_stale(&p.brand) {
+                    g.insert("stale".into(), json!(true));
+                }
+            }
+        }
+    }
     Json(json!({
-        "project": p, "rev": rev, "active": active, "path": path, "dirty": dirty,
+        "project": pv, "rev": rev, "active": active, "path": path, "dirty": dirty,
         "undo": undo, "redo": redo, "ffmpeg": st.eng.ff.version(), "version": crate::VERSION,
         "opened": opened, "restore": restore, "notice": notice
     }))
@@ -952,14 +1014,186 @@ async fn font_file(AxPath(name): AxPath<String>) -> Response {
     ([(header::CONTENT_TYPE, "font/otf"), (header::CACHE_CONTROL, "max-age=31536000")], data).into_response()
 }
 
-/// Source and settings of an HTML graphic, for the editor dialog.
+/// Source, settings and fields of an HTML graphic, for the editor dialog and the inspector.
 async fn api_graphic_get(State(st): State<St>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let Some(id) = q.get("id") else { return err(StatusCode::BAD_REQUEST, "id required") };
-    let (p, ..) = st.eng.snapshot();
-    let Some(m) = p.media(id) else { return err(StatusCode::NOT_FOUND, format!("unknown media {id}")) };
-    let Some(g) = &m.gfx else { return err(StatusCode::BAD_REQUEST, format!("{id} isn't an HTML graphic")) };
-    let html = std::fs::read_to_string(&g.html).unwrap_or_default();
-    Json(json!({"ok": true, "id": m.id, "name": m.name, "html": html, "dur": g.dur, "fps": g.fps, "w": g.w, "h": g.h, "alpha": g.alpha, "vars": g.vars})).into_response()
+    let Some(id) = q.get("id").cloned() else { return err(StatusCode::BAD_REQUEST, "id required") };
+    let eng = st.eng.clone();
+    match blocking(move || eng.graphic_detail(&id)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, format!("{e:#}")),
+    }
+}
+
+/// Builds (or rebuilds) a live preview page of a graphic and returns its URL and fields.
+/// Body: the `graphic` arguments (html, id, vars, unset, size, fps, dur, alpha, at) plus
+/// `token` to update the editor's current preview instead of starting another.
+async fn api_graphic_preview(State(st): State<St>, Json(a): Json<Value>) -> Response {
+    let req = crate::mcp::graphic_req(&a);
+    let tok = a["token"]
+        .as_str()
+        .filter(|t| t.len() >= 16 && t.chars().all(|c| c.is_ascii_alphanumeric()) && st.previews.lock().contains_key(*t))
+        .map(String::from)
+        .unwrap_or_else(random_token);
+    let base = format!("/gfx-preview/{tok}");
+    let eng = st.eng.clone();
+    let b = base.clone();
+    match blocking(move || eng.graphic_preview(&req, &b)).await {
+        Ok(page) => {
+            let mut map = st.previews.lock();
+            // previews live while they're used: drop the idle ones, keep at most 16
+            map.retain(|_, s| s.touched.elapsed() < std::time::Duration::from_secs(3 * 3600));
+            while map.len() >= 16 {
+                let Some(oldest) = map.iter().min_by_key(|(_, s)| s.touched).map(|(k, _)| k.clone()) else { break };
+                map.remove(&oldest);
+            }
+            map.insert(tok.clone(), PreviewSession { page: Arc::new(page.html), dir: page.dir, media: Arc::new(page.media), touched: std::time::Instant::now() });
+            let mut v = page.info;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("ok".into(), json!(true));
+                o.insert("token".into(), json!(tok));
+                o.insert("url".into(), json!(format!("{base}/")));
+            }
+            Json(v).into_response()
+        }
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
+}
+
+/// Turns the texts (and colors) of a page into fields; the result renders the same.
+async fn api_graphic_editable(Json(a): Json<Value>) -> Response {
+    let Some(html) = a["html"].as_str() else { return err(StatusCode::BAD_REQUEST, "html required") };
+    let e = crate::gfx::fields::make_editable(html, a["texts"].as_bool().unwrap_or(true), a["colors"].as_bool().unwrap_or(true));
+    let added: Vec<Value> = e.added.iter().map(|(n, k)| json!({"name": n, "type": k.as_str()})).collect();
+    let mut v = crate::gfx::info_json(&e.src);
+    if let Some(o) = v.as_object_mut() {
+        o.insert("ok".into(), json!(true));
+        o.insert("html".into(), json!(e.src));
+        o.insert("added".into(), json!(added));
+    }
+    Json(v).into_response()
+}
+
+/// Re-renders graphics as one undo step: `ids`, or every one made with an older brand kit.
+async fn api_graphic_refresh(State(st): State<St>, Json(a): Json<Value>) -> Response {
+    let ids: Option<Vec<String>> = a["ids"].as_array().map(|x| x.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+    let eng = st.eng.clone();
+    match blocking(move || eng.refresh_graphics(ids, "gui")).await {
+        Ok(text) => Json(json!({"ok": true, "text": text})).into_response(),
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
+}
+
+/// Headers of everything a live preview loads. `sandbox` keeps the page in an
+/// opaque origin even when opened outside the editor's iframe, so its scripts
+/// can't use the editor's cookie or read the API.
+fn preview_headers(r: &mut Response) {
+    let h = r.headers_mut();
+    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox allow-scripts"));
+    h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+}
+
+fn preview_session(st: &AppState, tok: &str) -> Option<(Arc<String>, std::path::PathBuf, Arc<std::collections::BTreeMap<String, std::path::PathBuf>>)> {
+    let mut map = st.previews.lock();
+    let s = map.get_mut(tok)?;
+    s.touched = std::time::Instant::now();
+    Some((s.page.clone(), s.dir.clone(), s.media.clone()))
+}
+
+async fn gfx_preview_index(State(st): State<St>, AxPath(tok): AxPath<String>) -> Response {
+    let mut r = match preview_session(&st, &tok) {
+        Some((page, ..)) => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], (*page).clone()).into_response(),
+        None => (StatusCode::NOT_FOUND, "this preview has expired: close and reopen the graphic").into_response(),
+    };
+    preview_headers(&mut r);
+    r
+}
+
+/// Fonts, library media and files next to the page, with byte ranges (video seeks).
+async fn gfx_preview_file(State(st): State<St>, AxPath((tok, rest)): AxPath<(String, String)>, headers: HeaderMap) -> Response {
+    let mut r = match preview_session(&st, &tok) {
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+        Some((page, ..)) if rest.is_empty() || rest == "index.html" => ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], (*page).clone()).into_response(),
+        Some((_, dir, media)) => {
+            let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok()).map(String::from);
+            let found = tokio::task::spawn_blocking(move || -> Option<Response> {
+                use crate::gfx::SiteFile;
+                Some(match crate::gfx::site_file(&dir, &media, &rest)? {
+                    SiteFile::Bytes(data, mime) => ranged(data.to_vec(), mime, data.len() as u64, 0, None),
+                    SiteFile::File(f, mime) => read_range(&f, &mime, range.as_deref())?,
+                })
+            })
+            .await
+            .ok()
+            .flatten();
+            found.unwrap_or_else(|| (StatusCode::NOT_FOUND, "not found").into_response())
+        }
+    };
+    preview_headers(&mut r);
+    r
+}
+
+/// The bytes of a `bytes=a-b` range of `len`: (start, end exclusive). Open ranges are
+/// served in chunks so a long video never has to be read at once.
+fn byte_range(range: Option<&str>, len: u64) -> Option<(u64, u64)> {
+    let r = range?.trim().strip_prefix("bytes=")?;
+    let (a, b) = r.split_once('-')?;
+    let (a, b) = (a.trim(), b.trim());
+    let (start, end) = if a.is_empty() {
+        let n: u64 = b.parse().ok()?;
+        (len.saturating_sub(n), len)
+    } else {
+        let s: u64 = a.parse().ok()?;
+        let e = if b.is_empty() { (s + (8 << 20)).min(len) } else { (b.parse::<u64>().ok()? + 1).min(len) };
+        (s, e)
+    };
+    (start < end || (start == 0 && len == 0)).then_some((start, end))
+}
+
+fn ranged(body: Vec<u8>, mime: &str, len: u64, start: u64, range: Option<&str>) -> Response {
+    let mut r = if range.is_some() {
+        let end = start + body.len() as u64;
+        let mut r = (StatusCode::PARTIAL_CONTENT, body).into_response();
+        if let Ok(v) = HeaderValue::from_str(&format!("bytes {start}-{}/{len}", end.saturating_sub(1))) {
+            r.headers_mut().insert(header::CONTENT_RANGE, v);
+        }
+        r
+    } else {
+        body.into_response()
+    };
+    if let Ok(v) = HeaderValue::from_str(mime) {
+        r.headers_mut().insert(header::CONTENT_TYPE, v);
+    }
+    r.headers_mut().insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    r
+}
+
+fn read_range(f: &std::path::Path, mime: &str, range: Option<&str>) -> Option<Response> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(f).ok()?;
+    let len = file.metadata().ok()?.len();
+    match byte_range(range, len) {
+        Some((start, end)) => {
+            file.seek(SeekFrom::Start(start)).ok()?;
+            let mut buf = vec![0u8; (end - start) as usize];
+            file.read_exact(&mut buf).ok()?;
+            Some(ranged(buf, mime, len, start, range))
+        }
+        None if range.is_some() => {
+            let mut r = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+            if let Ok(v) = HeaderValue::from_str(&format!("bytes */{len}")) {
+                r.headers_mut().insert(header::CONTENT_RANGE, v);
+            }
+            Some(r)
+        }
+        None => {
+            let mut buf = Vec::with_capacity(len as usize);
+            file.read_to_end(&mut buf).ok()?;
+            Some(ranged(buf, mime, len, 0, None))
+        }
+    }
 }
 
 /// Renders an HTML graphic (same arguments as the MCP `graphic` tool).
@@ -1319,6 +1553,17 @@ mod tests {
         assert!(c.get("f1").is_none(), "oldest evicted");
         c.clear();
         assert_eq!(c.bytes, 0);
+    }
+
+    #[test]
+    fn preview_byte_ranges() {
+        assert_eq!(byte_range(Some("bytes=0-99"), 1000), Some((0, 100)));
+        assert_eq!(byte_range(Some("bytes=900-"), 1000), Some((900, 1000)));
+        assert_eq!(byte_range(Some("bytes=0-"), 100 << 20), Some((0, 8 << 20)), "open ranges come in chunks");
+        assert_eq!(byte_range(Some("bytes=-100"), 1000), Some((900, 1000)));
+        assert_eq!(byte_range(Some("bytes=0-5000"), 1000), Some((0, 1000)));
+        assert_eq!(byte_range(Some("bytes=2000-"), 1000), None);
+        assert_eq!(byte_range(None, 1000), None);
     }
 
     #[test]

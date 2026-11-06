@@ -160,6 +160,11 @@
       syncAnimations();
       return now;
     },
+    // how many frame callbacks and timers the page has asked for: 0 means every
+    // animation is seeked absolutely, so any time can be shown without playing up to it
+    ticks() {
+      return rafSeq + timerSeq;
+    },
     // bounding box of what actually paints (for the title-safe / clipping
     // checks): text, images, media, canvas, filled/stroked SVG shapes, and
     // boxes with a background, border, shadow or outline. Layout wrappers

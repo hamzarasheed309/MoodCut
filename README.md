@@ -66,8 +66,12 @@ easing, too many transition types, silent titles, inconsistent type and missing 
 HTML/CSS/JS, the same way Claude builds web artifacts. MoodCut renders it frame by frame in headless Edge/Chrome
 on a virtual clock, so CSS animations and transitions, Web Animations, GSAP, anime.js, Lottie, canvas, SVG and
 `<video>` all land on exact frames. The result is a transparent video (or a still) added to the media library
-and, optionally, placed on the timeline. Templates take `{{name|default}}` variables, so one design makes many
-variants. See [examples/graphics](examples/graphics).
+and, optionally, placed on the timeline. Every text, color and number the page writes as `{{name|default}}` is a
+**field**: the Inspector and the graphic editor show it as a plain control (text box, color picker, slider, toggle,
+media picker), so anyone can change a name, color or size without touching code, and the AI changes the same fields
+with `vars` instead of rewriting the page. The graphic editor previews the page live on the same frame-exact clock
+as the render (scrub, play, click a text to jump to its field) and renders only when you apply. A page written
+without fields gets its texts and colors turned into fields automatically. See [examples/graphics](examples/graphics).
 
 **Large libraries**: import whole drives of footage at once (parallel, cached probing; about 150 files in 2–3 s),
 skip unreadable files with a report, tag and annotate media, filter by kind, duration, orientation, tags or
@@ -97,7 +101,9 @@ Resolve open with the original media, and a CMX3600 EDL.
 (also in [`release/windows-x64`](release/windows-x64/)) and run it. It installs for your user with no admin prompt and,
 in the same few clicks, can:
 
-- add Start menu and desktop shortcuts, and put `moodcut` on your `PATH` so AI apps and terminals can start it,
+- add Start menu and desktop shortcuts (MoodCut opens as its own Windows app, with its own window, icon and taskbar
+  button, like Premiere Pro: no browser, no console window) and put `moodcut` on your `PATH` so AI apps and terminals
+  can start it,
 - open `.mcut` project files with MoodCut,
 - download a portable **FFmpeg** with a progress bar (about 100 MB, kept next to MoodCut),
 - **connect the AI apps it finds**: Claude Desktop (including the Microsoft Store build), Claude Code, Cursor, VS Code,
@@ -111,8 +117,10 @@ Uninstalling (Settings → Apps) reverses all of it, including the AI apps' sett
 irm https://raw.githubusercontent.com/hamzarasheed309/MoodCut/HEAD/install.ps1 | iex
 ```
 
-**Portable:** [`moodcut.exe`](release/windows-x64/) alone also works: put it anywhere and double-click it; it offers to
-install FFmpeg into `%APPDATA%\MoodCut` on first run. Windows may show *"Windows protected your PC"* because the app
+**Portable:** [`MoodCutApp.exe`](release/windows-x64/) (the editor) and `moodcut.exe` (the command line and what AI apps
+start) work from any folder: double-click `MoodCutApp.exe`; it offers to install FFmpeg into `%APPDATA%\MoodCut` on
+first run. Both are the same program, so `moodcut.exe` alone also opens the editor (from a terminal, or with a console
+window flashing up when double-clicked). Windows may show *"Windows protected your PC"* because the app
 isn't code-signed yet: **More info → Run anyway**.
 
 When MoodCut opens you land on **Home**: start a YouTube, Reel/TikTok, square or 4K project, reopen a recent one, and
@@ -354,9 +362,12 @@ content box 115,830-281,957
 ```
 
 The reply includes a sheet of frames so the AI sees its design, plus warnings for text outside title-safe,
-content clipped by the frame, an empty render, JavaScript errors and unset `{{variables}}`. `id=` re-renders a
-graphic in place after a fix (every clip using it updates); `from=` makes a variant with other variables.
-Library media can be used inside the page as `src="mc://m3"`. `help('graphics')` has the patterns.
+content clipped by the frame, an empty render, JavaScript errors and unset `{{fields}}`, and lists the graphic's
+fields. `id=` re-renders a graphic in place after a fix (every clip using it updates); `vars` alone changes field
+values without new html (`null` resets one); `from=` makes a variant, and `replace=c12` puts it on one clip only.
+`source=true` reads back the current html and fields after people edited them, and `refresh=true` re-renders the
+graphics made with an older brand kit. Library media can be used inside the page as `src="mc://m3"`.
+`help('graphics')` has the patterns.
 
 ### Checking the work
 

@@ -843,19 +843,25 @@ graphic tool: html -> rendered video with alpha (or a still, dur=0) in the libra
 Timing runs on a virtual clock, so animate any way you like and every frame is exact:
  CSS @keyframes/transitions (animation-delay to sequence; fill-mode both to hold), el.animate() (Web Animations), requestAnimationFrame + performance.now(), setTimeout/setInterval,
  GSAP / anime.js / Lottie / three.js / canvas / SVG <animate> (load from a CDN or files next to the html).
- Finish (or loop) within dur; for an outro start it at dur-0.6s.
+ Finish (or loop) within dur. Time the outro from the end so changing the length keeps it: animation: out .5s calc(var(--mc-dur) - .6s) forwards (--mc-dur = the graphic's seconds; --mc-w/--mc-h = frame size; MC.duration in JS).
 Hooks: MC.onFrame = t => {...} runs each frame (t seconds); MC.time = now; MC.ready = a promise awaited before frame 0; MC.duration/fps/width/height/vars.
-Values: {{name}} or {{name|default}} from vars (escaped; unset ones render empty and are reported). Variant: graphic from=m7 vars={...}. Fix/redo in place: graphic id=m7 html=... (every clip using it updates). Stills: dur=0 at=2 captures the design at 2s.
+FIELDS (required): people edit graphics in the editor without touching code, through fields. Every visible text, color, size or choice someone may want to change is a {{name|default}} placeholder; the default is what renders until it's changed:
+ <h1>{{title|Big launch}}</h1>  background: {{accent|var(--brand-accent)}};  bottom: {{lift|12}}%;  <img src='{{logo|mc://m3}}'>
+ The type follows the default: text (a newline or <br> = multi-line), color (#hex, rgb(), var(--brand-*) follows the brand kit), number with its unit, true/false toggle, mc://m3 media.
+ Labels, ranges and choices (optional): <script type='application/json' id='mc-fields'>{"lift":{"label":"Height","min":4,"max":40},"style":{"type":"select","options":["bar","box"]}}</script> (a field only scripts read needs a "default" here).
+ Values are escaped for where they stand (HTML, attributes, CSS, JS strings); in scripts read MC.vars.name (strings, defaults included). Name fields for what they are (title, speaker, accent), not text1.
+ The reply lists the fields. A page without any gets its visible texts and colors made into fields automatically (editable=false keeps the html as written).
+Change values later without rewriting: graphic id=m7 vars={title:'New title'} (vars={title:null} resets to the default; every clip using m7 updates). Variant: graphic from=m7 vars={...}; for one clip only add replace=c12. Fix the design in place: graphic id=m7 html=... Read back what people changed: graphic id=m7 source=true. Brand kit changed: graphic refresh=true. Stills: dur=0 at=2 captures the design at 2s.
 Media: <img src='mc://m3'>, <video src='mc://m4' muted> (seeked frame-accurately) use library media.
 Fonts: Inter 100-900 built in; Google Fonts <link> works when online; system fonts.
 Layout: size with %, vw/vh so it scales; keep text inside the 5% title-safe margin. The reply reports the content box and warns on overflow, empty frames and JS errors; check the contact sheet.
 Use: place='V3 at=2' or later `add m7 V3 at=2`; it is a normal clip (trim, move, fade, effects, blend).
-Example lower third (vars name, role):
-<style>.l3{position:absolute;left:6%;bottom:12%;font:800 4.4vh Inter;color:#fff}
-.bar{height:.6vh;margin:.8vh 0;background:#ff3b6b;transform-origin:left;animation:grow .6s cubic-bezier(.2,.8,.2,1) both}
+Example lower third (fields name, role, accent):
+<style>.l3{position:absolute;left:6%;bottom:12%;font:800 4.4vh Inter;color:#fff;animation:out .4s calc(var(--mc-dur) - .5s) ease-in forwards}
+.bar{height:.6vh;margin:.8vh 0;background:{{accent|var(--brand-accent)}};transform-origin:left;animation:grow .6s cubic-bezier(.2,.8,.2,1) both}
 .name{animation:up .6s .1s both}.role{font:500 2.6vh Inter;opacity:.85;animation:up .6s .25s both}
-@keyframes grow{from{transform:scaleX(0)}}@keyframes up{from{opacity:0;transform:translateY(40%)}}</style>
-<div class=l3><div class=name>{{name}}</div><div class=bar></div><div class=role>{{role}}</div></div>
+@keyframes grow{from{transform:scaleX(0)}}@keyframes up{from{opacity:0;transform:translateY(40%)}}@keyframes out{to{opacity:0;transform:translateY(-20%)}}</style>
+<div class=l3><div class=name>{{name|Jane Doe}}</div><div class=bar></div><div class=role>{{role|Founder}}</div></div>
 ```
 
 ## examples: complete example scripts

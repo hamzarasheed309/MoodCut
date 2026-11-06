@@ -1,19 +1,23 @@
-<!-- Lower third. Variables: name, role, accent.
+<!-- Lower third. Fields: name, role, accent (edit them in MoodCut's graphic editor, or with --var).
+     The exit is timed from var(--mc-dur), so it follows the graphic's length.
      moodcut graphic examples/graphics/lower-third.html --dur 5 --var name="Jane Doe" --var role="Founder" -->
 <style>
   :root { --accent: {{accent|#ff3b6b}}; }
   .l3 { position: absolute; left: 6%; bottom: 12%; color: #fff; font-family: Inter; }
-  .name { font: 800 4.6vh Inter; letter-spacing: -0.01em; animation: up .6s .1s cubic-bezier(.2,.8,.2,1) both, out .4s 4.4s ease-in forwards; }
-  .bar { height: .6vh; width: 100%; margin: .9vh 0; background: var(--accent, #ff3b6b); transform-origin: left;
-         animation: grow .7s cubic-bezier(.2,.8,.2,1) both, shrink .4s 4.5s ease-in forwards; }
-  .role { font: 500 2.6vh Inter; opacity: .85; animation: up .6s .25s cubic-bezier(.2,.8,.2,1) both, out .4s 4.35s ease-in forwards; }
+  .name { font: 800 4.6vh Inter; letter-spacing: -0.01em; animation: up .6s .1s cubic-bezier(.2,.8,.2,1) both, out .4s calc(var(--mc-dur) - .6s) ease-in forwards; }
+  .bar { height: .6vh; width: 100%; margin: .9vh 0; background: var(--accent); transform-origin: left;
+         animation: grow .7s cubic-bezier(.2,.8,.2,1) both, shrink .4s calc(var(--mc-dur) - .5s) ease-in forwards; }
+  .role { font: 500 2.6vh Inter; opacity: .85; animation: up .6s .25s cubic-bezier(.2,.8,.2,1) both, out .4s calc(var(--mc-dur) - .65s) ease-in forwards; }
   @keyframes grow { from { transform: scaleX(0) } }
   @keyframes shrink { to { transform: scaleX(0) } }
   @keyframes up { from { opacity: 0; transform: translateY(40%) } }
   @keyframes out { to { opacity: 0; transform: translateY(-30%) } }
 </style>
 <div class="l3">
-  <div class="name">{{name}}</div>
+  <div class="name">{{name|Jane Doe}}</div>
   <div class="bar"></div>
-  <div class="role">{{role}}</div>
+  <div class="role">{{role|Founder}}</div>
 </div>
+<script type="application/json" id="mc-fields">
+{ "name": { "label": "Name" }, "role": { "label": "Role or title" }, "accent": { "label": "Bar color" } }
+</script>

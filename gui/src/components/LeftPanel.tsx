@@ -32,9 +32,14 @@ function MediaCard({ m }: { m: Media }) {
         <span class="kind">{m.gfx ? "html" : m.kind}</span>
         <ProxyBadge id={m.id} />
         {m.gfx && (
-          <button class="btn sm edit-gfx" title="Edit the HTML and re-render" onClick={(e) => (e.stopPropagation(), (graphicEditor.value = { id: m.id }))}>
+          <button class="btn sm edit-gfx" title="Edit its fields and code with a live preview" onClick={(e) => (e.stopPropagation(), (graphicEditor.value = { id: m.id }))}>
             Edit
           </button>
+        )}
+        {m.gfx?.stale && (
+          <span class="gfx-stale" title="Rendered with older brand colors: render it again (Brand panel, or Edit > Render)">
+            old brand
+          </span>
         )}
         {m.kind === "audio" && <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "26px", opacity: 0.6 }}>♫</span>}
         {m.dur > 0 && <span class="dur">{m.dur >= 60 ? `${Math.floor(m.dur / 60)}:${String(Math.round(m.dur % 60)).padStart(2, "0")}` : `${fmtNum(m.dur, 1)}s`}</span>}

@@ -40,8 +40,8 @@ export const aiPulse = signal(0);
 export const connected = signal(false);
 export const showRender = signal(false);
 export const showCheck = signal(false);
-/** HTML graphic editor: null = closed, {} = new graphic, {id} = edit that graphic. */
-export const graphicEditor = signal<null | { id?: string }>(null);
+/** HTML graphic editor: null = closed, {} = new graphic, {id} = edit that graphic, `item` = opened from that clip. */
+export const graphicEditor = signal<null | { id?: string; item?: string }>(null);
 /** Preview proxies (Premiere's Toggle Proxies): status per media and the on/off switch. */
 export type ProxyState = { enabled: boolean; mode: string; summary: string; media: Record<string, string>; busy: boolean };
 export const proxyState = signal<ProxyState | null>(null);
@@ -275,6 +275,12 @@ function sendUi() {
     socket.send(JSON.stringify({ kind: "ui", ui: { selection: selection.value, playhead: +playhead.value.toFixed(4), comp: activeId.value } }));
   }, 150);
 }
+
+/** The window's title bar (the native editor window shows it): "Name * - MoodCut" while there are unsaved changes. */
+effect(() => {
+  const name = project.value?.name;
+  document.title = name ? `${name}${dirty.value ? " *" : ""} - MoodCut` : "MoodCut";
+});
 
 effect(() => {
   void selection.value;

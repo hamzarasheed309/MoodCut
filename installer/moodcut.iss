@@ -20,9 +20,15 @@
 #endif
 #define AppPublisher "MoodCut"
 #define AppURL "https://github.com/hamzarasheed309/MoodCut"
+; moodcut.exe is the command line (terminals, scripts, AI apps); MoodCutApp.exe is the same
+; program as a windowless Windows app: what the Start menu, the desktop and .mcut files open
 #define AppExe "moodcut.exe"
+#define GuiExe "MoodCutApp.exe"
 #ifndef SourceExe
   #define SourceExe "..\target\release\moodcut.exe"
+#endif
+#ifndef SourceGuiExe
+  #define SourceGuiExe "..\target\release\MoodCutApp.exe"
 #endif
 
 [Setup]
@@ -49,7 +55,7 @@ MinVersion=10.0.17134
 OutputDir=..\dist
 OutputBaseFilename=MoodCut-Setup-x64
 SetupIconFile=..\crates\moodcut\assets\moodcut.ico
-UninstallDisplayIcon={app}\{#AppExe}
+UninstallDisplayIcon={app}\{#GuiExe}
 UninstallDisplayName={#AppName}
 WizardStyle=modern
 WizardImageFile=wizard.bmp,wizard-2x.bmp
@@ -81,13 +87,13 @@ Name: "assoc"; Description: "Open .&mcut project files with MoodCut"; GroupDescr
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceGuiExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
-; started minimized so the console window that hosts the command line never flashes up
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "The AI-native video editor"; Flags: runminimized
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "The AI-native video editor"; Flags: runminimized; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#GuiExe}"; Comment: "The AI-native video editor"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#GuiExe}"; Comment: "The AI-native video editor"; Tasks: desktopicon
 
 [Registry]
 ; Win+R "moodcut" works even without PATH
@@ -95,11 +101,11 @@ Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#AppExe
 Root: HKA; Subkey: "Software\Classes\.mcut"; ValueType: string; ValueName: ""; ValueData: "MoodCut.Project"; Flags: uninsdeletevalue; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\.mcut\OpenWithProgids"; ValueType: string; ValueName: "MoodCut.Project"; ValueData: ""; Flags: uninsdeletevalue; Tasks: assoc
 Root: HKA; Subkey: "Software\Classes\MoodCut.Project"; ValueType: string; ValueName: ""; ValueData: "MoodCut Project"; Flags: uninsdeletekey; Tasks: assoc
-Root: HKA; Subkey: "Software\Classes\MoodCut.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#AppExe},0"; Tasks: assoc
-Root: HKA; Subkey: "Software\Classes\MoodCut.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExe}"" gui ""%1"""; Tasks: assoc
+Root: HKA; Subkey: "Software\Classes\MoodCut.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#GuiExe},0"; Tasks: assoc
+Root: HKA; Subkey: "Software\Classes\MoodCut.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#GuiExe}"" gui ""%1"""; Tasks: assoc
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "Open MoodCut now"; Flags: nowait postinstall skipifsilent runminimized
+Filename: "{app}\{#GuiExe}"; Description: "Open MoodCut now"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; take MoodCut out of the AI apps' settings so they don't point at a removed program: this
@@ -114,6 +120,8 @@ Type: filesandordirs; Name: "{app}\ffmpeg"
 const
   FFmpegUrl1 = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip';
   FFmpegUrl2 = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
+  WebView2Url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+  WebView2Key = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   UserEnvKey = 'Environment';
   SystemEnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
 
@@ -150,6 +158,39 @@ begin
   if P = 0 then exit;
   Delete(S, P, Length(Dir) + 1);
   RegWriteExpandStringValue(EnvRoot, EnvKey, 'Path', Copy(S, 2, Length(S) - 2));
+end;
+
+{ ---------- WebView2 (the editor window) ---------- }
+
+{ Windows 11 and up-to-date Windows 10 have it already; older PCs get Microsoft's small
+  Evergreen installer. Without it MoodCut still opens, in an Edge/Chrome app window. }
+function WebView2Installed: Boolean;
+var
+  V: String;
+begin
+  Result := False;
+  if RegQueryStringValue(HKLM32, WebView2Key, 'pv', V) or RegQueryStringValue(HKCU32, WebView2Key, 'pv', V) then
+    Result := (V <> '') and (V <> '0.0.0.0');
+end;
+
+function OnQuietProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  Result := True;
+end;
+
+procedure InstallWebView2;
+var
+  Code: Integer;
+begin
+  if WebView2Installed then exit;
+  WizardForm.StatusLabel.Caption := 'Installing the Microsoft WebView2 runtime...';
+  try
+    DownloadTemporaryFile(WebView2Url, 'webview2-setup.exe', '', @OnQuietProgress);
+    if not Exec(ExpandConstant('{tmp}\webview2-setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+    Log(Format('WebView2 setup -> %d', [Code]));
+  except
+    Log('WebView2 download failed: ' + GetExceptionMessage);
+  end;
 end;
 
 { ---------- FFmpeg ---------- }
@@ -222,6 +263,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    InstallWebView2;
     if WizardIsTaskSelected('addtopath') then AddToPath(ExpandConstant('{app}'));
     if WizardIsTaskSelected('ffmpeg') then InstallFFmpeg;
     if WizardIsTaskSelected('connectai') then RunMoodCut('install-ai --quiet', 'Connecting your AI apps...', True);
@@ -236,6 +278,8 @@ begin
   DelTree(Data + '\ffmpeg', True, True, True);
   DelTree(Data + '\ffmpeg-download', True, True, True);
   DelTree(Data + '\bin', True, True, True);
+  DelTree(Data + '\webview2', True, True, True);
+  DeleteFile(Data + '\window.json');
   DeleteFile(Data + '\settings.json');
   DeleteFile(Data + '\instance.json');
   DeleteFile(Data + '\remote-token');

@@ -427,6 +427,7 @@ impl<'a> Exec<'a> {
             if matches!(f.as_str(), "clear" | "none" | "reset") {
                 self.p.brand = Brand::default();
                 self.note("~brand cleared");
+                self.note_stale_graphics();
                 return Ok(());
             }
             let (_, _, v) = BRAND_PRESETS.iter().find(|p| p.0 == f).ok_or_else(|| anyhow!("unknown brand preset '{first}' ({})", BRAND_PRESETS.iter().map(|p| p.0).collect::<Vec<_>>().join(" ")))?;
@@ -454,7 +455,22 @@ impl<'a> Exec<'a> {
         self.p.brand = b;
         let s = brand_line(&self.p.brand);
         self.note(format!("~brand {s}"));
+        self.note_stale_graphics();
         Ok(())
+    }
+
+    /// HTML graphics are rendered videos: they keep the brand colors they were made with.
+    fn note_stale_graphics(&mut self) {
+        let stale: Vec<String> = self.p.media.iter().filter(|m| m.gfx.as_ref().is_some_and(|g| g.is_stale(&self.p.brand))).map(|m| m.id.clone()).collect();
+        if !stale.is_empty() {
+            let n = stale.len();
+            self.note(format!(
+                "{n} HTML graphic{} ({}) still {} the old brand colors: re-render with the graphic tool's refresh=true (or the Brand panel)",
+                if n == 1 { "" } else { "s" },
+                stale.join(" "),
+                if n == 1 { "has" } else { "have" }
+            ));
+        }
     }
 
     /// Brand defaults for a text layer: font, weight and color unless given.

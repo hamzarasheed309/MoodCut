@@ -93,7 +93,21 @@ export interface Media {
   has_video: boolean;
   has_audio: boolean;
   alpha?: boolean;
-  gfx?: { html: string; w: number; h: number; fps: number; dur: number; alpha: boolean; vars?: Record<string, string> };
+  /** a rendered HTML graphic (its source is fetched with GET /api/graphic) */
+  gfx?: {
+    html: string;
+    w: number;
+    h: number;
+    fps: number;
+    dur: number;
+    alpha: boolean;
+    vars?: Record<string, string>;
+    /** stills: the animation time captured */
+    at?: number;
+    brand?: string;
+    /** rendered with an older brand kit */
+    stale?: boolean;
+  };
   tags?: string[];
   note?: string;
 }
