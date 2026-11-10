@@ -29,7 +29,9 @@ Windows may show *"Windows protected your PC"* because the files aren't code-sig
 anyway** (once).
 
 Requirements: Windows 10 (1803) or 11, 64-bit, and the Microsoft WebView2 runtime (preinstalled on Windows 11; the
-installer adds it on Windows 10 if missing; without it MoodCut opens in an Edge or Chrome window). Everything MoodCut stores (settings,
+installer adds it on Windows 10 if missing). The editor always runs in MoodCut's own native app window; if WebView2
+is unavailable, MoodCut displays a setup error instead of opening a browser. The frontend, engine, and HTTP MCP
+endpoint start together in the same app process. Everything MoodCut stores (settings,
 proxies, caches, a portable FFmpeg when installed from the editor) lives in `%APPDATA%\MoodCut`; projects live wherever
 you save them.
 

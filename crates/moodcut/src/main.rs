@@ -295,25 +295,28 @@ fn parse_range(r: &str) -> Result<(f64, f64)> {
 
 /// The editor window onto the server at `port`: MoodCut's own native window where there is one
 /// (Windows), which ends the process when it is closed; else a browser app window.
-fn show_window(port: u16) {
+fn show_window(port: u16) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}");
     let e = shell::run(&url, port);
     if cfg!(windows) {
-        eprintln!("moodcut: couldn't open the native window ({e:#}); using a browser window instead");
+        shell::report_start_error(&format!("MoodCut couldn't open its Windows app window.\n\n{e:#}\n\nInstall or repair the Microsoft Edge WebView2 Runtime, then try again."));
+        return Err(e.context("couldn't open the native MoodCut window"));
     }
     server::open_window(&url);
+    Ok(())
 }
 
 /// A second launch: bring the editor that is already open to the front. A server without a
 /// window of its own (started by an AI app or `moodcut serve`) gets one here.
-fn show_editor(port: u16) {
+fn show_editor(port: u16) -> Result<()> {
     shell::allow_foreground();
     let native = server::local_request(port, "POST", "/api/shell", Some(r#"{"action":"focus"}"#), 1500)
         .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(&body).ok())
         .is_some_and(|v| v["native"] == true);
     if !native {
-        show_window(port);
+        show_window(port)?;
     }
+    Ok(())
 }
 
 fn real_main() -> Result<()> {
@@ -327,7 +330,7 @@ fn real_main() -> Result<()> {
                     let abs = std::fs::canonicalize(path).map(|a| render::ffmpeg::strip_unc(&a)).unwrap_or_else(|_| path.clone());
                     server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": abs, "source": "launch"}).to_string()), 3000);
                 }
-                show_editor(p);
+                show_editor(p)?;
                 return Ok(());
             }
             let port = server::free_port(port);
@@ -373,7 +376,7 @@ fn real_main() -> Result<()> {
                             if let Some(path) = &project_path {
                                 server::local_request(p, "POST", "/api/project", Some(&serde_json::json!({"action": "open", "path": path, "source": "launch"}).to_string()), 3000);
                             }
-                            show_editor(p);
+                            show_editor(p)?;
                             return Ok(());
                         }
                     }
@@ -381,7 +384,7 @@ fn real_main() -> Result<()> {
                 return r;
             }
             // closing the window quits MoodCut, like any desktop editor
-            show_window(port);
+            show_window(port)?;
             rx.recv().unwrap_or(Ok(()))
         }
         Cmd::Serve { port, host, token, public, allow, project } => {

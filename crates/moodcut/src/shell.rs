@@ -5,10 +5,10 @@
 //! button and one title bar, like Premiere Pro, not a tab in a browser. It remembers its size
 //! and position, shows the project name in the title bar, asks before quitting with unsaved
 //! changes or a running render, and keeps links and stray drops from navigating away from the
-//! editor. If WebView2 can't start, the caller falls back to a browser app window.
+//! editor. The packaged Windows app requires WebView2 and never opens the editor in a browser.
 
 #[cfg(windows)]
-pub use imp::{allow_foreground, focus, run};
+pub use imp::{allow_foreground, focus, report_start_error, run};
 
 /// Not Windows: there is no native window, so the caller opens a browser app window.
 #[cfg(not(windows))]
@@ -23,6 +23,9 @@ pub fn focus() -> bool {
 
 #[cfg(not(windows))]
 pub fn allow_foreground() {}
+
+#[cfg(not(windows))]
+pub fn report_start_error(_text: &str) {}
 
 #[cfg(windows)]
 mod imp {
@@ -66,6 +69,12 @@ mod imp {
         unsafe {
             AllowSetForegroundWindow(ASFW_ANY);
         }
+    }
+
+    /// Shows startup failures to users of the windowless GUI-subsystem executable.
+    pub fn report_start_error(text: &str) {
+        let (title, body) = (wide("MoodCut"), wide(text));
+        unsafe { MessageBoxW(std::ptr::null_mut(), body.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND) };
     }
 
     /// Window geometry that survives restarts.
