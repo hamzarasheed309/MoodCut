@@ -797,7 +797,7 @@ Examples: rot 'time*90' | pos 'wiggle(3,20)' | scale 'value*(1+0.05*sin(time*6))
 ## render: export presets
 
 ```text
-render tool: preset=<name> [out=path] [range=a-b] [scale=0.5] [hw=auto|nvenc|qsv|amf] [wait=true]. Output defaults to <Videos>/MoodCut Renders. Resolution = comp size × scale.
+render tool: preset=<name> [out=path] [range=a-b] [scale=0.5] [hw=auto (default: the best GPU)|off (CPU)|nvenc|qsv|amf] [wait=true]. Output defaults to <Videos>/MoodCut Renders. Resolution = comp size × scale.
  mp4: H.264 MP4, high quality (default)
  youtube: H.264 MP4 tuned for YouTube upload
  social: H.264 MP4 for TikTok/Reels/Shorts (aliases: tiktok reels shorts instagram)
