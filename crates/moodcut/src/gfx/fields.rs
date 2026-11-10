@@ -1378,7 +1378,7 @@ mod tests {
         assert!(h.contains(r#"content:"It\'s \"x\" \3c b>\a ok""#), "{h}");
         assert!(h.contains("color:redbodyx}"), "{h}");
         assert!(h.contains(r#"const a='It\'s \"x\" \x3cb>\nok'"#), "{h}");
-        assert!(h.contains(r#"b="It's \"x\" <b>\nok""#), "{h}");
+        assert!(h.contains(r#"b="It's \"x\" \u003cb>\nok""#), "{h}");
         assert!(h.contains("n=2.5;"), "{h}");
         assert!(h.contains("if(x){{y}}"), "unknown braces in scripts stay: {h}");
         assert!(f.missing.is_empty(), "{:?}", f.missing);
