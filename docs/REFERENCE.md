@@ -268,7 +268,7 @@ PROPERTIES & MOTION
 LOOK
  fx <ids> <effect> [params]   fx <id.f1> param=v | del | on | off | up | down   fx <id> clear
  afx <id|A1|master> <audioEffect> [params]   afx <id.a1|A1.a1|master.a1> param=v | del | on | off | up | down   afx <id|A1|master> clear
- color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 | color <ids> none   lut <ids> file.cube [amount]
+ color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 mask=m1 mix=.8 | color <ids> none   lut <ids> file='path.cube' [amount=1] [mask=m1] [mix=1]
  mask <id> <rect|ellipse|path|polygon|star> [x y w h feather expand invert mode]   mask <id.m1> feather=60 | del
  tr <a> <b> <kind> [dur]   tr <id> in|out <kind> [dur]   tr V1 dissolve 0.4 (all cuts)   tr <a> <b> none
  fade <ids> [in=0.5] [out=1] [video|audio]
@@ -309,7 +309,7 @@ ALIGN (After Effects Align panel)
  boxes are measured from the rendered layer (text, shapes, media, parenting, 3D); position keyframes move together.
 LAYERS null [at dur] [children=<ids>] | camera [move=pushin|pullout|truck|pedestal|orbit|drift|shake] [layers=<ids>] (help 3d) | set <id> blend=<mode> | matte | precomp
 COLOR (Lumetri Color panel; help color)
- basic correction: color <ids> exposure= contrast= highlights= shadows= whites= blacks= temp= tint= sat= vibrance=   creative: color <ids> <look> + fade= stint= htint=
+ basic correction: color <ids> exposure= contrast= pivot= highlights= shadows= whites= blacks= temp= tint= sat= vibrance= mask=m1 mix=.8   creative: color <ids> <look> + fade= stint= htint=   LUT: lut <ids> file='path.cube' amount=.8 mask=m1 (supports 1D/3D .cube)
  curves: fx <id> curves master='0,0 .25,.2 .75,.85 1,1' | fx <id> huecurves hueSat='0.33,-0.6' lumaSat='0.05,-1'
  color wheels: fx <id> colorwheels shadows=#2a6cff40 highlights=#ff9a4440 midtonesL=5   HSL secondary: fx <id> secondary hue=120 hueRange=25 sat=0.6
  vignette: fx <id> vignette   match a grade: paste <graded> <others> color   scopes: preview scope=all (help scopes)
@@ -430,7 +430,7 @@ After Effects / Premiere names work as aliases (gaussian blur, keylight, fractal
  lut (aka lut3d cube): Apply a .cube 3D LUT. file='' amount=1
  posterize: Reduce color levels. levels=6
  threshold: Black/white threshold. level=0.5
- colorwheels (aka wheels liftgammagain colorbalance threeway): Lumetri color wheels: tint shadows / midtones / highlights (color alpha = strength) and shift their brightness. shadows=none midtones=none highlights=none shadowsL=0 midtonesL=0 highlightsL=0
+ colorwheels (aka wheels liftgammagain colorbalance threeway): Primary color wheels: tint lift / gamma / gain / offset and shift their brightness. shadows=none midtones=none highlights=none offset=none shadowsL=0 midtonesL=0 highlightsL=0 offsetL=0 mask= mix=1
  channelmixer (aka mixer channels): Channel mixer: each output channel as % of the input red, green and blue. rr=100 rg=0 rb=0 gr=0 gg=100 gb=0 br=0 bg=0 bb=100 mono=false
  leavecolor (aka colorpass keepcolor colorsplash): Leave color: keep one color, desaturate everything else. color=#e02020 tolerance=0.1 soft=0.08 amount=1
  changecolor (aka changetocolor colorreplace replacecolor): Change one color to another. from=#e02020 to=#2060ff tolerance=0.1 soft=0.08 mode=hue amount=1

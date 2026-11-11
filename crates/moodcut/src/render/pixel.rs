@@ -62,6 +62,31 @@ impl LayerBuf {
     }
 }
 
+/// Blends a color effect's result over its input using an optional grayscale
+/// mask and an overall effect mix. Pixels are premultiplied RGBA.
+pub fn mix_masked(pm: &mut Pixmap, before: &Pixmap, mask: Option<&[u8]>, amount: f32) {
+    let amount = amount.clamp(0.0, 1.0);
+    if amount >= 0.99999 && mask.is_none() {
+        return;
+    }
+    pm.data_mut()
+        .par_chunks_exact_mut(4)
+        .zip(before.data().par_chunks_exact(4))
+        .enumerate()
+        .for_each(|(i, (dst, src))| {
+            let w = amount * mask.map(|m| m[i] as f32 / 255.0).unwrap_or(1.0);
+            if w >= 0.99999 {
+                return;
+            }
+            for c in 0..4 {
+                dst[c] = (src[c] as f32 + (dst[c] as f32 - src[c] as f32) * w).round().clamp(0.0, 255.0) as u8;
+            }
+            dst[0] = dst[0].min(dst[3]);
+            dst[1] = dst[1].min(dst[3]);
+            dst[2] = dst[2].min(dst[3]);
+        });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IRect {
     pub x: i32,

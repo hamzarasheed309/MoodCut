@@ -106,6 +106,7 @@ LOOK
  afx <id|A1|master> <audioEffect> [params]   afx <id.a1|A1.a1|master.a1> param=v | del | on | off | up | down   afx <id|A1|master> clear
  color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 | color <ids> none   lut <ids> file.cube [amount]
  mask <id> <rect|ellipse|path|polygon|star> [x y w h feather expand invert mode]   mask <id.m1> feather=60 | del
+ path masks use normalized layer coordinates: d='M0.1,0.1 C0.2,0.05 0.4,0.05 0.5,0.1 L0.8,0.7 Z'; keyframe matching paths with `kf c1.m1 d 0:M0,0C0.2,0.1,0.3,0.1,0.5,0 1:M0,0C0.2,0.2,0.3,0.2,0.5,0` (same segment structure for smooth morphing)
  tr <a> <b> <kind> [dur]   tr <id> in|out <kind> [dur]   tr V1 dissolve 0.4 (all cuts)   tr <a> <b> none
  fade <ids> [in=0.5] [out=1] [video|audio]
 AUDIO
@@ -198,7 +199,7 @@ precomp <ids> name='Group'              nest items into a new comp
 duck <musicTrack> by=<voiceTrack> amount=-12   sidechain ducking
 title <template> ...                    motion graphics (help templates)";
 
-const COLOR: &str = "color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 sat=105`.
+const COLOR: &str = "color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 contrast=18 pivot=.42 sat=105 mask=m1`. Color effects accept mask=m1 to grade only that layer mask and mix=0.75 to blend the effect. Add a grade window with `mask c1 ellipse feather=24` or a Bézier path, adjust it with `set c1.m1 feather=30`, and select it per effect with mask=m1. Import custom LUTs with `lut c1 file='C:/LUTs/look.cube' amount=.8 mask=m1`; 1D, 3D and combined .cube files are supported. The Color panel also exposes Lift/Gamma/Gain/Offset primaries, curves, HSL secondary and scopes.
 lumetri params: exposure(stops) contrast highlights shadows whites blacks temp tint (-100..100) sat(%) vibrance fade stint htint (split-tone colors, alpha=strength).
 Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
 Measure with preview scope=all (help scopes); copy a grade with paste <from> <to> color.
@@ -273,7 +274,7 @@ pub fn help(topic: &str) -> String {
                     cat = e.cat;
                     s.push_str(&format!("[{}]{}\n", cat, if e.engine == Engine::Ff { " decode-time, video clips only, static params" } else { "" }));
                 }
-                let ps: Vec<String> = e.params.iter().map(|p| format!("{}={}", p.name, short_def(p))).collect();
+                let ps: Vec<String> = schema::effect_params(e).iter().map(|p| format!("{}={}", p.name, short_def(p))).collect();
                 let al = if e.alias.is_empty() { String::new() } else { format!(" (aka {})", e.alias.join(" ")) };
                 s.push_str(&format!(" {}{al}: {}. {}\n", e.name, e.desc, ps.join(" ")));
             }

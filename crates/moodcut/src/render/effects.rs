@@ -235,8 +235,8 @@ pub(crate) fn hash2(x: u32, y: u32, s: u64) -> u32 {
     h as u32
 }
 
-pub fn lumetri_fn(p: [f32; 11], stint: Color, htint: Color) -> impl Fn(f32, f32, f32) -> (f32, f32, f32) + Sync {
-    let [exposure, contrast, highlights, shadows, whites, blacks, temp, tint, sat, vibrance, fade] = p;
+pub fn lumetri_fn(p: [f32; 12], stint: Color, htint: Color) -> impl Fn(f32, f32, f32) -> (f32, f32, f32) + Sync {
+    let [exposure, contrast, pivot, highlights, shadows, whites, blacks, temp, tint, sat, vibrance, fade] = p;
     move |r, g, b| {
         let ex = 2f32.powf(exposure);
         let (mut r, mut g, mut b) = (r * ex, g * ex, b * ex);
@@ -252,7 +252,6 @@ pub fn lumetri_fn(p: [f32; 11], stint: Color, htint: Color) -> impl Fn(f32, f32,
             v += whites / 100.0 * 0.2 * v.clamp(0.0, 1.0).powi(6);
             v += blacks / 100.0 * 0.2 * (1.0 - v).max(0.0).powi(6);
             let c = 1.0 + contrast / 100.0 * 0.8;
-            let pivot = 0.45;
             v = pivot + (v - pivot) * c;
             let f = fade / 100.0 * 0.18;
             f + v * (1.0 - f)
@@ -310,10 +309,10 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
     let (w, h) = (pm.width() as i32, pm.height() as i32);
     match def.name {
         "lumetri" => {
-            let vals = ["exposure", "contrast", "highlights", "shadows", "whites", "blacks", "temp", "tint", "sat", "vibrance", "fade"].map(|k| ev.f(p, k));
+            let vals = ["exposure", "contrast", "pivot", "highlights", "shadows", "whites", "blacks", "temp", "tint", "sat", "vibrance", "fade"].map(|k| ev.f(p, k));
             let st = ev.color(p, "stint");
             let ht = ev.color(p, "htint");
-            if vals == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0] && st.a == 0.0 && ht.a == 0.0 {
+            if vals == [0.0, 0.0, 0.45, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0] && st.a == 0.0 && ht.a == 0.0 {
                 return;
             }
             let key = format!("lumetri:{:?}:{}:{}", vals, st.to_hex(), ht.to_hex());

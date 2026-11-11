@@ -39,6 +39,64 @@ type GDrag =
   | { mode: "draw"; x0: number; y0: number; x: number; y: number; mask: boolean }
   | null;
 
+type MaskNode = { x: number; y: number; ix: number; iy: number; ox: number; oy: number };
+type MaskDraft = { points: MaskNode[] };
+
+/** Build a projective coordinate map from four corresponding corners. */
+function projectiveMap(from: [number, number][], to: [number, number][]) {
+  const rows: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = from[i];
+    const [u, v] = to[i];
+    rows.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    rows.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  }
+  for (let col = 0; col < 8; col++) {
+    let pivot = col;
+    for (let row = col + 1; row < 8; row++) if (Math.abs(rows[row][col]) > Math.abs(rows[pivot][col])) pivot = row;
+    if (Math.abs(rows[pivot][col]) < 1e-10) return null;
+    [rows[col], rows[pivot]] = [rows[pivot], rows[col]];
+    const div = rows[col][col];
+    for (let j = col; j < 9; j++) rows[col][j] /= div;
+    for (let row = 0; row < 8; row++) {
+      if (row === col) continue;
+      const k = rows[row][col];
+      for (let j = col; j < 9; j++) rows[row][j] -= k * rows[col][j];
+    }
+  }
+  const [a, b, c, d, e, f, g, h] = rows.map((r) => r[8]);
+  return (x: number, y: number): [number, number] | null => {
+    const z = g * x + h * y + 1;
+    if (Math.abs(z) < 1e-10) return null;
+    const u = (a * x + b * y + c) / z;
+    const v = (d * x + e * y + f) / z;
+    return Number.isFinite(u) && Number.isFinite(v) ? [u, v] : null;
+  };
+}
+
+const UV: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
+const pathNum = (n: number) => {
+  const s = n.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
+  return s === "-0" ? "0" : s;
+};
+function pathData(points: MaskNode[], closed: boolean, map: (x: number, y: number) => [number, number] | null = (x, y) => [x, y]) {
+  if (!points.length) return "";
+  const mapped = points.map((p) => {
+    const a = map(p.x, p.y), i = map(p.ix, p.iy), o = map(p.ox, p.oy);
+    return a && i && o ? { x: a[0], y: a[1], ix: i[0], iy: i[1], ox: o[0], oy: o[1] } : null;
+  });
+  if (mapped.some((p) => !p)) return "";
+  const pts = mapped as Exclude<(typeof mapped)[number], null>[];
+  const parts = [`M${pathNum(pts[0].x)},${pathNum(pts[0].y)}`];
+  const n = closed && pts.length > 2 ? pts.length : pts.length - 1;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    parts.push(`C${pathNum(a.ox)},${pathNum(a.oy)} ${pathNum(b.ix)},${pathNum(b.iy)} ${pathNum(b.x)},${pathNum(b.y)}`);
+  }
+  if (closed && pts.length > 2) parts.push("Z");
+  return parts.join(" ");
+}
+
 /** Program monitor overlay: outline and handles of the selected layer (Selection tool), Type and Shape tools. */
 function Overlay({ c }: { c: Comp }) {
   const t = pausedPlayhead.value;
@@ -48,6 +106,9 @@ function Overlay({ c }: { c: Comp }) {
   const visible = !!it && it.start <= t + 1e-4 && t < it.start + it.dur && f!.track.kind === "video";
   const [geom, setGeom] = useState<LayerGeom | null>(null);
   const [drag, setDrag] = useState<GDrag>(null);
+  const [maskDraft, setMaskDraft] = useState<MaskDraft | null>(null);
+  const maskHandleDrag = useRef<{ i: number; x: number; y: number } | null>(null);
+  const maskContext = useRef<{ id: string; t: number }>({ id: "", t: -1 });
   const svg = useRef<SVGSVGElement>(null);
   const tl = tool.value;
 
@@ -70,11 +131,72 @@ function Overlay({ c }: { c: Comp }) {
     const r = svg.current!.getBoundingClientRect();
     return [((e.clientX - r.left) / r.width) * c.w, ((e.clientY - r.top) / r.height) * c.h];
   };
-  const active = tl === "type" || tl === "shape" || (tl === "select" && geom);
-  if (!active || t < 0) return null;
+  const active = tl === "type" || tl === "shape" || tl === "mask" || (tl === "select" && geom);
   const at = fmtNum(t, 4);
   const anchor = geom?.anchor || [0, 0];
   const keyed = (p: string) => (it && isAnimated(it.props?.[p]) ? ` key at=${at}` : "");
+
+  useEffect(() => {
+    const valid = tl === "mask" && !!it && visible && t >= 0;
+    const previous = maskContext.current;
+    if (!valid || (previous.id && (previous.id !== it!.id || Math.abs(previous.t - t) > 1e-6))) {
+      setMaskDraft(null);
+      maskHandleDrag.current = null;
+    }
+    maskContext.current = valid ? { id: it!.id, t } : { id: "", t: -1 };
+  }, [tl, it?.id, visible, t]);
+
+  const finishMask = async (points: MaskNode[]) => {
+    if (!it || !geom || points.length < 3) return;
+    const toLayer = projectiveMap(geom.quad, UV);
+    if (!toLayer) return;
+    const d = pathData(points, true, toLayer);
+    if (!d) return;
+    await run(`mask ${it.id} path d='${d}'`, true);
+    setMaskDraft(null);
+    maskHandleDrag.current = null;
+  };
+
+  useEffect(() => {
+    if (tl !== "mask" || !maskDraft) return;
+    const key = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setMaskDraft(null);
+        maskHandleDrag.current = null;
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        void finishMask(maskDraft.points);
+      } else if (e.key === "Backspace" && maskDraft.points.length) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setMaskDraft({ points: maskDraft.points.slice(0, -1) });
+      }
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [tl, maskDraft, it?.id, geom]);
+
+  const addMaskPoint = (e: PointerEvent) => {
+    if (e.button !== 0 || !it || !geom) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const [x, y] = pt(e);
+    const points = maskDraft?.points || [];
+    if (points.length >= 3 && Math.hypot(x - points[0].x, y - points[0].y) < Math.max(10, c.w / 160)) {
+      void finishMask(points);
+      return;
+    }
+    const i = points.length;
+    setMaskDraft({ points: [...points, { x, y, ix: x, iy: y, ox: x, oy: y }] });
+    maskHandleDrag.current = { i, x, y };
+    svg.current!.setPointerCapture(e.pointerId);
+  };
+  if (!active || t < 0) return null;
 
   // live preview of a gizmo drag
   let xf = "";
@@ -146,6 +268,21 @@ function Overlay({ c }: { c: Comp }) {
     const [x, y] = pt(e);
     setDrag(mode === "draw" ? { mode, x0: x, y0: y, x, y, mask: e.altKey && !!it && it.kind !== "shape" } : { mode, x0: x, y0: y, x, y });
   };
+  const updateMaskHandle = (e: PointerEvent) => {
+    const md = maskHandleDrag.current;
+    if (!md || !maskDraft) return false;
+    const [x, y] = pt(e);
+    if (Math.hypot(x - md.x, y - md.y) > 2) {
+      setMaskDraft((old) => {
+        if (!old || !old.points[md.i]) return old;
+        const next = old.points.slice();
+        const p = next[md.i];
+        next[md.i] = { ...p, ix: 2 * p.x - x, iy: 2 * p.y - y, ox: x, oy: y };
+        return { points: next };
+      });
+    }
+    return true;
+  };
   const quad = geom?.quad;
   const hs = Math.max(6, c.w / 140);
   // rotation handle: beyond the middle of the top edge, away from the layer's center
@@ -161,16 +298,21 @@ function Overlay({ c }: { c: Comp }) {
   return (
     <svg
       ref={svg}
-      class={"overlay" + (tl === "type" ? " type" : tl === "shape" ? " draw" : "") + (drag ? " dragging" : "")}
+      class={"overlay" + (tl === "type" ? " type" : tl === "shape" ? " draw" : tl === "mask" ? " mask-tool" : "") + (drag ? " dragging" : "")}
       viewBox={`0 0 ${c.w} ${c.h}`}
       preserveAspectRatio="none"
-      onPointerDown={tl === "type" || tl === "shape" ? start("draw") : undefined}
+      onPointerDown={tl === "mask" ? addMaskPoint : tl === "type" || tl === "shape" ? start("draw") : undefined}
       onPointerMove={(e) => {
+        if (tl === "mask" && updateMaskHandle(e)) return;
         if (!drag) return;
         const [x, y] = pt(e);
         setDrag({ ...drag, x, y });
       }}
       onPointerUp={(e) => {
+        if (maskHandleDrag.current) {
+          maskHandleDrag.current = null;
+          return;
+        }
         const d = drag;
         setDrag(null);
         if (d) finish({ ...d }, e);
@@ -197,6 +339,28 @@ function Overlay({ c }: { c: Comp }) {
         ) : (
           <ellipse cx={(drag.x0 + drag.x) / 2} cy={(drag.y0 + drag.y) / 2} rx={Math.abs(drag.x - drag.x0) / 2} ry={Math.abs(drag.y - drag.y0) / 2} class={"gz-draw" + (drag.mask ? " mask" : "")} />
         )
+      )}
+      {maskDraft && tl === "mask" && (
+        <g class="gz-mask-draft">
+          <path d={pathData(maskDraft.points, maskDraft.points.length > 2)} class="gz-mask-path" />
+          {maskDraft.points.map((p, i) => (
+            <g key={i}>
+              {(Math.hypot(p.ox - p.x, p.oy - p.y) > 1 || Math.hypot(p.ix - p.x, p.iy - p.y) > 1) && (
+                <>
+                  <line x1={p.ix} y1={p.iy} x2={p.ox} y2={p.oy} class="gz-mask-handle-line" />
+                  <circle cx={p.ix} cy={p.iy} r={hs * 0.38} class="gz-mask-handle" />
+                  <circle cx={p.ox} cy={p.oy} r={hs * 0.38} class="gz-mask-handle" />
+                </>
+              )}
+              <circle cx={p.x} cy={p.y} r={hs * 0.55} class="gz-mask-point" />
+            </g>
+          ))}
+        </g>
+      )}
+      {tl === "mask" && !maskDraft && (
+        <text x={c.w / 2} y={Math.max(hs * 2, c.h - hs * 2)} class="gz-read" text-anchor="middle">
+          {it && geom ? "Click to place mask points · drag for curves · click the first point or press Enter to close" : "Select a visible video layer to draw a mask"}
+        </text>
       )}
       {readout && (
         <text x={anchor[0] + hs * 2} y={anchor[1] - hs * 2} class="gz-read" style={{ fontSize: c.h / 30 + "px" }}>

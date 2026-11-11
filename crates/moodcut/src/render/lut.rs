@@ -14,14 +14,20 @@ pub struct Lut3 {
     pub data: Vec<[f32; 3]>,
     /// fixed-point copy (0..=65280 = 255*256) for the fast path
     fixed: OnceLock<Vec<[i32; 3]>>,
+    domain_min: [f32; 3],
+    domain_max: [f32; 3],
+    shaper: Option<Vec<[f32; 3]>>,
+    input_index: [[usize; 256]; 3],
+    input_frac: [[i32; 256]; 3],
 }
 
 impl Lut3 {
     pub fn parse_cube(text: &str) -> Result<Lut3> {
-        let mut n = 0usize;
-        let mut dmin = [0f32; 3];
-        let mut dmax = [1f32; 3];
-        let mut data = Vec::new();
+        let mut n3 = 0usize;
+        let mut n1 = 0usize;
+        let mut domain_min = [0f32; 3];
+        let mut domain_max = [1f32; 3];
+        let mut entries = Vec::new();
         for line in text.lines() {
             let l = line.trim();
             if l.is_empty() || l.starts_with('#') {
@@ -32,36 +38,82 @@ impl Lut3 {
                 continue;
             }
             if let Some(r) = up.strip_prefix("LUT_3D_SIZE") {
-                n = r.trim().parse().map_err(|_| anyhow!("bad LUT_3D_SIZE"))?;
+                n3 = r.trim().parse().map_err(|_| anyhow!("bad LUT_3D_SIZE"))?;
                 continue;
             }
-            if up.starts_with("LUT_1D_SIZE") {
-                bail!("1D .cube LUTs are not supported (use a 3D LUT)");
+            if let Some(r) = up.strip_prefix("LUT_1D_SIZE") {
+                n1 = r.trim().parse().map_err(|_| anyhow!("bad LUT_1D_SIZE"))?;
+                continue;
             }
             if let Some(r) = up.strip_prefix("DOMAIN_MIN") {
                 let v: Vec<f32> = r.split_whitespace().filter_map(|x| x.parse().ok()).collect();
                 if v.len() == 3 {
-                    dmin = [v[0], v[1], v[2]];
+                    domain_min = [v[0], v[1], v[2]];
                 }
                 continue;
             }
             if let Some(r) = up.strip_prefix("DOMAIN_MAX") {
                 let v: Vec<f32> = r.split_whitespace().filter_map(|x| x.parse().ok()).collect();
                 if v.len() == 3 {
-                    dmax = [v[0], v[1], v[2]];
+                    domain_max = [v[0], v[1], v[2]];
                 }
                 continue;
             }
             let v: Vec<f32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
             if v.len() == 3 {
-                let norm = |i: usize| (v[i] - dmin[i]) / (dmax[i] - dmin[i]).max(1e-6);
-                data.push([norm(0), norm(1), norm(2)]);
+                entries.push([v[0], v[1], v[2]]);
             }
         }
-        if n < 2 || data.len() != n * n * n {
-            bail!("invalid .cube: expected {}^3 entries, got {}", n, data.len());
+        if n3 == 1 || n1 == 1 || n3 > 129 || n1 > 65_536 {
+            bail!("invalid .cube: LUT_1D_SIZE must be 2..65536 and LUT_3D_SIZE must be 2..129");
         }
-        Ok(Lut3 { n, data, fixed: OnceLock::new() })
+        if n3 < 2 && n1 < 2 {
+            bail!("invalid .cube: expected LUT_1D_SIZE or LUT_3D_SIZE of at least 2");
+        }
+        if (0..3).any(|c| !domain_min[c].is_finite() || !domain_max[c].is_finite() || domain_max[c] <= domain_min[c]) {
+            bail!("invalid .cube: DOMAIN_MAX must be greater than DOMAIN_MIN for every channel");
+        }
+        if entries.iter().flatten().any(|v| !v.is_finite()) {
+            bail!("invalid .cube: LUT entries must be finite numbers");
+        }
+        let cube_entries = if n3 >= 2 { n3.checked_mul(n3).and_then(|v| v.checked_mul(n3)).ok_or_else(|| anyhow!("LUT_3D_SIZE is too large"))? } else { 0 };
+        let expected = n1.checked_add(cube_entries).ok_or_else(|| anyhow!(".cube LUT is too large"))?;
+        if entries.len() != expected {
+            bail!("invalid .cube: expected {expected} entries, got {}", entries.len());
+        }
+        let shaper = (n1 >= 2).then(|| entries[..n1].to_vec());
+        let (n, data) = if n3 >= 2 {
+            (n3, entries[n1..].to_vec())
+        } else {
+            // A 1D shaper alone is represented as an identity 3D cube plus
+            // the original high-resolution shaper table.
+            (2, vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+        };
+        Ok(Self::new(n, data, domain_min, domain_max, shaper))
+    }
+
+    fn new(n: usize, data: Vec<[f32; 3]>, domain_min: [f32; 3], domain_max: [f32; 3], shaper: Option<Vec<[f32; 3]>>) -> Lut3 {
+        let mut input_index = [[0usize; 256]; 3];
+        let mut input_frac = [[0i32; 256]; 3];
+        for c in 0..3 {
+            for i in 0..256 {
+                let v = (i as f32 / 255.0 - domain_min[c]) / (domain_max[c] - domain_min[c]).max(1e-6);
+                let v = shaper.as_ref().map(|s| Self::shape_at(s, v, c)).unwrap_or(v).clamp(0.0, 1.0);
+                let f = v * (n - 1) as f32;
+                let cell = (f.floor() as usize).min(n - 2);
+                input_index[c][i] = cell;
+                input_frac[c][i] = ((f - cell as f32) * 256.0).round() as i32;
+            }
+        }
+        Lut3 { n, data, fixed: OnceLock::new(), domain_min, domain_max, shaper, input_index, input_frac }
+    }
+
+    fn shape_at(shaper: &[[f32; 3]], v: f32, c: usize) -> f32 {
+        if shaper.is_empty() { return v; }
+        let x = v.clamp(0.0, 1.0) * (shaper.len() - 1) as f32;
+        let i = x.floor() as usize;
+        let j = (i + 1).min(shaper.len() - 1);
+        shaper[i][c] + (shaper[j][c] - shaper[i][c]) * (x - i as f32)
     }
 
     pub fn generate(n: usize, f: impl Fn(f32, f32, f32) -> (f32, f32, f32) + Sync) -> Lut3 {
@@ -75,7 +127,7 @@ impl Lut3 {
                 [a, bb, c]
             })
             .collect();
-        Lut3 { n, data, fixed: OnceLock::new() }
+        Lut3::new(n, data, [0.0; 3], [1.0; 3], None)
     }
 
     #[inline]
@@ -86,8 +138,13 @@ impl Lut3 {
     /// Tetrahedral interpolation, inputs 0..1.
     #[inline]
     pub fn lookup(&self, r: f32, g: f32, b: f32) -> [f32; 3] {
+        let normalize = |c: usize, v: f32| {
+            let normalized = (v - self.domain_min[c]) / (self.domain_max[c] - self.domain_min[c]).max(1e-6);
+            self.shaper.as_ref().map(|s| Self::shape_at(s, normalized, c)).unwrap_or(normalized)
+        };
+        let input = [normalize(0, r), normalize(1, g), normalize(2, b)];
         let m = (self.n - 1) as f32;
-        let (fr, fg, fb) = (r.clamp(0.0, 1.0) * m, g.clamp(0.0, 1.0) * m, b.clamp(0.0, 1.0) * m);
+        let (fr, fg, fb) = (input[0].clamp(0.0, 1.0) * m, input[1].clamp(0.0, 1.0) * m, input[2].clamp(0.0, 1.0) * m);
         let (r0, g0, b0) = (fr.floor() as usize, fg.floor() as usize, fb.floor() as usize);
         let (r1, g1, b1) = ((r0 + 1).min(self.n - 1), (g0 + 1).min(self.n - 1), (b0 + 1).min(self.n - 1));
         let (dr, dg, db) = (fr - r0 as f32, fg - g0 as f32, fb - b0 as f32);
@@ -122,15 +179,6 @@ impl Lut3 {
     pub fn apply(&self, pm: &mut Pixmap, amount: f32) {
         let n = self.n;
         let fx = self.fixed.get_or_init(|| self.data.iter().map(|c| [(c[0].clamp(0.0, 1.0) * 65280.0) as i32, (c[1].clamp(0.0, 1.0) * 65280.0) as i32, (c[2].clamp(0.0, 1.0) * 65280.0) as i32]).collect());
-        // per-input-value cell index and fraction (0..256)
-        let mut idx = [0usize; 256];
-        let mut frac = [0i32; 256];
-        for v in 0..256 {
-            let f = v as f32 / 255.0 * (n - 1) as f32;
-            let i = (f.floor() as usize).min(n - 2);
-            idx[v] = i;
-            frac[v] = ((f - i as f32) * 256.0).round() as i32;
-        }
         let amt = (amount.clamp(0.0, 1.0) * 256.0) as i32;
         let (n1, n2) = (n, n * n);
         let w = pm.width() as usize;
@@ -140,14 +188,14 @@ impl Lut3 {
                 if a == 0 {
                     continue;
                 }
-                let (r, g, b) = if a == 255 {
+                let (sr, sg, sb) = if a == 255 {
                     (px[0] as usize, px[1] as usize, px[2] as usize)
                 } else {
                     let un = |v: u8| ((v as i32 * 255 + a / 2) / a).min(255) as usize;
                     (un(px[0]), un(px[1]), un(px[2]))
                 };
-                let (ri, gi, bi) = (idx[r], idx[g], idx[b]);
-                let (dr, dg, db) = (frac[r], frac[g], frac[b]);
+                let (ri, gi, bi) = (self.input_index[0][sr], self.input_index[1][sg], self.input_index[2][sb]);
+                let (dr, dg, db) = (self.input_frac[0][sr], self.input_frac[1][sg], self.input_frac[2][sb]);
                 let base = ri + gi * n1 + bi * n2;
                 let c000 = fx[base];
                 let c111 = fx[base + 1 + n1 + n2];
@@ -169,7 +217,7 @@ impl Lut3 {
                 for k in 0..3 {
                     // value in 0..65280 (=255*256)
                     let o = c000[k] + ((w1 * (v1[k] - c000[k]) + w2 * (v2[k] - v1[k]) + w3 * (c111[k] - v2[k])) >> 8);
-                    let src = [r, g, b][k] as i32 * 256;
+                    let src = [sr, sg, sb][k] as i32 * 256;
                     let mixed = src + (((o - src) * amt) >> 8);
                     let v = (mixed.clamp(0, 65280) + 128) >> 8;
                     px[k] = if a == 255 { v as u8 } else { ((v * a + 127) / 255) as u8 };
@@ -207,7 +255,9 @@ fn cache() -> &'static Mutex<HashMap<String, Arc<Lut3>>> {
 }
 
 pub fn load_cube(path: &str) -> Result<Arc<Lut3>> {
-    let key = format!("file:{path}");
+    let meta = std::fs::metadata(path).map_err(|e| anyhow!("can't read LUT {path}: {e}"))?;
+    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+    let key = format!("file:{path}:{}:{modified}", meta.len());
     if let Some(l) = cache().lock().get(&key) {
         return Ok(l.clone());
     }

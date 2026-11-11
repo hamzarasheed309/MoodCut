@@ -258,10 +258,10 @@ up in History, and is something the AI can do too.
 | Panel / tool | What it does | Script it sends |
 | --- | --- | --- |
 | Tools: Selection (V), Track Select Forward (A), Ripple (B), Rolling (N), Rate Stretch (R), Razor (C), Slip (Y), Slide (U), Hand (H), Zoom (Z) | timeline editing | `move`, `trim … ripple`, `roll`, `fit`, `cut`, `slip`, `slide` |
-| Type (T), Shape / Mask (G) | click or drag in the Program monitor | `text … pos=`, `shape rect …`, Alt: `mask <id> rect …` |
+| Type (T), Shape (G), Mask Pen (P) | click or drag in the Program monitor; the mask pen builds closed Bézier contours on the selected video layer | `text … pos=`, `shape rect …`, `mask <id> path d='M… C… Z'`; `kf <id.m1> d …` |
 | Program monitor | drag a layer to move it, corners to scale, the handle to rotate (keyed when animated); safe guides; scopes | `nudge <id> pos=…`, `preview scope=` |
 | Source monitor | preview media, mark In / Out, Insert (`,`) or Overwrite (`.`) into the targeted track | `add m1[2-5] V1 at=… mode=insert` |
-| Lumetri Color | basic correction, looks, split toning, curves, hue/sat curves, color wheels, HSL secondary, vignette | `color`, `fx … curves`, `fx … colorwheels` |
+| Lumetri Color | basic correction, looks, split toning, curves, hue/sat curves, Lift/Gamma/Gain/Offset wheels, HSL secondary, vignette, local mask windows and custom 1D/3D `.cube` LUTs | `color c1 exposure=.4 mask=m1 mix=.8`, `fx c1 curves mask=m1`, `lut c1 file='look.cube' amount=.8 mask=m1` |
 | Audio | Essential Sound tags; mixer with pan, faders, mute/solo, track and master effects, loudness target, peak meter | `sound`, `track set`, `master`, `afx` |
 | Effect Controls | every property and effect with keyframe navigation, Align & Distribute, Keyframe Assistant | `set`, `kf`, `fx`, `align`, `ease`, `stagger` |
 | Markers / History | colored markers with durations and comments; click any step to go back | `marker set`, `undo 3` |

@@ -19,6 +19,7 @@ const TOOLS: { id: Tool; key: string; name: string; tip: string; icon: any }[] =
   { id: "zoom", key: "Z", name: "Zoom", tip: "Click the timeline to zoom in (Alt: out)", icon: <path {...S} d="M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 1 0 0-9M10.3 10.3 14 14M5 7h4M7 5v4" /> },
   { id: "type", key: "T", name: "Type", tip: "Click in the Program monitor to add a title there", icon: <path {...S} d="M3 3.5h10M8 3.5V13M6 13h4" /> },
   { id: "shape", key: "G", name: "Shape / Mask", tip: "Drag in the Program monitor to draw a shape layer (Alt: a mask on the selected layer)", icon: <path {...S} d="M2.5 4.5h7v7h-7zM11.5 6.5a2.6 2.6 0 1 1 0 5.2" /> },
+  { id: "mask", key: "P", name: "Mask Pen", tip: "Click to add mask vertices; drag a point for Bézier handles; click the first point or press Enter to close. Escape cancels the contour.", icon: <path {...S} d="M2.5 12.8 11.7 3.5l1.8 1.8-9.3 9.2-2.8.8zM9.8 5.4l1.8 1.8M2.5 12.8l2.8.8" /> },
 ];
 
 export function ToolsPanel() {

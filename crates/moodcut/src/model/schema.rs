@@ -78,6 +78,11 @@ macro_rules! ps {
         P { name: $n, t: $t, d: $d, min: -INF, max: INF, u: U::None, anim: false, desc: $desc, alias: &[$($a),*] }
     };
 }
+
+/// Shared controls for color effects: a local spatial mask and Resolve-style
+/// node mix. Appended by `effect_params` to keep native effect tables concise.
+pub static COLOR_FX_MASK: P = ps!("mask", Str, S(""), "Use this layer mask as the effect's spatial window (for example m1)");
+pub static COLOR_FX_MIX: P = p!("mix", Num, N(1.0), 0.0, 1.0, U::Frac, "Blend this color effect with its input");
 /// A static (not animatable) number with a range: audio effect settings.
 macro_rules! pr {
     ($n:expr, $d:expr, $min:expr, $max:expr, $desc:expr) => {
@@ -297,7 +302,7 @@ pub static MASK: &[P] = &[
     p!("w", Num, N(0.8), 0.0, INF, U::Frac, "Mask width as fraction of layer width", ["width"]),
     p!("h", Num, N(0.8), 0.0, INF, U::Frac, "Mask height as fraction of layer height", ["height"]),
     p!("radius", Num, N(0.0), 0.0, INF, U::Px, "Corner radius (rect masks)", ["round"]),
-    ps!("d", Str, S(""), "Path mask: SVG path in normalized 0..1 layer coordinates"),
+    P { name: "d", t: Str, d: S(""), min: -INF, max: INF, u: U::None, anim: true, desc: "SVG path in normalized 0..1 layer coordinates; matching paths can morph", alias: &[] },
     p!("points", Num, N(5.0), 2.0, 100.0, U::None, "Polygon/star points"),
     p!("feather", Num, N(0.0), 0.0, 1000.0, U::Px, "Edge feather (px)", ["soft", "blur"]),
     p!("expand", Num, N(0.0), -1000.0, 1000.0, U::Px, "Grow/shrink the mask (px)", ["expansion"]),
@@ -362,9 +367,10 @@ use Engine::*;
 
 pub static EFFECTS: &[EffectDef] = &[
     // ---- color
-    fx!("lumetri", ["grade", "color", "colorgrade"], Native, "color", "Premiere-style basic correction", [
+    fx!("lumetri", ["grade", "color", "colorgrade"], Native, "color", "Primary color correction with Resolve-style contrast pivot, split toning and creative controls", [
         p!("exposure", Num, N(0.0), -5.0, 5.0, U::None, "Exposure (stops)"),
         p!("contrast", Num, N(0.0), -100.0, 100.0, U::None, "Contrast"),
+        p!("pivot", Num, N(0.45), 0.05, 0.95, U::Frac, "Contrast pivot / tonal midpoint"),
         p!("highlights", Num, N(0.0), -100.0, 100.0, U::None, "Highlights"),
         p!("shadows", Num, N(0.0), -100.0, 100.0, U::None, "Shadows"),
         p!("whites", Num, N(0.0), -100.0, 100.0, U::None, "Whites"),
@@ -428,19 +434,21 @@ pub static EFFECTS: &[EffectDef] = &[
     fx!("grayscale", ["bw", "blackwhite", "mono", "desaturate"], Native, "color", "Black & white", [p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount")]),
     fx!("sepia", [], Native, "color", "Sepia tone", [p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount")]),
     fx!("invert", ["negative"], Native, "color", "Invert colors", [p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount")]),
-    fx!("lut", ["lut3d", "cube"], Native, "color", "Apply a .cube 3D LUT", [
+    fx!("lut", ["lut3d", "cube"], Native, "color", "Apply a .cube 1D or 3D LUT", [
         ps!("file", Str, S(""), "Path to .cube file", ["path"]),
         p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Intensity"),
     ]),
     fx!("posterize", [], Native, "color", "Reduce color levels", [p!("levels", Num, N(6.0), 2.0, 64.0, U::None, "Levels per channel")]),
     fx!("threshold", [], Native, "color", "Black/white threshold", [p!("level", Num, N(0.5), 0.0, 1.0, U::Frac, "Threshold")]),
-    fx!("colorwheels", ["wheels", "liftgammagain", "colorbalance", "threeway"], Native, "color", "Lumetri color wheels: tint shadows / midtones / highlights (color alpha = strength) and shift their brightness", [
+    fx!("colorwheels", ["wheels", "liftgammagain", "colorbalance", "threeway"], Native, "color", "Primary color wheels: tint lift / gamma / gain / offset and shift their brightness", [
         p!("shadows", Color, C("none"), -INF, INF, U::None, "Shadow (lift) tint, e.g. #2a6cff40", ["lift"]),
         p!("midtones", Color, C("none"), -INF, INF, U::None, "Midtone (gamma) tint", ["mids", "gamma"]),
         p!("highlights", Color, C("none"), -INF, INF, U::None, "Highlight (gain) tint", ["gain"]),
+        p!("offset", Color, C("none"), -INF, INF, U::None, "Offset tint"),
         p!("shadowsL", Num, N(0.0), -100.0, 100.0, U::None, "Shadow brightness (lift)", ["liftl"]),
         p!("midtonesL", Num, N(0.0), -100.0, 100.0, U::None, "Midtone brightness (gamma)", ["gammal", "midsl"]),
         p!("highlightsL", Num, N(0.0), -100.0, 100.0, U::None, "Highlight brightness (gain)", ["gainl"]),
+        p!("offsetL", Num, N(0.0), -100.0, 100.0, U::None, "Offset brightness", ["offsetlevel"]),
     ]),
     fx!("channelmixer", ["mixer", "channels"], Native, "color", "Channel mixer: each output channel as % of the input red, green and blue", [
         p!("rr", Num, N(100.0), -200.0, 200.0, U::None, "Red from red %"),
@@ -904,6 +912,16 @@ pub static AUDIO_EFFECTS: &[EffectDef] = &[
 pub fn effect(name: &str) -> Option<&'static EffectDef> {
     let l = name.to_ascii_lowercase().replace(['-', '_'], "");
     EFFECTS.iter().find(|e| e.name == l || e.alias.contains(&l.as_str()))
+}
+
+/// Properties accepted by an effect, including shared color-grade controls.
+pub fn effect_params(def: &'static EffectDef) -> Vec<&'static P> {
+    let mut params: Vec<&'static P> = def.params.iter().collect();
+    if def.cat == "color" {
+        params.push(&COLOR_FX_MASK);
+        params.push(&COLOR_FX_MIX);
+    }
+    params
 }
 
 pub fn audio_effect(name: &str) -> Option<&'static EffectDef> {

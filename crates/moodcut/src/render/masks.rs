@@ -7,6 +7,61 @@ use super::shapes;
 use crate::model::project::{Effect, Mask};
 use crate::model::schema;
 use resvg::tiny_skia::{FillRule, Mask as SkMask, Path, Rect, Transform};
+use std::collections::VecDeque;
+
+fn morph_line(src: &[u8], r: usize, grow: bool) -> Vec<u8> {
+    if r == 0 || src.is_empty() { return src.to_vec(); }
+    let mut out = vec![0u8; src.len()];
+    let mut q = VecDeque::new();
+    let mut right = 0;
+    for i in 0..src.len() {
+        let hi = (i + r).min(src.len() - 1);
+        while right <= hi {
+            while let Some(&last) = q.back() {
+                let dominated = if grow { src[last] <= src[right] } else { src[last] >= src[right] };
+                if dominated { q.pop_back(); } else { break; }
+            }
+            q.push_back(right);
+            right += 1;
+        }
+        let lo = i.saturating_sub(r);
+        while q.front().is_some_and(|&first| first < lo) { q.pop_front(); }
+        out[i] = src[*q.front().unwrap()];
+    }
+    out
+}
+
+fn morph_alpha(alpha: &[u8], w: usize, h: usize, r: usize, grow: bool) -> Vec<u8> {
+    if r == 0 || w == 0 || h == 0 { return alpha.to_vec(); }
+    let mut tmp = vec![0u8; w * h];
+    for y in 0..h {
+        let row = morph_line(&alpha[y * w..(y + 1) * w], r, grow);
+        tmp[y * w..(y + 1) * w].copy_from_slice(&row);
+    }
+    let mut out = vec![0u8; w * h];
+    let mut col = vec![0u8; h];
+    for x in 0..w {
+        for y in 0..h { col[y] = tmp[y * w + x]; }
+        let result = morph_line(&col, r, grow);
+        for y in 0..h { out[y * w + x] = result[y]; }
+    }
+    out
+}
+
+fn expand_alpha(alpha: &mut Vec<u8>, w: usize, h: usize, amount: f32) {
+    let grow = amount >= 0.0;
+    let amount = amount.abs();
+    if amount < 0.01 || w == 0 || h == 0 { return; }
+    let lo = amount.floor() as usize;
+    let frac = amount - lo as f32;
+    let low = morph_alpha(alpha, w, h, lo, grow);
+    if frac <= 0.001 {
+        *alpha = low;
+        return;
+    }
+    let high = morph_alpha(alpha, w, h, lo + 1, grow);
+    *alpha = low.iter().zip(high).map(|(&a, b)| (a as f32 + (b as f32 - a as f32) * frac).round().clamp(0.0, 255.0) as u8).collect();
+}
 
 /// Layer bounds in layer px (x, y, w, h).
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +95,35 @@ fn mask_path(m: &Mask, ev: &Ev, b: LBounds) -> Option<Path> {
     }
 }
 
+/// Rasterizes one layer mask into the supplied output-space layer buffer.
+/// The returned bytes include path expansion, feather, opacity and invert.
+pub fn mask_alpha(lb: &LayerBuf, mk: &Mask, ev: &Ev, b: LBounds, m: Transform, scale: f32) -> Option<Vec<u8>> {
+    if !mk.on {
+        return Some(vec![0; (lb.w() * lb.h()) as usize]);
+    }
+    let mev = ev.with_lists(&[schema::MASK]);
+    let path = mask_path(mk, &mev, b)?;
+    let (w, h) = (lb.w(), lb.h());
+    let mut sm = SkMask::new(w, h)?;
+    let to_buf = Transform::from_translate(-lb.x as f32, -lb.y as f32).pre_concat(m);
+    sm.fill_path(&path, FillRule::Winding, true, to_buf);
+    let mut data = sm.take();
+    if mk.kind == "path" {
+        expand_alpha(&mut data, w as usize, h as usize, mev.f(&mk.props, "expand") * scale);
+    }
+    let feather = mev.f(&mk.props, "feather") * scale;
+    if feather > 0.3 {
+        blur_mask(&mut data, w as usize, h as usize, feather / 2.0);
+    }
+    let op = mev.f(&mk.props, "opacity").clamp(0.0, 1.0);
+    let inv = mev.bool(&mk.props, "invert");
+    Some(data.into_iter().map(|v| {
+        let x = v as f32 / 255.0 * op;
+        let a = if inv { 1.0 - x } else { x };
+        (a * 255.0 + 0.5).clamp(0.0, 255.0) as u8
+    }).collect())
+}
+
 /// Crop effect -> rect mask in normalized coordinates.
 fn crop_mask(e: &Effect, ev: &Ev, b: LBounds) -> Option<(Path, f32)> {
     let p = &e.props;
@@ -65,24 +149,8 @@ pub fn apply_masks(lb: &mut LayerBuf, masks: &[Mask], fx: &[Effect], ev: &Ev, b:
     let mut acc: Option<Vec<f32>> = None;
     for (i, mk) in active.iter().enumerate() {
         let mode = mev.str(&mk.props, "mode");
-        let Some(path) = mask_path(mk, &mev, b) else { continue };
-        let Some(mut sm) = SkMask::new(w, h) else { continue };
-        sm.fill_path(&path, FillRule::Winding, true, to_buf);
-        let mut data = sm.take();
-        let feather = mev.f(&mk.props, "feather") * scale;
-        if feather > 0.3 {
-            blur_mask(&mut data, w as usize, h as usize, feather / 2.0);
-        }
-        let op = mev.f(&mk.props, "opacity").clamp(0.0, 1.0);
-        let inv = mev.bool(&mk.props, "invert");
-        let mv: Vec<f32> = data.iter().map(|&v| {
-            let x = v as f32 / 255.0 * op;
-            if inv {
-                1.0 - x
-            } else {
-                x
-            }
-        }).collect();
+        let Some(data) = mask_alpha(lb, mk, &mev, b, m, scale) else { continue };
+        let mv: Vec<f32> = data.iter().map(|&v| v as f32 / 255.0).collect();
         let a = acc.get_or_insert_with(|| if i == 0 && (mode == "subtract") { vec![1.0; n] } else { vec![0.0; n] });
         for (dst, s) in a.iter_mut().zip(mv.iter()) {
             *dst = match mode.as_str() {

@@ -861,23 +861,21 @@ async fn api_jobs(State(st): State<St>) -> Response {
 
 async fn api_catalog() -> Response {
     use crate::model::schema;
-    let pjson = |l: &[schema::P]| -> Vec<Value> {
-        l.iter()
-            .map(|p| {
-                let ty = match p.t {
-                    schema::T::Num => json!("num"),
-                    schema::T::Vec2 => json!("vec2"),
-                    schema::T::Color => json!("color"),
-                    schema::T::Str => json!("str"),
-                    schema::T::Bool => json!("bool"),
-                    schema::T::Enum(o) => json!(o),
-                };
-                let def = schema::default_val(p, schema::VCtx { cw: 1920.0, ch: 1080.0 });
-                json!({"name": p.name, "type": ty, "def": def, "min": if p.min.is_finite() { json!(p.min) } else { Value::Null }, "max": if p.max.is_finite() { json!(p.max) } else { Value::Null }, "anim": p.anim, "desc": p.desc})
-            })
-            .collect()
+    let pjson_one = |p: &schema::P| -> Value {
+        let ty = match p.t {
+            schema::T::Num => json!("num"),
+            schema::T::Vec2 => json!("vec2"),
+            schema::T::Color => json!("color"),
+            schema::T::Str => json!("str"),
+            schema::T::Bool => json!("bool"),
+            schema::T::Enum(o) => json!(o),
+        };
+        let def = schema::default_val(p, schema::VCtx { cw: 1920.0, ch: 1080.0 });
+        json!({"name": p.name, "type": ty, "def": def, "min": if p.min.is_finite() { json!(p.min) } else { Value::Null }, "max": if p.max.is_finite() { json!(p.max) } else { Value::Null }, "anim": p.anim, "desc": p.desc})
     };
-    let fx: Vec<Value> = schema::EFFECTS.iter().map(|e| json!({"name": e.name, "cat": e.cat, "desc": e.desc, "ff": e.engine == schema::Engine::Ff, "params": pjson(e.params)})).collect();
+    let pjson = |l: &[schema::P]| -> Vec<Value> { l.iter().map(|p| pjson_one(p)).collect() };
+    let pjson_refs = |l: &[&schema::P]| -> Vec<Value> { l.iter().map(|p| pjson_one(p)).collect() };
+    let fx: Vec<Value> = schema::EFFECTS.iter().map(|e| json!({"name": e.name, "cat": e.cat, "desc": e.desc, "ff": e.engine == schema::Engine::Ff, "params": pjson_refs(&schema::effect_params(e))})).collect();
     let afx: Vec<Value> = schema::AUDIO_EFFECTS.iter().map(|e| json!({"name": e.name, "desc": e.desc, "params": pjson(e.params)})).collect();
     let tr: Vec<Value> = schema::TRANSITIONS.iter().map(|t| json!({"name": t.name, "desc": t.desc, "params": pjson(t.params)})).collect();
     let anims: Vec<Value> = crate::ops::presets::LAYER_ENTER.iter().chain(crate::ops::presets::LAYER_EXIT).chain(crate::ops::presets::LAYER_LOOP).chain(crate::ops::presets::LAYER_ONESHOT).map(|(n, d)| json!({"name": n, "desc": d})).collect();
