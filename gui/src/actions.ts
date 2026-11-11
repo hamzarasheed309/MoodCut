@@ -206,7 +206,7 @@ export function pasteClipboard(attributes: boolean) {
 
 // ---------------------------------------------------------------- keyboard
 
-export const TOOL_KEYS: Record<string, Tool> = { v: "select", a: "track", b: "ripple", n: "roll", r: "rate", c: "razor", y: "slip", u: "slide", h: "hand", z: "zoom", t: "type", g: "shape" };
+export const TOOL_KEYS: Record<string, Tool> = { v: "select", a: "track", b: "ripple", n: "roll", r: "rate", c: "razor", y: "slip", u: "slide", h: "hand", z: "zoom", t: "type", g: "shape", p: "mask" };
 
 /** Premiere Pro / After Effects keyboard shortcuts. */
 export function installShortcuts(): () => void {

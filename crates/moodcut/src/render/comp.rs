@@ -58,6 +58,44 @@ pub fn render_frame(rc: &RenderCtx, comp_id: &str, t: f64, scale: f32) -> Result
     Ok(out)
 }
 
+/// Applies color effects with their own optional spatial mask and mix control.
+/// Non-color effects retain the existing straight-through rendering path.
+fn apply_effect_windowed(e: &Effect, lb: &mut LayerBuf, fcx: &FxCtx, masks_list: &[Mask], b: LBounds, m: Transform, scale: f32) {
+    let Some(def) = schema::effect(&e.kind) else { return };
+    if def.cat != "color" {
+        effects::apply(e, lb, fcx);
+        return;
+    }
+    let amount = e.props.get("mix").map(|a| a.eval(fcx.ev.t, fcx.ev.x).num() as f32).unwrap_or(1.0).clamp(0.0, 1.0);
+    if amount <= 0.00001 {
+        return;
+    }
+    let mask_id = e.props.get("mask").map(|a| a.eval(fcx.ev.t, fcx.ev.x).str()).unwrap_or_default();
+    let mut alpha = if matches!(mask_id.to_ascii_lowercase().as_str(), "" | "none" | "off") {
+        None
+    } else {
+        let Some(mk) = masks_list.iter().find(|mk| mk.id.eq_ignore_ascii_case(&mask_id)) else { return };
+        if !mk.on {
+            return;
+        }
+        let Some(a) = masks::mask_alpha(lb, mk, fcx.ev, b, m, scale) else { return };
+        Some(a)
+    };
+    if let Some(a) = alpha.as_mut() {
+        let ev = fcx.ev.with_lists(&[schema::MASK]);
+        if masks_list.iter().find(|mk| mk.id.eq_ignore_ascii_case(&mask_id)).is_some_and(|mk| ev.str(&mk.props, "mode") == "subtract") {
+            a.iter_mut().for_each(|v| *v = 255 - *v);
+        }
+    }
+    if amount >= 0.99999 && alpha.is_none() {
+        effects::apply(e, lb, fcx);
+        return;
+    }
+    let before = lb.pm.get().clone();
+    effects::apply(e, lb, fcx);
+    pixel::mix_masked(lb.pm.make_mut(), &before, alpha.as_deref(), amount);
+}
+
 /// A layer's on-screen geometry at comp time `t`, in comp px: the corners of
 /// its content box (after parenting and 3D projection) and its anchor point.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -974,9 +1012,10 @@ impl<'a> CompR<'a> {
         // native effects
         if it.fx.iter().any(|e| e.on) {
             let fcx = FxCtx { ev: &ev, scale, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps).round() as i64, seed: x.seed };
+            let m_out = out_t.pre_concat(ex.mat).pre_concat(w.m);
             // a leading blur may already have been applied at source resolution
             for e in it.fx.iter().filter(|e| e.on).skip(pre_blurred as usize).filter(|e| !matches!(e.kind.as_str(), "crop" | "cornerpin" | "posterizetime" | "echo")) {
-                effects::apply(e, lbuf, &fcx);
+                apply_effect_windowed(e, lbuf, &fcx, &it.masks, b, m_out, scale);
             }
         }
         // track matte
@@ -1662,8 +1701,9 @@ impl<'a> CompR<'a> {
         let mut lb = LayerBuf { pm: Pm::Owned(out.clone()), x: 0, y: 0 };
         let scale = self.sx.max(self.sy);
         let fcx = FxCtx { ev: &ev, scale, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps).round() as i64, seed: x.seed };
+        let effect_m = self.out_t().pre_concat(w.m);
         for e in it.fx.iter().filter(|e| e.on) {
-            effects::apply(e, &mut lb, &fcx);
+            apply_effect_windowed(e, &mut lb, &fcx, &it.masks, b, effect_m, scale);
         }
         if !it.masks.is_empty() || it.fx.iter().any(|e| e.kind == "crop") {
             masks::apply_masks(&mut lb, &it.masks, &it.fx, &ev, b, self.out_t().pre_concat(w.m), scale);

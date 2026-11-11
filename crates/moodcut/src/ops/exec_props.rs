@@ -64,7 +64,7 @@ pub fn sub_list_mut(it: &mut Item, k: SubKind) -> &mut Vec<Effect> {
 /// Property schema for a sub-object.
 pub fn sub_schema(k: SubKind, kind: &str) -> Vec<&'static P> {
     match k {
-        SubKind::Fx => schema::effect(kind).map(|e| e.params.iter().collect()).unwrap_or_default(),
+        SubKind::Fx => schema::effect(kind).map(schema::effect_params).unwrap_or_default(),
         SubKind::Afx => schema::audio_effect(kind).map(|e| e.params.iter().collect()).unwrap_or_default(),
         SubKind::Mask => schema::MASK.iter().collect(),
         SubKind::Shape => schema::shape_props(kind).unwrap_or(&[]).iter().chain(schema::SHAPE_COMMON.iter()).collect(),
@@ -189,6 +189,12 @@ impl<'a> Exec<'a> {
             }
             let (sch, what) = self.target_schema(t)?;
             let p = find_in(&sch, k).ok_or_else(|| unknown_prop(&sch, k, &what))?;
+            if sk == SubKind::Fx && p.name == "mask" && !matches!(v.to_ascii_lowercase().as_str(), "" | "none" | "off") {
+                let it = self.item_at(l);
+                if !it.masks.iter().any(|m| m.id.eq_ignore_ascii_case(v)) {
+                    bail!("{} has no mask '{}'; add one with `mask {}` first", t.item, v, t.item);
+                }
+            }
             let val = schema::clamp_val(p, schema::parse_val(p, v, cx)?);
             let anim = self.target_anim_mut(t, p.name, val.clone())?;
             *anim = Anim::new(val);
@@ -487,9 +493,16 @@ impl<'a> Exec<'a> {
             bail!("{id} is an audio clip; use afx for audio effects");
         }
         let mut props = Props::new();
+        let params = schema::effect_params(def);
         for (k, v) in kvs {
-            let p = schema::find(def.params, k).ok_or_else(|| unknown_prop(&def.params.iter().collect::<Vec<_>>(), k, def.name))?;
+            let p = find_in(&params, k).ok_or_else(|| unknown_prop(&params, k, def.name))?;
             props.insert(p.name.to_string(), Anim::new(schema::clamp_val(p, schema::parse_val(p, v, cx)?)));
+        }
+        if def.cat == "color" {
+            let mask = props.get("mask").map(|a| a.v.str()).unwrap_or_default();
+            if !matches!(mask.to_ascii_lowercase().as_str(), "" | "none" | "off") && !it.masks.iter().any(|m| m.id.eq_ignore_ascii_case(&mask)) {
+                bail!("{id} has no mask '{mask}'; add one with `mask {id}` first");
+            }
         }
         if def.name == "lut" {
             let f = props.get("file").map(|a| a.v.str()).unwrap_or_default();
@@ -1187,13 +1200,14 @@ impl<'a> Exec<'a> {
     }
 
     pub fn c_lut(&mut self, a: &mut A) -> Result<()> {
-        let spec = a.shift().ok_or_else(|| anyhow!("lut <ids> <file.cube> [amount=1]"))?;
+        let spec = a.shift().ok_or_else(|| anyhow!("lut <ids> <file.cube> [amount=1] [mask=m1] [mix=1]"))?;
         let file = a.take(&["file", "path"]).or_else(|| a.shift()).ok_or_else(|| anyhow!("lut needs a .cube file"))?;
         let amount = a.take(&["amount", "intensity"]).or_else(|| a.shift());
         let mut kv = vec![("file".to_string(), file)];
         if let Some(am) = amount {
             kv.push(("amount".into(), am));
         }
+        kv.extend(a.rest());
         for id in self.targets(&spec)? {
             let f = self.add_effect(&id, "lut", &kv, false)?;
             self.note(format!("+{id}.{f} lut"));

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { setFx } from "../actions";
 import { showPanel } from "../dock";
-import { catalog, mediaById, playhead, run, selectedItem } from "../store";
+import { catalog, mediaById, pickFiles, playhead, run, selectedItem } from "../store";
 import type { Effect, FxDef, Item } from "../types";
 import { clamp, fmtNum, q, staticVal } from "../util";
 import { Section, Slider } from "./Controls";
@@ -25,7 +25,7 @@ function str(e: Effect | undefined, name: string): string {
 }
 
 /** Sliders for params of one effect, created on first change. `via` overrides the command (lumetri uses `color`). */
-function FxSliders({ it, def, names, via }: { it: Item; def: FxDef | undefined; names: string[]; via?: (kv: Record<string, string>) => void }) {
+function FxSliders({ it, def, names, via, mask }: { it: Item; def: FxDef | undefined; names: string[]; via?: (kv: Record<string, string>) => void; mask?: string }) {
   if (!def) return null;
   const e = fxOf(it, def.name);
   return (
@@ -41,7 +41,7 @@ function FxSliders({ it, def, names, via }: { it: Item; def: FxDef | undefined; 
         return (
           <Slider
             key={n}
-            label={p.desc.split(/[(,:]/)[0].trim().slice(0, 18) || n}
+            label={n === "mix" ? "Mix" : p.desc.split(/[(,:]/)[0].trim().slice(0, 18) || n}
             title={`${n}: ${p.desc}`}
             value={num(e, n, d)}
             def={d}
@@ -49,7 +49,7 @@ function FxSliders({ it, def, names, via }: { it: Item; def: FxDef | undefined; 
             max={Math.min(hi, 400)}
             step={step}
             bg={bg}
-            onCommit={(v) => (via ? via({ [n]: fmtNum(v, 4) }) : setFx(it, def.name, { [n]: fmtNum(v, 4) }))}
+            onCommit={(v) => (via ? via({ [n]: fmtNum(v, 4) }) : setFx(it, def.name, { [n]: fmtNum(v, 4), ...(mask !== undefined ? { mask: mask || "none" } : {}) }))}
           />
         );
       })}
@@ -321,6 +321,14 @@ export function ColorPanel() {
   const [curve, setCurve] = useState("master");
   const [hueTab, setHueTab] = useState("hueSat");
   const it = sel?.item;
+  const [gradeMask, setGradeMask] = useState("");
+  const [lutPath, setLutPath] = useState("");
+  const [lutAmount, setLutAmount] = useState(1);
+  useEffect(() => {
+    const existing = (it?.fx || []).find((f) => cat?.effects.find((d) => d.name === f.kind)?.cat === "color" && str(f, "mask"));
+    setGradeMask(existing ? str(existing, "mask") : "");
+    setLutPath("");
+  }, [it?.id, cat]);
   const at = () => fmtNum(playhead.peek(), 4);
   if (!cat) return <div class="empty">Loading…</div>;
   const media = it?.src ? mediaById.value.get(it.src) : undefined;
@@ -340,9 +348,18 @@ export function ColorPanel() {
     run(
       `color ${it.id} ${Object.entries(kv)
         .map(([k, v]) => `${k}=${v}`)
-        .join(" ")}`,
+        .join(" ")} mask=${gradeMask || "none"}`,
       true,
     );
+  const gradeFx = (kind: string, kv: Record<string, string>) => setFx(it, kind, { ...kv, mask: gradeMask || "none" });
+  const chooseGradeMask = (mask: string) => {
+    setGradeMask(mask);
+    const colorEffects = (it.fx || []).filter((f) => cat.effects.find((d) => d.name === f.kind)?.cat === "color");
+    if (colorEffects.length) run(colorEffects.map((f) => `set ${it.id}.${f.id} mask=${mask || "none"}`).join("\n"), true);
+  };
+  const applyLut = () => {
+    if (lutPath.trim()) run(`lut ${it.id} file=${q(lutPath.trim())} amount=${fmtNum(lutAmount, 3)} mask=${gradeMask || "none"}`, true);
+  };
   const curves = fxOf(it, "curves");
   const hc = fxOf(it, "huecurves");
   const cw = fxOf(it, "colorwheels");
@@ -367,27 +384,40 @@ export function ColorPanel() {
         <button class="btn sm" title="Open the Lumetri Scopes panel" onClick={() => showPanel("scopes")}>
           Scopes
         </button>
-        <button class="btn sm" title="Remove every color effect from this clip" onClick={() => run((it.fx || []).filter((f) => ["lumetri", "curves", "huecurves", "colorwheels", "secondary", "vignette", "autolevels"].includes(f.kind)).map((f) => `del ${it.id}.${f.id}`).join("\n") || `color ${it.id} none`, true)}>
+        <button class="btn sm" title="Remove every color effect from this clip" onClick={() => run((it.fx || []).filter((f) => cat.effects.find((d) => d.name === f.kind)?.cat === "color").map((f) => `del ${it.id}.${f.id}`).join("\n") || `color ${it.id} none`, true)}>
           Reset
         </button>
       </div>
+      <Section title="Grade Window" open={false}>
+        <div class="row">
+          <label>Mask region</label>
+          <div class="ctl">
+            <select value={gradeMask} onChange={(e) => chooseGradeMask((e.target as HTMLSelectElement).value)}>
+              <option value="">Whole layer</option>
+              {(it.masks || []).map((m) => <option key={m.id} value={m.id}>{m.id} · {m.kind}</option>)}
+            </select>
+          </div>
+          <span />
+        </div>
+        <div class="hint">Create a window with Mask Pen (P) or MCP `mask {it.id} ellipse feather=24`. The selected mask drives every color effect; feather, invert and animate it in the mask controls.</div>
+      </Section>
       <Section title="Basic Correction" {...toggleFx(it, "lumetri")} acts={
-        <button class="btn sm ghost" title="Auto tone: stretch levels and remove casts per frame (fx autolevels)" onClick={() => setFx(it, "autolevels", { perchannel: "1" })}>
+        <button class="btn sm ghost" title="Auto tone: stretch levels and remove casts per frame (fx autolevels)" onClick={() => gradeFx("autolevels", { perchannel: "1" })}>
           Auto
         </button>
       }>
         <div class="sub">White balance</div>
         <FxSliders it={it} def={def("lumetri")} names={["temp", "tint"]} via={colorCmd} />
         <div class="sub">Tone</div>
-        <FxSliders it={it} def={def("lumetri")} names={["exposure", "contrast", "highlights", "shadows", "whites", "blacks"]} via={colorCmd} />
+        <FxSliders it={it} def={def("lumetri")} names={["exposure", "contrast", "pivot", "highlights", "shadows", "whites", "blacks"]} via={colorCmd} />
         <div class="sub">Color</div>
-        <FxSliders it={it} def={def("lumetri")} names={["sat", "vibrance"]} via={colorCmd} />
+        <FxSliders it={it} def={def("lumetri")} names={["sat", "vibrance", "mix"]} via={colorCmd} />
       </Section>
       <Section title="Creative">
         <div class="row">
           <label>Look</label>
           <div class="ctl">
-            <select value="" onChange={(e) => (e.target as HTMLSelectElement).value && run(`color ${it.id} ${(e.target as HTMLSelectElement).value}`)}>
+            <select value="" onChange={(e) => (e.target as HTMLSelectElement).value && run(`color ${it.id} ${(e.target as HTMLSelectElement).value} mask=${gradeMask || "none"}`)}>
               <option value="">apply a look…</option>
               {cat.colors.map((c) => (
                 <option key={c.name} value={c.name}>
@@ -402,6 +432,29 @@ export function ColorPanel() {
         {tintRow("stint", "Shadow tint")}
         {tintRow("htint", "Highlight tint")}
       </Section>
+      <Section title="LUTs" open={false}>
+        <div class="row">
+          <label>.cube file</label>
+          <div class="ctl" style={{ display: "flex", gap: "5px" }}>
+            <input value={lutPath} placeholder="Path to a 1D or 3D .cube LUT" onInput={(e) => setLutPath((e.target as HTMLInputElement).value)} onKeyDown={(e) => e.stopPropagation()} />
+            <button class="btn sm" onClick={async () => { const files = await pickFiles("open", "lut"); if (files[0]) setLutPath(files[0]); }}>Browse</button>
+          </div>
+          <span />
+        </div>
+        <Slider label="amount" value={lutAmount} min={0} max={1} step={0.01} def={1} onCommit={setLutAmount} />
+        <button class="btn sm" disabled={!lutPath.trim()} onClick={applyLut}>Apply LUT to {gradeMask || "whole layer"}</button>
+        {(it.fx || []).filter((f) => f.kind === "lut").map((f) => (
+          <div class="row" key={f.id}>
+            <label title={str(f, "file")}>{str(f, "file").split(/[\\/]/).pop() || f.id}</label>
+            <div class="ctl" style={{ display: "flex", gap: "5px" }}>
+              <input type="range" min={0} max={1} step={0.01} value={num(f, "amount", 1)} title="LUT strength" onInput={(e) => run(`set ${it.id}.${f.id} amount=${(e.target as HTMLInputElement).value}`, true)} />
+              <button class="btn sm ghost" title="Remove LUT" onClick={() => run(`del ${it.id}.${f.id}`, true)}>×</button>
+            </div>
+            <span />
+          </div>
+        ))}
+        <div class="hint">Custom `.cube` files can contain a 1D shaper, a 3D cube, or both. MCP: `lut {it.id} file='path.cube' amount=.8 mask={gradeMask || "m1"}`.</div>
+      </Section>
       <Section title="Curves" {...toggleFx(it, "curves")}>
         <div class="seg">
           {CURVE_TABS.map((t) => (
@@ -410,7 +463,7 @@ export function ColorPanel() {
             </button>
           ))}
         </div>
-        <CurveBox kind="tone" value={str(curves, curve)} color={CURVE_TABS.find((t) => t.k === curve)!.color} onCommit={(s) => setFx(it, "curves", { [curve]: s })} />
+        <CurveBox kind="tone" value={str(curves, curve)} color={CURVE_TABS.find((t) => t.k === curve)!.color} onCommit={(s) => gradeFx("curves", { [curve]: s })} />
         <div class="seg">
           {HUE_TABS.map((t) => (
             <button key={t.k} class={"btn sm" + (hueTab === t.k ? " on" : "")} onClick={() => setHueTab(t.k)}>
@@ -425,37 +478,37 @@ export function ColorPanel() {
           periodic={ht.periodic}
           defW={ht.periodic ? 0.08 : 0.15}
           bg={`linear-gradient(rgba(16,16,20,.6),rgba(16,16,20,.6)),${ht.periodic ? HUES : "linear-gradient(90deg,#000,#fff)"}`}
-          onCommit={(s) => setFx(it, "huecurves", { [hueTab]: s })}
+          onCommit={(s) => gradeFx("huecurves", { [hueTab]: s })}
         />
         <div class="hint">Click to add a point, drag to bend, right-click to remove.</div>
       </Section>
-      <Section title="Color Wheels" {...toggleFx(it, "colorwheels")}>
+      <Section title="Primaries · Lift / Gamma / Gain / Offset" {...toggleFx(it, "colorwheels")}>
         <div class="wheels">
-          {(["shadows", "midtones", "highlights"] as const).map((w) => (
+          {(["shadows", "midtones", "highlights", "offset"] as const).map((w) => (
             <div key={w} class="wheel-col">
-              <Wheel label={w} value={str(cw, w) || "none"} onCommit={(hex) => setFx(it, "colorwheels", { [w]: hex })} />
-              <input type="range" class="vert-l" min={-100} max={100} step={1} value={num(cw, w + "L", 0)} title={`${w} brightness (double-click: reset)`} onDblClick={() => setFx(it, "colorwheels", { [w + "L"]: "0" })} onChange={(e) => setFx(it, "colorwheels", { [w + "L"]: (e.target as HTMLInputElement).value })} />
+              <Wheel label={w === "shadows" ? "Lift" : w === "midtones" ? "Gamma" : w === "highlights" ? "Gain" : "Offset"} value={str(cw, w) || "none"} onCommit={(hex) => gradeFx("colorwheels", { [w]: hex })} />
+              <input type="range" class="vert-l" min={-100} max={100} step={1} value={num(cw, w + "L", 0)} title={`${w} level (double-click: reset)`} onDblClick={() => gradeFx("colorwheels", { [w + "L"]: "0" })} onChange={(e) => gradeFx("colorwheels", { [w + "L"]: (e.target as HTMLInputElement).value })} />
             </div>
           ))}
         </div>
       </Section>
       <Section title="HSL Secondary" open={false} {...toggleFx(it, "secondary")}>
         <div class="sub">Key</div>
-        <FxSliders it={it} def={def("secondary")} names={["hue", "hueRange", "satMin", "lumMin", "lumMax", "soft"]} />
+        <FxSliders it={it} def={def("secondary")} names={["hue", "hueRange", "satMin", "lumMin", "lumMax", "soft"]} mask={gradeMask} />
         <div class="row">
           <label>show key</label>
           <div class="ctl">
-            <input type="checkbox" checked={!!staticVal(fxOf(it, "secondary")?.props?.show)} onChange={(e) => setFx(it, "secondary", { show: (e.target as HTMLInputElement).checked ? "1" : "0" })} />
+            <input type="checkbox" checked={!!staticVal(fxOf(it, "secondary")?.props?.show)} onChange={(e) => gradeFx("secondary", { show: (e.target as HTMLInputElement).checked ? "1" : "0" })} />
             <span style={{ color: "var(--faint)", fontSize: "11px" }}>invert</span>
-            <input type="checkbox" checked={!!staticVal(fxOf(it, "secondary")?.props?.invert)} onChange={(e) => setFx(it, "secondary", { invert: (e.target as HTMLInputElement).checked ? "1" : "0" })} />
+            <input type="checkbox" checked={!!staticVal(fxOf(it, "secondary")?.props?.invert)} onChange={(e) => gradeFx("secondary", { invert: (e.target as HTMLInputElement).checked ? "1" : "0" })} />
           </div>
           <span />
         </div>
         <div class="sub">Correction</div>
-        <FxSliders it={it} def={def("secondary")} names={["shift", "sat", "light", "temp", "tint"]} />
+        <FxSliders it={it} def={def("secondary")} names={["shift", "sat", "light", "temp", "tint"]} mask={gradeMask} />
       </Section>
       <Section title="Vignette" open={false} {...toggleFx(it, "vignette")}>
-        <FxSliders it={it} def={def("vignette")} names={["amount", "size", "soft"]} />
+        <FxSliders it={it} def={def("vignette")} names={["amount", "size", "soft"]} mask={gradeMask} />
       </Section>
     </div>
   );

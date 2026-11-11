@@ -19,7 +19,7 @@ export const pausedPlayhead = computed(() => (playing.value ? -1 : playhead.valu
 export const zoom = signal(80); // px per second
 export const scrollX = signal(0);
 /** Premiere / After Effects tools (see the Tools panel). */
-export type Tool = "select" | "track" | "ripple" | "roll" | "rate" | "razor" | "slip" | "slide" | "hand" | "zoom" | "type" | "shape";
+export type Tool = "select" | "track" | "ripple" | "roll" | "rate" | "razor" | "slip" | "slide" | "hand" | "zoom" | "type" | "shape" | "mask";
 export const tool = signal<Tool>("select");
 export const shapeKind = signal<"rect" | "ellipse">("rect");
 export const snapping = signal(true);

@@ -75,17 +75,18 @@ fn temp_tint(r: f32, g: f32, b: f32, temp: f32, tint: f32) -> (f32, f32, f32) {
 pub fn apply(name: &str, ev: &Ev, p: &Props, pm: &mut Pixmap) -> bool {
     match name {
         "colorwheels" => {
-            let (s, m, h) = (wheel(ev.color(p, "shadows")), wheel(ev.color(p, "midtones")), wheel(ev.color(p, "highlights")));
-            let (sl, ml, hl) = (ev.f(p, "shadowsL") / 100.0, ev.f(p, "midtonesL") / 100.0, ev.f(p, "highlightsL") / 100.0);
-            if s == [0.0; 3] && m == [0.0; 3] && h == [0.0; 3] && sl == 0.0 && ml == 0.0 && hl == 0.0 {
+            let (s, m, h, o) = (wheel(ev.color(p, "shadows")), wheel(ev.color(p, "midtones")), wheel(ev.color(p, "highlights")), wheel(ev.color(p, "offset")));
+            let (sl, ml, hl, ol) = (ev.f(p, "shadowsL") / 100.0, ev.f(p, "midtonesL") / 100.0, ev.f(p, "highlightsL") / 100.0, ev.f(p, "offsetL") / 100.0);
+            if s == [0.0; 3] && m == [0.0; 3] && h == [0.0; 3] && o == [0.0; 3] && sl == 0.0 && ml == 0.0 && hl == 0.0 && ol == 0.0 {
                 return true;
             }
-            // lift / gamma / gain per channel (ASC CDL style)
+            // Lift / gamma / gain / offset per channel (Resolve primary controls).
             let ch = |c: usize| {
                 let lift = s[c] * 0.6 + sl * 0.25;
                 let gamma = (1.0 + m[c] * 1.6 + ml * 0.6).clamp(0.2, 5.0);
                 let gain = (1.0 + h[c] * 1.2 + hl * 0.5).max(0.0);
-                lut1(move |x| (gain * (x + lift * (1.0 - x))).max(0.0).powf(1.0 / gamma))
+                let offset = o[c] * 0.6 + ol * 0.25;
+                lut1(move |x| (gain * (x + lift * (1.0 - x)) + offset).max(0.0).powf(1.0 / gamma))
             };
             map_lut(pm, &ch(0), &ch(1), &ch(2));
         }

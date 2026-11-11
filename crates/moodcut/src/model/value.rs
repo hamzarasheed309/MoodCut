@@ -241,6 +241,7 @@ impl Val {
 
     pub fn is_interpolable(&self) -> bool {
         matches!(self, Val::N(_) | Val::V(..) | Val::C(_))
+            || matches!(self, Val::S(s) if morph_path_data(s, s, 0.5).is_some())
     }
 
     /// Interpolates between two values. Non-interpolable values hold `self` until t>=1.
@@ -251,6 +252,9 @@ impl Val {
             (Val::N(a), Val::V(bx, by)) => Val::V(a + (bx - a) * t, a + (by - a) * t),
             (Val::V(ax, ay), Val::N(b)) => Val::V(ax + (b - ax) * t, ay + (b - ay) * t),
             (Val::C(a), Val::C(b)) => Val::C(a.lerp(b, t as f32)),
+            (Val::S(a), Val::S(b)) => morph_path_data(a, b, t).map(Val::S).unwrap_or_else(|| {
+                if t >= 1.0 { o.clone() } else { self.clone() }
+            }),
             _ => {
                 if t >= 1.0 {
                     o.clone()
@@ -273,6 +277,48 @@ impl Val {
             other => other.str(),
         }
     }
+}
+
+/// Interpolate SVG path control points when both paths have matching topology.
+/// SimplifyingPathParser canonicalizes relative and shorthand commands first;
+/// unsupported or mismatched paths retain the usual discrete string behavior.
+fn morph_path_data(a: &str, b: &str, t: f64) -> Option<String> {
+    use svgtypes::SimplePathSegment as S;
+
+    fn parse(d: &str) -> Option<Vec<S>> {
+        let mut out = Vec::new();
+        for segment in svgtypes::SimplifyingPathParser::from(d) {
+            out.push(segment.ok()?);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+    fn num(n: f64) -> String {
+        let mut s = format!("{:.8}", if n.abs() < 0.000000005 { 0.0 } else { n });
+        while s.contains('.') && s.ends_with('0') { s.pop(); }
+        if s.ends_with('.') { s.pop(); }
+        s
+    }
+    fn mix(a: f64, b: f64, t: f64) -> String { num(a + (b - a) * t) }
+
+    let (aa, bb) = (parse(a)?, parse(b)?);
+    if aa.len() != bb.len() { return None; }
+    let mut out = Vec::with_capacity(aa.len() * 36);
+    for (x, y) in aa.iter().zip(&bb) {
+        let segment = match (x, y) {
+            (S::MoveTo { x: ax, y: ay }, S::MoveTo { x: bx, y: by }) => format!("M {} {}", mix(*ax, *bx, t), mix(*ay, *by, t)),
+            (S::LineTo { x: ax, y: ay }, S::LineTo { x: bx, y: by }) => format!("L {} {}", mix(*ax, *bx, t), mix(*ay, *by, t)),
+            (S::CurveTo { x1: ax1, y1: ay1, x2: ax2, y2: ay2, x: ax, y: ay }, S::CurveTo { x1: bx1, y1: by1, x2: bx2, y2: by2, x: bx, y: by }) => {
+                format!("C {} {} {} {} {} {}", mix(*ax1, *bx1, t), mix(*ay1, *by1, t), mix(*ax2, *bx2, t), mix(*ay2, *by2, t), mix(*ax, *bx, t), mix(*ay, *by, t))
+            }
+            (S::Quadratic { x1: ax1, y1: ay1, x: ax, y: ay }, S::Quadratic { x1: bx1, y1: by1, x: bx, y: by }) => {
+                format!("Q {} {} {} {}", mix(*ax1, *bx1, t), mix(*ay1, *by1, t), mix(*ax, *bx, t), mix(*ay, *by, t))
+            }
+            (S::ClosePath, S::ClosePath) => "Z".to_string(),
+            _ => return None,
+        };
+        out.push(segment);
+    }
+    Some(out.join(" "))
 }
 
 /// Formats a number compactly: up to 3 decimals, trailing zeros removed.

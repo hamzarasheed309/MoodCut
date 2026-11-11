@@ -1872,6 +1872,10 @@ input[type="checkbox"] {
 .overlay.draw {
   cursor: crosshair;
 }
+.overlay.mask-tool {
+  pointer-events: all;
+  cursor: crosshair;
+}
 .overlay .gz-box {
   fill: rgba(var(--accent-rgb), 0.04);
   stroke: var(--accent);
@@ -1909,6 +1913,34 @@ input[type="checkbox"] {
 .overlay .gz-draw.mask {
   fill: rgba(251, 191, 36, 0.15);
   stroke: var(--warn);
+}
+.overlay .gz-mask-draft {
+  pointer-events: none;
+}
+.overlay .gz-mask-path {
+  fill: rgba(251, 191, 36, 0.1);
+  stroke: var(--warn);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+.overlay .gz-mask-handle-line {
+  stroke: #fff;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.overlay .gz-mask-handle {
+  fill: #fff;
+  stroke: var(--warn);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.overlay .gz-mask-point {
+  fill: var(--warn);
+  stroke: #fff;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }
 .overlay .gz-read {
   fill: #fff;
