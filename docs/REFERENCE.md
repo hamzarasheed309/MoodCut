@@ -9,7 +9,7 @@ MoodCut: AI-native video editor. Loop: media import -> view -> edit (batch many 
 Ids: m1 media, c2 clips, t3 text, g4 shapes, o5 solids, j6 adjustment, n7 nested comps, s1 comps; sub-objects c2.f1 (effect) c2.m1 (mask) g4.s1 (shape) t3.x1 (text animator).
 Tracks: V1 is the bottom video track (higher = on top), A1.. audio. Times are seconds.
 Scripts are atomic: if any line fails nothing changes and the error names the line.
-Topics: workflow (a complete edit from one request, step by step), style (pro editing + motion design rules (hook, pacing, sound, type, easing) as commands), recipes (complete scripts for Reels, YouTube, montage, promo, podcast, documentary, tutorial), platforms (Reels/TikTok/Shorts/YouTube/feed/ads specs and UI safe zones), sfx (sound design: whoosh, riser, hit, pop... placed on cuts, titles and beats), brand (brand kit: font + colors every title, caption and graphic uses), edit (every MoodCut Script command), tools (Premiere Pro / After Effects tools and panels as commands), time (time & reference syntax), props (layer/clip/text/solid properties), effects (video effects + params), audio (audio effects, ducking, loudness), transitions (transition types), anim (animation presets, easing, keyframes), 3d (cameras, nulls, 3D layers and parallax), text (titles, text animators, captions), shapes (shape layers & masks), templates (motion graphics templates), macros (autocut, captions, montage, reframe...), color (color grading), scopes (Lumetri scopes and grading by measurement), expr (expressions), render (export presets), analyze (analysis kinds), graphics (HTML/CSS/JS motion graphics), examples (complete example scripts), fonts (installed fonts)
+Topics: workflow (a complete edit from one request, step by step), direction (creative director: brief -> concept -> treatment -> build -> review; design and editing direction; rules that keep the work grounded in what was seen and done), features (every feature: when to use it, the command, how to verify it, when not to), style (pro editing + motion design rules (hook, pacing, sound, type, easing) as commands), recipes (complete scripts for Reels, YouTube, montage, promo, podcast, documentary, tutorial), platforms (Reels/TikTok/Shorts/YouTube/feed/ads specs and UI safe zones), sfx (sound design: whoosh, riser, hit, pop... placed on cuts, titles and beats), brand (brand kit: font + colors every title, caption and graphic uses), edit (every MoodCut Script command), tools (Premiere Pro / After Effects tools and panels as commands), masks (After Effects masks, Resolve windows and qualifiers, roto vertices, matte finesse, matte view, keying), tracking (mask, point, planar (perspective) and 3D camera tracking, stabilizing), grade (DaVinci Resolve color page: nodes, primaries, wheels, curves, warper, qualifiers, windows, color management, groups, match), mix (buses, sends, automation, processors, repair, audio scopes, stems), time (time & reference syntax), props (layer/clip/text/solid properties), effects (video effects + params), audio (audio effects, ducking, loudness), transitions (transition types), anim (animation presets, easing, keyframes), 3d (cameras, nulls, 3D layers and parallax), text (titles, text animators, captions), shapes (shape layers & masks), templates (motion graphics templates), macros (autocut, captions, montage, reframe...), color (color grading), scopes (Lumetri scopes and grading by measurement), expr (expressions), render (export presets), analyze (analysis kinds), graphics (HTML/CSS/JS motion graphics), examples (complete example scripts), fonts (installed fonts)
 ```
 
 ## workflow: a complete edit from one request, step by step
@@ -18,12 +18,111 @@ Topics: workflow (a complete edit from one request, step by step), style (pro ed
 Turning one request into a finished, professional edit. Do every step yourself; send many script lines per edit call; ask the person only if something essential is missing.
 1 GATHER  media find path=<folder> (what is there) -> media import paths=[<folder>] tag=<shoot>. Large library: media list (filters/paging) + preview media=m1..m48 (poster frames, 48 per sheet). Write down what you see so you never look twice: note m3 'wide drone, sunset' | tag m10..m18 interview.
 2 UNDERSTAND  speech: analyze target=tag:interview kind=transcript, then view what=search q=<words> to find quotes (times are source seconds). Shots: analyze target=all kind=scenes / stats (exposure). Music: analyze <m> kind=beats. Filmstrips (preview media=m7 n=8) to pick in/out points.
-3 PLAN  like a senior editor (help style): platform and length (help platforms; comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 1-2 s -> body -> payoff / call to action or loop), the closest help('recipes') to start from, brand (brand <preset> or the client's font and colors), ONE look, 2-3 reusable motion moves, music and where its drop lands, a sound palette. Build only what was asked, but finish it to a professional standard.
+3 PLAN  like a creative director (help direction: brief, one-line concept, five-line treatment; help features: which tool serves each choice; help style: the craft numbers): platform and length (help platforms; comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 1-2 s -> body -> payoff / call to action or loop), the closest help('recipes') to start from, brand (brand <preset> or the client's font and colors), ONE look, 2-3 reusable motion moves, music and where its drop lands, a sound palette. Build only what was asked, but finish it to a professional standard.
 4 ASSEMBLE  bottom-up: story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence V1 + punchin V1 for talking heads; keep m4 12-30,45-61 for rough cuts; jcut/lcut between interview answers; b-roll on V2 over speech starting on the word it shows (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences; speedramp into action and drops. Shot lengths per platform (help style); vary framing; cut on action and on the beat; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
 5 POLISH  color <ids|V1> <one look> then fine-tune by scopes; one or two motivated transition types (whip between places, cuts elsewhere); titles and lower thirds in the brand (graphic tool for bespoke designs, else title templates) with the same entrance everywhere; captions V1 last (they go on top) for speech-led videos; anim kenburns amount=0.06 on stills; then sound design: sfx whoosh on=transitions, hit on title slams, riser into reveals (help sfx).
 6 SOUND  music on A2 under speech: duck A2 by=A1 amount=-12 (by=V1 when speech is camera audio); fade music in/out; master lufs=-14 limiter=1 (web) | -16 (podcast) | -23 (broadcast).
 7 VERIFY  check target=<platform> expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; fix its craft notes too (hook, pacing, safe zones, easing, music ending, sound design); preview n=12 and judge it as a viewer (would you stop scrolling at frame 1? does something change every 3-5 s?); fix and check again until clean.
-8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.
+8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files, the concept and key choices, what check and the previews confirmed, and anything you could not do or verify (help direction).
+```
+
+## direction: creative director: brief -> concept -> treatment -> build -> review; design and editing direction; rules that keep the work grounded in what was seen and done
+
+```text
+Creative direction: run every MoodCut job like a top creative director. This decides WHAT to make and WHY; help features says WHICH tool serves each decision, help style has the craft numbers, help recipes complete scripts, help <topic> exact syntax.
+
+GROUND RULES (they keep the work honest; they come before taste)
+1 Real commands only. Every command and property must appear in help edit or the topic that covers it (help masks, tracking, grade, mix ...). An unknown word fails the whole script, nothing changes, and the error names the word with a suggestion: fix that word; never invent a workaround or a property.
+2 Ids come from replies. m#, c#, t# ... are exactly what MoodCut printed (+c12 created c12); $ is the last item created. Never guess an id: `view what=timeline detail=1` lists them.
+3 Describe only what you have seen. Look before you name what is in a shot (`preview media=m3 n=6`), read speech before you quote it (`analyze target=m1 kind=transcript`, then `view what=search q=launch`). Colors, faces, text on screen, moods: only after a preview.
+4 Measure, then change. Exposure, balance and skin from `preview t=4.2 scope=all` and `preview t=4.2 pick=0.5,0.4`; loudness and craft problems from check; tracking quality from the tracker's reply (lost ranges, solve error). Numbers in your report come from replies, never from estimates.
+5 Verify every claim. After each build step look at what changed (`preview n=12`, or t= for one moment); run check before every render (`check target=reels expect={dur:30,size:'1080x1920'}`). Report as done only what a reply or a frame confirmed, and list what you could not verify.
+6 Missing is missing. If MoodCut has no tool for something (generating new footage, AI rotoscoping or face replacement, a font that isn't installed, music it wasn't given), say so plainly and offer the closest real route (a mask with tracking, a graphic, a different font). Never describe an effect as applied when no command applied it.
+7 Facts belong to the person, taste belongs to you. Names, titles, prices, claims, dates, logos, legal lines and brand colors come from the brief or the footage; ask if they are missing and essential. Creative choices (structure, look, type, motion, music placement) are yours: make them confidently and explain them in one line each.
+
+THE DIRECTOR'S LOOP
+BRIEF: answer in one line each: who is it for; where it plays (platform, screen, sound on or off); what they should feel; what they should do or remember. Unknowns that change the whole piece (format, length, the message) get one question; everything else gets a sensible default you state.
+CONCEPT: one idea a viewer could repeat in five words ("the product as the hero", "a day compressed into a breath", "the quiet before the launch"). Each later choice must serve it; whatever doesn't is cut, however good it looks.
+TREATMENT (write it before building, five lines): format and length | structure beats with timings (hook 0-2 s, build, turn, payoff, CTA or loop) | look (palette in three colors, contrast, texture) | type and motion vocabulary (one family, two weights, 2-3 moves reused everywhere) | sound (music feel, where it lifts, the sound-design palette).
+BUILD: bottom-up per help workflow (picture and story, then b-roll, then type and graphics, captions last; then color, then sound). Set the frame first (`comp new 'Reel' 1080x1920 30`) and the brand (`brand bold`, or the client's font and colors). One decision per layer.
+REVIEW: watch it twice. First as the audience: `preview n=12`, would they stop at frame one, is anything confusing, is there a dead spot? Then as the client: is the message clear, is the brand right, is every fact correct? Run check for the platform and fix its problems and craft notes. Change the three things that hurt the concept most, then review again.
+DELIVER: render the preset for the platform (`render preset=social wait=true`), plus deliverables that matter (captions file, chapters, a vertical cut).
+REPORT: what you made and its length; the concept in one line; the key choices and why; what check and the previews confirmed; anything left for a human (rights to music and footage, approvals, facts you could not verify).
+
+DESIGN DIRECTION (what makes a frame look designed, not assembled)
+HIERARCHY: one thing reads first. Headline at least twice the size of the support line, one accent color, everything else neutral. When two elements compete, shrink, move or delete one.
+COMPOSITION: subjects and titles on the thirds or the subject's eye line (`align t5 left to=safe`); leave space in the direction a subject looks or moves; margins 5-7% (inside platform UI zones on social, 10% for broadcast). Keep faces clear of text.
+COLOR: 60-30-10: a dominant neutral from the footage, a secondary brand color, an accent for the single thing that matters. Grade the footage toward the palette (warm palette, warmer highlights) instead of fighting it. Text needs 4.5:1 contrast with what is behind it (a box, a shadow, a darker grade under it).
+TYPE: one family, at most two weights, sentence case for reading, caps with wide tracking for labels. Short lines, two at most. Heavy, tight-tracked headlines (`text 'Launch day' at=1 dur=3 size=110 weight=800 tracking=-2 enter=slamIn exit=fadeOut`) and lighter support lines. On screen at least 0.3 s per word plus 1 s.
+MOTION: motivated: things move because something happened (a beat, a word, a cut). Ease everything that starts or stops (`kf t5 scale 0:0.92 0.5:1@outExpo`); exits faster than entrances; one direction per story beat; hold a finished reveal 1-2 s. The same moment gets the same move every time.
+TEXTURE: choose on purpose: grain and vignette for cinematic and documentary (`fx V1 noise amount=0.05`, `fx c1 vignette amount=0.3`), clean for tech and commercial. Never stack glow, shadow, stroke and gradient on one title.
+LOOK: correct first (exposure, balance, matching shots), then ONE look for the whole piece (`color V1 kodak`), skin protected. A look that changes shot to shot reads as a mistake.
+
+EDITING DIRECTION (what makes a cut feel inevitable)
+STORY: every shot must answer "why this, why now?". If you can't say what it adds, cut it. Start late, leave early: enter a shot on its action, leave before it settles.
+STRUCTURE: social: hook (0-2 s) -> one idea -> payoff -> loop or CTA. YouTube: cold open that promises the payoff -> chapters -> payoff -> end screen. Brand film: tension -> turn -> release. Interview: question implied by the first answer, answers ordered as an argument, b-roll as evidence.
+RHYTHM: vary shot lengths (long-short-short-long), accelerate into the payoff, breathe after it. Cut on action, on the beat, on a breath. Music edits land on phrases; the drop gets the strongest image (`speedramp V1 at=3 to=4x dur=0.5` into it).
+CONTINUITY OR IMPACT: match action and eye lines when the story should flow; break them (jump cuts `autocut silence c1` then `punchin V1 scale=1.12`, a smash cut, a whip) only when energy should spike.
+SOUND LEADS PICTURE: J and L cuts between answers (`jcut c3 by=0.4`), sound design on every move that should be felt (`sfx whoosh at=20`), music ducked under speech (`duck A2 by=V1 amount=-12`), roles set so the mix and check know what is what (`sound c1 dialogue`), a deliberate ending (music resolves or fades on a phrase), loudness for the platform (`master lufs=-14 limiter=1`).
+SPECIFICITY: the strongest edits are built from specific moments (a laugh, a hand, a look) found in transcripts and filmstrips, not from the first few seconds of each clip.
+
+REVIEW RUBRIC (score 1-5 each; anything under 4 gets fixed before delivery)
+Hook: frame one and the first two seconds earn attention. Clarity: the message survives sound off and a glance. Rhythm: something changes every 3-5 s on social, nothing drags anywhere. Craft: type readable, safe zones clear, easing on every move, no flash frames or gaps (check). Consistency: one look, one type system, the same moves for the same moments. Sound: dialogue clear, music under it, effects felt not noticed, loudness on target. Truth: every fact, name and claim on screen traceable to the brief or the footage.
+```
+
+## features: every feature: when to use it, the command, how to verify it, when not to
+
+```text
+Feature map: when to reach for each MoodCut feature, the command that does it, how to verify it, and when NOT to use it. Examples use c1 = the main clip on V1, c2 = b-roll above it on V2, c3 = the next shot on V1, c4 = music on A2, t5 = a title, m1-m9 = media; always use the ids from your own replies. Exact syntax: help <topic>.
+
+STRUCTURE AND TIMING
+Assemble: use for any story; `append m1[2-10] m2[0-4] m1[14-22]` lays clips end to end, `add m2[1-3] V2 at=9 fit=fill` places b-roll over speech starting on the word it shows. Verify: `view what=timeline detail=1`. Not: dumping whole clips; pick in and out points from filmstrips (`preview media=m2 n=8`) or transcripts.
+Trim and refine: tighten every cut (`trim c1 start=+1 end=-0.5`, `cut c1 at=8`); move an edit point without changing length (`roll c1 +0.3`); change what a shot shows without moving it (`slip c3 +0.5`). Not: leaving air at the head or tail of a shot unless it is a deliberate breath.
+Pauses and jump cuts: talking heads (`autocut silence c1`), then hide jumps by alternating framing (`punchin V1 scale=1.12`). Not: on emotional answers where the pause is the point.
+Selects: `keep m1 0-12.5,15-30` builds a rough cut from source ranges you chose from a transcript.
+Speed: slow motion for weight and detail (`speed c2 50%`, best on 50/60 fps footage), ramps into action and drops (`speedramp V1 at=3 to=4x dur=0.5`), a held moment (`freeze c1 at=5 dur=1.5`). Not: random speed changes with no motivation; slow motion on 24/25 fps without interp=blend.
+Transitions: the cut is the default. Use one or two motivated types per piece: dissolve for time or memory (`tr V1 dissolve 0.4` sets every cut on V1), whip between places with a whoosh (`tr c1 c3 whip 0.3`), fadeblack for chapter breaks. Verify the handles in check. Not: a different transition on every cut; decorative wipes in professional work.
+Markers and chapters: mark beats, drops and chapter starts (`marker add 12 'Chapter 2'`), then deliver YouTube chapters (`render preset=chapters`).
+Nesting: group layers that move or get graded together (`precomp c2,t5 name='Insert'`). Not: as a tidy-up for unrelated layers; it hides them from the main timeline.
+
+PICTURE: COMPOSITION, TYPE AND GRAPHICS
+Brand kit first: one font, colors and accent drive every title, caption, template and graphic (`brand clean`; or the client's: brand font=, primary=, accent=). Not: picking colors per title.
+Titles: short statements and hooks with the type rules above (`text 'Nobody tells you this' at=0.1 dur=1.8 size=96 enter=slamIn exit=popOut`); designed lower thirds for every new speaker (`title lowerthird text='Alex Rivera' sub='Product designer' style=minimal at=3`); data and progress (`title counter from=0 to=48 suffix=' h' at=10 dur=3`, `title progress pos=top`). Verify readability and safe zones with check. Not: paragraphs on screen; text over faces.
+Captions: every speech-led social video (people watch muted) and accessibility (`captions c1 style=punch words=2` for creator energy, style=bold words=3 calmer). Captions go on last so they sit on top. Deliver a file for YouTube (`render preset=srt`). Not: two caption styles in one piece; captions in the bottom 25% of vertical video (platform UI).
+HTML motion graphics: bespoke designed pieces (kinetic type, data visualizations, branded end cards, UI mockups) that templates can't make: the graphic tool renders HTML/CSS/JS frame-accurately with alpha (`graphic name=endcard dur=4 place='V3 at=22'` with html=...). Put every text and color in a {{field|default}} so people can edit it. Verify with the contact sheet it returns. Not: for a plain title a text layer does well.
+Shapes, solids, adjustment layers: accents, bars and frames in the brand color (`shape rect w=520 h=6 pos=960,700 at=4 dur=2 enter=wipeInLeft`), backgrounds (`solid #05060a at=0 dur=3`), one look or effect over everything below (`adjust at=0 dur=26 fx=vignette`).
+Layout tools: line up and space elements like a designer (`align t5 left to=safe`), parent things that move together (`null children=t5`). Verify with a preview at the moment they're all on screen.
+Reframe: a vertical or square version of a landscape edit (`reframe 9:16`), then fix framing per shot and check target=reels. Not: as a substitute for composing graphics for the new frame.
+
+MOTION
+Animation presets: entrances, exits and loops with good default easing (`anim t5 slamIn`, `anim c2 kenburns amount=0.06` on stills and static shots). Choose 2-3 and reuse them. Not: a different preset on every element; kenburns on every shot.
+Keyframes and easing: custom moves (`kf c2 scale 0:1 4:1.08@outCubic`); expressions for organic or procedural motion (`expr t5 rot 'wiggle(2,3)'`). Verify by previewing the start, middle and end of the move. Not: linear keys on anything that starts or stops.
+3D and cameras: depth, parallax and push-ins on layered designs (`camera at=0 dur=8 move=pushin amount=200 layers=V2`; help 3d). Not: on a single flat video layer where a simple scale does the same.
+
+FINISHING: MASKS, KEYS, TRACKING
+Masks (help masks): isolate a region to cut out, reveal or limit an effect: shapes (`mask c1 ellipse x=.5 y=.4 w=.3 h=.4 feather=40`), effects limited to or outside a mask (`fx c1 blur radius=12 mask=-m1` blurs everything outside m1), editable paths and vertices (`mask c1.m1 topath; mask c1.m1 pt 2 corner`). Verify with `preview view=overlay id=c1.m1` (numbered vertices) or view=matte. Not: a hard-edged mask on organic shapes; feather them.
+Qualifiers: change one color or tone range (skin, sky, a product color) without a shape (`mask c1 hsl hue=25 hueRange=40 window`); combine with a shape window to contain them. Verify with view=matte. Not: when a shape window alone isolates it.
+Keying: green or blue screen (`fx c2 chromakey`), then clean the matte and edges (`fx c2 matteclean size=1`). Verify holes with check and edges with a preview at full width. Not: on footage that wasn't shot for keying; use a mask.
+Mask tracking: a window or blur that must follow a moving subject (`track c1.m1 mode=similarity`; mode=perspective for planes like a wall or a screen, which keys the path itself). Verify: the reply names lost ranges; preview them and fix with a keyframed vertex. Not: on a static locked-off shot.
+Point tracking: something that must stick to a point (a label, a sticker, an effect center): `track c1 region=.5,.5,.1,.1 to=null`, then parent layers to the null. Stabilize shaky footage: `track c1 region=.5,.5,.2,.2 to=stabilize smooth=1`. Not: stabilizing intentional handheld energy.
+Screen and sign replacement: a planar track of a flat surface drives a layer's corner pin (`track c1 corners='.3,.3 .6,.32 .6,.6 .3,.58' to=cornerpin on=c2`). Pick corners on high-contrast edges, clockwise from top-left.
+3D camera tracking: text, objects or graphics that must sit in a moving shot's 3D space (signs on buildings, titles on the floor, labels on a landscape). Solve (`camtrack c1`), look at the numbered points (`preview view=points id=c1`), set the floor (`camtrack c1 ground=p1,p2,p3`), attach (`camtrack c1 attach text 'OPEN DAILY' at=p1,p2,p3`). Verify the solve error in the reply (under 0.5 px sticks, above 1 px slides) and preview several moments. Not: on tripod pans with no parallax (a 2D point track or a nodal solve is enough), on shots with heavy motion blur or cuts.
+
+FINISHING: COLOR (help grade, help scopes)
+Correction: every shot before any look: log footage gets its input transform (`color c1 input=slog3`), then exposure and balance by the scopes (`color c1 exposure=0.3 contrast=12`). Shots that must match: `match c3 to=c1`, or against a saved reference (`still save hero from=c1; match c3 to=still:hero`). Verify with `preview t=4.2 scope=all` and check (it flags clipping, crushed shadows and shots that don't match).
+Look: one creative look across the piece (`color V1 kodak`), saved and shared so new shots follow it (`grade save look from=c1`). Not: a look on uncorrected footage; different looks per shot.
+Resolve nodes: precise, layered grading on hero shots: a node per job (balance, contrast, skin, sky, vignette), each with its own key and mix: `node c1 1 primaries gainR=1.03 gammaY=.02`, a window that follows the face (`node c1 2 window add circle x=.5 y=.45 w=.3 h=.4 feather=60`), a qualifier (`node c1 2 qualify hsl hue=25`), a parallel node (`node c1 add parallel`), a layer mixer for a glow (`node c1 add layer composite=softlight name=Glow`). Read the graph with `view what=grade id=c1`. Not: ten nodes on a shot one look already serves.
+Effects: purposeful finishing (`fx c1 sharpen amount=0.3` on soft footage, `fx c1 softclip` on harsh highlights, `fx c2 glow radius=30 intensity=0.5` for a dreamy beat). Not: effects as decoration; anything that hides bad footage instead of cutting it.
+
+SOUND (help mix, help sfx, help audio)
+Roles and ducking: always set roles and duck music under speech (`sound c1 dialogue`, `sound A2 music`, `duck A2 by=V1 amount=-12`). Verify with check (it measures the real mix).
+Music: the emotional engine: choose where it lifts and put the payoff there; cut to its beats (`beats c4`, then a beat-cut sequence on its own track: `montage m2,m3,m4 music=c4 beats=2 track=V3`). End on its ending or fade on a phrase. Not: music that stops dead; a track that fights the dialogue.
+Sound design: whoosh on whips and fast moves, hit on slams and drops, riser into reveals (`sfx riser at=19`, `sfx hit at=1`, `sfx swish on=titles vol=-18dB`). Not: the same sound on every cut of a talking head.
+Clean-up and mixing: noisy dialogue (`repair V1`), buses for groups with shared processing (`bus add B1 name=Dialogue`), tone shaping (`afx c1 eq bass=3`). Final loudness for the platform (`master lufs=-14 limiter=1`; -16 podcasts, -23 broadcast).
+
+QUALITY AND DELIVERY
+Check: after big changes and before every render (`check target=youtube`); fix=true applies safe fixes; craft notes are a senior editor's notes: act on them. Not: rendering with open errors.
+Render: the preset for the destination (`render preset=youtube wait=true`, social, prores for a client master), plus deliverables (srt, chapters, xml to finish in Premiere or Resolve).
 ```
 
 ## style: pro editing + motion design rules (hook, pacing, sound, type, easing) as commands
@@ -180,6 +279,55 @@ title chapter num=2 text='Export' at=12 dur=2
 sfx swish at=12
 add m8 A2 at=0 dur=V1.end vol=-22dB fadeOut=2
 master lufs=-16 limiter=1
+
+## grade: log interview, windowed, tracked and matched (help grade, masks, tracking)
+add m1 V1 at=0 dur=8
+add m2 V1 at=8 dur=4
+add m3 V1 at=12 dur=4
+color c1 input=slog3
+color c1 exposure=0.3 contrast=12
+mask c1 ellipse x=.48 y=.38 w=.2 h=.3 feather=60 window
+track c1.m1
+fx c1 curves master='0,0 .4,.46 1,1' mask=m1
+mask c1 hsl hue=25 hueRange=40 window
+fx c1 secondary sat=1.05 mask=m2*m1
+grade save interview from=c1
+still save hero from=c1
+match c2,c3 to=still:hero
+fx c1 softclip
+
+## track: a 3D title locked into a moving shot, a screen replacement and a tracked grade window (help tracking, grade)
+add m1 V1 at=0 dur=8
+camtrack c1
+camtrack c1 points n=12
+camtrack c1 ground=p1,p2,p3
+camtrack c1 attach text 'OPEN DAILY' at=p1,p2,p3 size=1.2
+add m2 at=0 dur=8 as=screen
+track c1 corners='.3,.3 .6,.32 .6,.6 .3,.58' to=cornerpin on=screen
+node c1 add name=Contrast
+node c1 1 primaries contrast=1.1 pivot=.42
+node c1 add name=Face
+node c1 2 window add circle x=.5 y=.45 w=.3 h=.4 feather=60
+node c1 2 track mode=similarity
+node c1 2 primaries gammaY=.03 sat=55
+node c1 add layer composite=softlight name=Glow
+node c1 3 glow radius=40 mix=.4
+
+## mix: dialogue and music buses with a shared reverb (help mix)
+add m1 V1 at=0 dur=20
+add m8 A2 at=0 dur=20
+bus add B1 name=Dialogue
+bus add B2 name=Music
+bus add B3 name=Verb
+track set V1 out=B1
+track set A2 out=B2
+send V1 B3 -18dB
+afx B3 rack=room-verb
+afx B1 rack=podcast-voice
+repair V1
+duck B2 by=B1
+kf A2 vol 0:-30 2:-18
+master lufs=-14 limiter=1 truepeak=1
 ```
 
 ## platforms: Reels/TikTok/Shorts/YouTube/feed/ads specs and UI safe zones
@@ -268,8 +416,13 @@ PROPERTIES & MOTION
 LOOK
  fx <ids> <effect> [params]   fx <id.f1> param=v | del | on | off | up | down   fx <id> clear
  afx <id|A1|master> <audioEffect> [params]   afx <id.a1|A1.a1|master.a1> param=v | del | on | off | up | down   afx <id|A1|master> clear
- color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 mask=m1 mix=.8 | color <ids> none   lut <ids> file='path.cube' [amount=1] [mask=m1] [mix=1]
+ color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 | color <ids> none   lut <ids> file.cube [amount]
  mask <id> <rect|ellipse|path|polygon|star> [x y w h feather expand invert mode]   mask <id.m1> feather=60 | del
+ path masks use normalized layer coordinates: d='M0.1,0.1 C0.2,0.05 0.4,0.05 0.5,0.1 L0.8,0.7 Z'; keyframe matching paths with `kf c1.m1 d 0:M0,0C0.2,0.1,0.3,0.1,0.5,0 1:M0,0C0.2,0.2,0.3,0.2,0.5,0` (same segment structure for smooth morphing)
+ mask <id.m1> pt 3 x,y [at=T] | pt 3 smooth|corner|first | topath | track mode=perspective   (help masks)
+ node <clip> add [serial|parallel|layer|outside] | node <clip> N primaries gainR=1.03 | node <clip> N window add circle | node <clip> N qualify hsl hue=25 | node <clip> N mix=.7   (Resolve nodes; help grade)
+ track <clip.m1> mode=pos|rotation|similarity|affine|perspective | track <clip> corners='..' to=cornerpin on=<layer> | track <clip> region=.. to=null|stabilize   (help tracking)
+ camtrack <clip> [fov=] | camtrack <clip> ground=p1,p2,p3 | camtrack <clip> attach text 'Hi' at=p1,p2,p3 | camtrack <clip> points   (3D camera tracker)
  tr <a> <b> <kind> [dur]   tr <id> in|out <kind> [dur]   tr V1 dissolve 0.4 (all cuts)   tr <a> <b> none
  fade <ids> [in=0.5] [out=1] [video|audio]
 AUDIO
@@ -309,7 +462,7 @@ ALIGN (After Effects Align panel)
  boxes are measured from the rendered layer (text, shapes, media, parenting, 3D); position keyframes move together.
 LAYERS null [at dur] [children=<ids>] | camera [move=pushin|pullout|truck|pedestal|orbit|drift|shake] [layers=<ids>] (help 3d) | set <id> blend=<mode> | matte | precomp
 COLOR (Lumetri Color panel; help color)
- basic correction: color <ids> exposure= contrast= pivot= highlights= shadows= whites= blacks= temp= tint= sat= vibrance= mask=m1 mix=.8   creative: color <ids> <look> + fade= stint= htint=   LUT: lut <ids> file='path.cube' amount=.8 mask=m1 (supports 1D/3D .cube)
+ basic correction: color <ids> exposure= contrast= highlights= shadows= whites= blacks= temp= tint= sat= vibrance=   creative: color <ids> <look> + fade= stint= htint=
  curves: fx <id> curves master='0,0 .25,.2 .75,.85 1,1' | fx <id> huecurves hueSat='0.33,-0.6' lumaSat='0.05,-1'
  color wheels: fx <id> colorwheels shadows=#2a6cff40 highlights=#ff9a4440 midtonesL=5   HSL secondary: fx <id> secondary hue=120 hueRange=25 sat=0.6
  vignette: fx <id> vignette   match a grade: paste <graded> <others> color   scopes: preview scope=all (help scopes)
@@ -318,6 +471,147 @@ AUDIO (Essential Sound, Audio Track Mixer)
  mixer: track set A2 vol=-3 pan=-0.2 mute=1 solo=1 | master vol=-1 lufs=-14 limiter=1 | afx <clip|A1|master> <effect> (help audio)
 MARKERS marker add T 'name' [color=#f00 dur=2 note='...'] | marker set <name|T> name= t= color= dur= note= | marker del <name|T> | marker clear
 HISTORY project action=history (undo labels) | undo [n] / redo [n]
+```
+
+## masks: After Effects masks, Resolve windows and qualifiers, roto vertices, matte finesse, matte view, keying
+
+```text
+Masks (After Effects masks, Resolve power windows and qualifiers). Ids count per layer: a layer's first mask is m1, the next m2 (effects f1, f2 on their own).
+ mask <id> rect|ellipse|polygon|star|path|gradient [x= y= w= h= rot= radius= points= feather= ...] [window] [invert]
+   Resolve names work too: circle (ellipse), linear (rect), curve (path), polygon, gradient. x,y = center, w,h = size, all fractions of the layer.
+   path: d='M0.1,0.1 C0.2,0.05 0.4,0.05 0.5,0.1 L0.8,0.7 Z' (normalized layer coords, cubic Beziers); smooth=1 is RotoBezier (tension=-1..1).
+ Cut or window: a plain mask cuts the layer (After Effects); with the word window (cut=0) it only limits effects (a Resolve window). mode=add|subtract|intersect|lighten|darken|difference|none combines cutting masks as in AE.
+ Edge: feather= (px), featherY= (AE's two-value feather), falloff=smooth|linear, featherBias=-1..1 (inside..outside), vfeather='3:40 5:-10' (per-vertex feather points, px; + outward, - inward),
+   expand= (grow/shrink px), opacity=, invert, mblur=1 shutter=180 (mask motion blur), refine=8 refineSoft=.2 (Refine Edge: snaps soft edges to hair and fur).
+ Vertices (AE pen tools; numbers as preview view=overlay shows them): mask c1.m1 pt 3 0.42,0.31 [in=x,y out=x,y] [at=T] moves vertex 3 (with at= it keys the path there) |
+   pt 3 smooth | pt 3 corner (Convert Vertex) | pt 3 first (Set First Vertex, decides how paths morph) | pt add after=2 | pt 4 del. mask c1.m1 topath turns a shape mask into an editable path.
+ Animate: kf c1.m1 d 0:'M..' 2:'M..' (paths with the same vertex count morph), kf c1.m1 feather|x|w|opacity|expand ... Track: track c1.m1 mode=pos|rotation|similarity|affine|perspective (help tracking).
+ On effects: every in-place effect takes mask= and mix=: fx c1 blur radius=40 mask=m1 (blur a face), color c1 sat=80 mask=m2. Expressions: m1+m2 union, m1*m2 intersection, -m1 outside, parentheses: (m1+m2)*-m3.
+ Qualifiers (Resolve keys from the picture, always windows): mask c1 hsl hue=25 hueRange=40 satLo=.15 satHi=.8 lumLo=.2 lumHi=.9 qsoft=.1 window | mask c1 luma lumLo=.7 window |
+   mask c1 rgb rLo=.6 gHi=.4 window | mask c1 3d color=#d8a080 tolerance=.12 window (read the color with preview pick=x,y). This color inside this window: mask=m1*m2.
+   Matte finesse: cleanBlack= cleanWhite= (levels), clean= (despeckle px), morph=shrink|grow|open|close morphR=2, matteBlur=4, expand=.
+ Auto-trace: mask c1 trace [channel=luma|alpha|red|green|blue] [threshold=.5] [pick=x,y] [invert] [range=a-b every=0.5] (AE Auto-trace; with range= the path is keyed).
+ Track mattes: matte <layer> <matteLayer> alpha|alphainv|luma|lumainv.
+ Look at it: preview view=matte id=c1.m1 t=2 (gray matte, coverage, box, soft-edge share) | view=overlay (outline + numbered vertices over the picture); expressions too: id=c1.m1*m2. Colors: preview pick=x,y.
+ Keying: fx c1 chromakey auto=1 similarity=.35 clipBlack=.1 clipWhite=.9 edge=2; fx c1 matteclean size=2; fx c1 lightwrap width=12; fx c1 spill. Garbage/holdout mattes are masks.
+Mask props (static ones can't be keyframed):
+ x=0.5 [num] Mask center X as fraction of layer width
+ y=0.5 [num] Mask center Y as fraction of layer height
+ w=0.8 [num] Mask width as fraction of layer width
+ h=0.8 [num] Mask height as fraction of layer height
+ radius=0 [num] Corner radius (rect masks)
+ d='' [text] SVG path in normalized 0..1 layer coordinates; matching paths can morph
+ points=5 [num 2..100] Polygon/star points
+ feather=0 [num 0..1000] Edge feather (px)
+ expand=0 [num -1000..1000] Grow/shrink the mask (px)
+ opacity=1 [num 0..1] Mask opacity
+ rot=0 [num] Mask rotation
+ invert=false [bool] (static) Invert the mask
+ mode=add [add|subtract|intersect|lighten|darken|difference|none] (static) How masks combine (After Effects modes): add sums, subtract cuts, intersect multiplies, lighten/darken keep the larger/smaller, none only defines a window
+ cut=true [bool] (static) Cut the layer to this mask; off (the `window` word) makes it only an effect window
+ featherBias=0 [num -1..1] Feather placement: -1 inside the edge, 0 centered, 1 outside
+ offset=0,0 [x,y] Placement offset (fraction of layer size), applied after the shape; written by `track`
+ scale=1 [num 0..100] Placement scale about the mask center; written by `track mode=similarity`
+ trot=0 [num] Placement rotation about the mask center; written by `track mode=similarity`
+ hue=0 [num] hsl masks: hue center in degrees (0 red, 120 green, 240 blue)
+ hueRange=40 [num 0..360] hsl masks: hue width in degrees (360 = any hue)
+ satLo=0.1 [num 0..1] hsl masks: lowest saturation selected
+ satHi=1 [num 0..1] hsl masks: highest saturation selected
+ lumLo=0 [num 0..1] hsl/luma masks: lowest luma selected
+ lumHi=1 [num 0..1] hsl/luma masks: highest luma selected
+ qsoft=0.1 [num 0..1] hsl/luma masks: softness of the selection edges
+ clean=0 [num 0..100] Qualifier masks: shrink and blur the key to remove speckle (px)
+ featherY=-1 [num -1..1000] Vertical feather (px); -1 = same as feather (AE's two-value feather)
+ falloff=smooth [smooth|linear] (static) Feather falloff: smooth (gaussian) or linear
+ vfeather='' [text] (static) Per-vertex feather on path masks, 'n:px ...' (vertices from 1): positive fades outward, negative inward; others use feather
+ smooth=false [bool] (static) Path masks: RotoBezier, a smooth curve through the vertices with automatic tangents
+ tension=0 [num -1..1] RotoBezier tension: 0 Catmull-Rom, 1 corners, negative rounder
+ mblur=false [bool] (static) Motion blur on an animated mask (eight samples over the shutter)
+ shutter=180 [num 0..720] Mask motion blur shutter angle
+ refine=0 [num 0..200] Refine edge: snap the soft edge to the picture's edges within this many px (hair, fur, motion blur)
+ refineSoft=0.2 [num 0..1] Refine edge smoothness: low keeps fine detail, high smooths
+ cleanBlack=0 [num 0..1] Matte finesse: alpha below this becomes 0 (removes gray in the clear area)
+ cleanWhite=1 [num 0..1] Matte finesse: alpha above this becomes 1 (fills holes in the solid area)
+ morph=none [none|shrink|grow|open|close] (static) Matte finesse morph (Resolve): shrink or grow the matte, open removes specks, close fills small holes
+ morphR=2 [num 0..100] Morph radius (px)
+ matteBlur=0 [num 0..200] Matte finesse: blur the finished matte (px)
+ rLo=0 [num 0..1] rgb masks: lowest red selected
+ rHi=1 [num 0..1] rgb masks: highest red selected
+ gLo=0 [num 0..1] rgb masks: lowest green selected
+ gHi=1 [num 0..1] rgb masks: highest green selected
+ bLo=0 [num 0..1] rgb masks: lowest blue selected
+ bHi=1 [num 0..1] rgb masks: highest blue selected
+ color=#d8a080 [color] 3d masks: the key color (pick it with preview pick=x,y)
+ tolerance=0.12 [num 0..1] 3d masks: distance from the key color still selected
+ trackLost='' [text] (static) Written by track: ranges (item seconds) where the tracker lost confidence; check reports them
+```
+
+## tracking: mask, point, planar (perspective) and 3D camera tracking, stabilizing
+
+```text
+Tracking (After Effects' tracker and mask tracker, a Mocha-style planar tracker and the 3D Camera Tracker). Results are ordinary keyframes; at most 60 s per call (split long shots with range=a-b).
+ Masks (AE mask tracking methods): track c1.m1 [mode=pos|rotation|similarity|affine|perspective] [range=a-b] [at=T] [planar]   (mask c1.m1 track ... is the same)
+   pos, rotation and similarity key the mask's placement (offset, trot, scale), so its own shape keys stay; affine and perspective key the path's vertices (a shape mask becomes a path).
+   at= is the time the mask is drawn right (default: playhead or clip start). planar uses the feature tracker for pos/similarity too (better on detailed surfaces).
+ A point to a null: track c1 region=cx,cy,w,h to=null [mode=pos|rotation|similarity|perspective] -> a null with position (and rotation, scale) keys; parent titles to it: parent t1 <null>.
+ Screen replacement / corner pin: track c1 corners='x,y x,y x,y x,y' to=cornerpin on=c5 -> the plane inside the four corners (clockwise from top-left, fractions) followed in perspective;
+   mode=points tracks the four corners themselves (only when they are crisp marks).
+ Stabilize: track c1 region=cx,cy,w,h to=stabilize [mode=similarity] [smooth=1] [zoom].
+ 3D camera (AE's 3D Camera Tracker): camtrack c1 [range=a-b] [at=T] [fov=54] [nodal] [points=500]   (track c1 to=camera is the same)
+   -> a one-node camera layer keyed from the shot (pos, z, rx, ry, rot, zoom) plus solved 3D points; the reply gives the error (px), field of view and unsolved stretches.
+   The clip must fill the comp centered and level (otherwise precomp it). The focal length is solved unless fov= gives the horizontal angle of view. Tripod pans and tilts solve as a rotating camera (nodal).
+   preview view=points id=c1 t=2 shows the numbered points (green = accurate) and the floor grid; camtrack c1 points [t=] [near=x,y] [n=20] lists them.
+   camtrack c1 ground=p3,p7,p9 [origin=p3]: those points' plane becomes the floor (level, y down) and the origin the comp center at z=0; the camera and attached layers follow.
+   camtrack c1 attach text 'SALE' at=p3,p7,p9 [size=1.5] [face=plane|camera] [as=name] | attach solid #fff | attach null | attach shape rect | attach m4 | attach <layer id>
+     -> a 3D layer on those points: lying on their plane (3+ points) or facing the camera, at its natural size at the reference frame. Re-solving replaces the camera's keys.
+ Replies name lost stretches: `~c1.m1 tracked 0-8.4s, 31 keys; !lost 3.2-3.6 (conf 0.41)` -> check with preview view=overlay t=3.4 and fix: kf c1.m1 offset 3.4:0.12,0.03 or mask c1.m1 pt ... at=3.4
+ Reversed, remapped or frozen clips: track before changing timing.
+```
+
+## grade: DaVinci Resolve color page: nodes, primaries, wheels, curves, warper, qualifiers, windows, color management, groups, match
+
+```text
+Grading the DaVinci Resolve way. Every color effect is a node; consecutive effects with the same node label are ONE corrector node: its tools run together, keyed once by the node's
+window/qualifier and blended once by its mix (key output gain). Per-pixel tools in a node fuse into one LUT.
+NODES (node verb; nodes are numbered 1, 2, ... in order; view what=grade or node c1 list shows them)
+ node c1 add [serial|parallel|layer|outside] [after=N] [name=Skin] [composite=softlight]   a new node starts as neutral primaries (Resolve's corrector)
+ node c1 2 primaries liftY=-.02 gammaR=.01 gainB=1.03 contrast=1.1 pivot=.42 sat=55 | node c1 2 curves luma='0,0 .3,.26 .75,.8 1,1' | node c1 2 huecurves hueSat='.33,-.4'
+   (a tool the node lacks is added to it; any color tool below, plus blur, sharpen, glow, smooth)
+ node c1 2 window add circle x=.5 y=.4 w=.3 h=.4 feather=60 | window add linear | polygon | curve d='M..' | gradient rot=0 h=.3 | node c1 2 qualify hsl hue=25 hueRange=30 satLo=.15
+   node key = (window + window ...) * qualifier: windows join, qualifiers narrow. node c1 2 window=m1+m2 sets it whole; window none clears it. Track it: node c1 2 track mode=similarity.
+ node c1 add outside after=2 (the inverse of node 2's key) | node c1 2 mix=.7 | off | on | reset | del | name=Skin | parallel | layer composite=screen | serial | up | down
+ parallel nodes take the input of the node before them and their changes add up (parallel mixer); layer nodes take that input too and composite on top by their key
+ (layer mixer: normal add subtract multiply screen overlay softlight hardlight darken lighten difference color luminosity). Same with fx: fx c1 primaries node=Skin mask=m2 mix=.8 parallel=1.
+TOOLS (fx names; help effects lists every param)
+ primaries: lift/gamma/gain/offset as master (Y) and R G B: liftY -1..1, gammaY -1..1 (+ brighter mids), gainY 1 = unchanged, offsetY -1..1; contrast 1 + pivot .435; sat 50 = unchanged (0 gray, 100 double);
+   hue 50 = unchanged; lumMix 100; temp (Resolve units, + warmer) tint; boost (color boost); shadows, highlights; midDetail (MD, local contrast).
+ logwheels: shadow/midtone/highlight/offset tints (#rrggbbaa, alpha = strength) and levels, low=.333 high=.55 ranges, contrast, pivot. hdrwheels: black/dark/shadow/light/highlight/specular zones (Exp, Sat, Tint each; zone edges in stops).
+ colorwheels: lift/gamma/gain/offset tints and levels with shadowPivot/highlightPivot. curves: master r g b luma (custom curves, YRGB). huecurves: hueHue hueSat hueLuma lumaSat satSat satLuma.
+ colorwarper pins='35,.55>24,.45' luma='215,.5>-.12' (hue-sat warper). colorslice: Hue/Sat/Den for red skin yellow green cyan blue magenta. secondary (HSL key + correction). channelmixer (RGB mixer, mono=1).
+ lut file='look.cube' amount=. cst from=slog3 to=rec709 tonemap=simple|luma|none gamut=compress|clip (color space transform). softclip, filmcurve, halation, legalize (gamut limiter).
+COLOR MANAGEMENT color c1 input=slog3|logc3|logc4|vlog|clog3|dlog|hlg|pq|rec709|auto (decoder input transform at source precision; auto reads HLG/PQ tags) or a cst node.
+BALANCE AND MATCH color c1 wb=auto | wb=pick:.4,.6 (a neutral point) | wb=off. match c2..c9 to=c1|still:hero [what=exposure,balance,sat] -> a colorwheels node tag=match (redone on re-match).
+GROUPS AND VERSIONS grade save day-ext from=c1 (the clip's color effects become a linked post-clip group) | grade apply day-ext c2..c9 [pre] (pre-clip) | grade detach c4 | grade copy c1 c2..c9 [append] |
+ grade version c1 save|load|del <name> | grade version c1 list | grade reset c1 | grade del | grade list. Timeline grade: an adjustment layer over the clips.
+GALLERY still save hero from=c1 [at=T] | still list | still del. preview ref=hero split=0.5 t=.. (wipe, with the measured difference).
+MEASURE preview scope=all|waveform|parade|vectorscope|histogram|falsecolor [region=cx,cy,w,h] t=..; preview view=matte id=c1.m2 (a node's key); view what=grade [id=c1].
+Typical: color c1 input=slog3 -> node c1 add (balance: primaries gainR=..) -> node c1 add (contrast: primaries contrast=1.15 pivot=.4) -> node c1 add parallel, node c1 3 qualify hsl hue=25 (skin),
+ node c1 3 huecurves -> node c1 add, node c1 4 window add circle, node c1 4 track -> node c1 add layer composite=softlight, node c1 5 lut file=.. -> grade save look from=c1 -> match c2..c9 to=c1.
+```
+
+## mix: buses, sends, automation, processors, repair, audio scopes, stems
+
+```text
+Mixing (Audition-style). Signal flow: clip (gain, pan, fades, afx) -> track (vol, pan, automation, afx) -> bus(es) -> master (vol, afx, loudness, limiter).
+  bus add B1 name=Dialogue | bus set B1 vol=-3 pan=0 out=B3|master mute=0 | bus del B1 | bus list
+  track set A1 out=B1          route a track to a bus
+  send A1 B2 -12dB [pre]       a send (shared reverb, parallel compression); send A1 B2 off. Loops are refused.
+  kf A1 vol 0:-6 4:0 / kf B2 pan 0:-1 3:1   track and bus automation (comp seconds); kf c1 pan ... for clips. set c1 fadeCurve=linear|log|exp|scurve|power; audio transitions are equal-power.
+  afx <clip|A1|B1|master> <effect> [mix=0.5]: every audio effect takes mix (wet/dry). Racks: afx A1 rack=podcast-voice|voiceover|phone|music-bed|glue|room-verb|hall-verb|master.
+  Processors: peq bands='120,-3,1,lowshelf 3000,2,1,bell 80,0,0.7,highpass' (8 bands), multiband, limiter truepeak=1, reverb type=room|hall|plate|booth|echo (convolution), denoise amount=12 learn=0.2-1.0 (noise print), declip, dehum, deess, stereo width=1.2 balance=0 invertl=1, compress, gate, ...
+  duck B2 by=B1 (buses or tracks). master lufs=-14 limiter=1 truepeak=1.
+  Measured repair: repair <clips|A1> (adds dehum / declip / highpass / denoise only when measured), roomtone A1 (fills gaps with the quietest second), match c2 to=c1 eq|loudness.
+  Measure: preview scope=spectrum|spectrogram|loudness|phase|mix [target=c3|A1|B1|master] [range=a-b] (image + I/S/M LUFS, LRA, true peak, noise floor, clipping, DC, six bands, correlation, hum); scope=mix gives one line per track and bus. analyze noise|spectrum|dynamics on media. view what=mix lists routing, sends, chains, automation and levels. render preset=stems writes a WAV per bus plus the mix.
 ```
 
 ## time: time & reference syntax
@@ -355,11 +649,13 @@ Media clip:
  hold=false [bool] (static) Freeze frame (shows the in-point frame)
  remap=-1 [num] Time remap: keyframes map item time -> source seconds (-1 = off)
  interp=none [none|blend|flow] (static) Slow-motion frame interpolation
+ input=auto [auto|rec709|slog3|logc3|logc4|vlog|clog3|dlog|hlg|pq] (static) Input color transform to Rec.709, applied while decoding at source precision: auto (HLG/PQ from the file's tags), rec709, slog3, logc3, logc4, vlog, clog3, dlog, hlg, pq
  vol=0 [num -96..24] Audio gain in dB (accepts -6dB)
- pan=0 [num] (static) Stereo pan -1 (left) .. 1 (right)
+ pan=0 [num -1..1] Stereo pan -1 (left) .. 1 (right); keyframe it to move the sound
  mute=false [bool] (static) Mute the clip's audio
  fadeIn=0 [num] (static) Audio fade-in seconds
  fadeOut=0 [num] (static) Audio fade-out seconds
+ fadeCurve=linear [linear|log|exp|scurve|power] (static) Audio fade shape: log starts fast, exp starts slow, scurve eases both ends, power is equal-power
 Text:
  font=Inter [text] (static) Font family (system fonts; Inter is bundled)
  weight=700 [num] (static) Font weight 100-900 or thin/light/regular/medium/semibold/bold/black
@@ -412,89 +708,102 @@ Null layers have only the layer props.
 fx <id> <effect> [param=value...]  (params are animatable via kf <id>.fN <param> ...). Spatial params in comp px. Effects run top to bottom; reorder with fx <id.fN> up|down.
 After Effects / Premiere names work as aliases (gaussian blur, keylight, fractal noise, turbulent displace, venetian blinds, motion tile...). [transition] effects hide the layer as completion goes 0->100; [time] effects change when frames are taken.
 [color]
- lumetri (aka grade color colorgrade): Premiere-style basic correction. exposure=0 contrast=0 highlights=0 shadows=0 whites=0 blacks=0 temp=0 tint=0 sat=100 vibrance=0 fade=0 stint=none htint=none look=''
- bc (aka brightness contrast brightnesscontrast): Brightness & contrast. brightness=0 contrast=0
- exposure: Exposure, offset and gamma. stops=0 offset=0 gamma=1
- levels: Input/output levels. inBlack=0 inWhite=1 gamma=1 outBlack=0 outWhite=1
- curves: Tone curves from control points 'x,y x,y ...' (0..1). master='' r='' g='' b=''
- hue (aka huesat hsl): Hue / saturation / lightness. shift=0 sat=1 light=0
- saturation (aka sat): Saturation. amount=1
- vibrance: Vibrance (protects saturated colors). amount=0.5
- temperature (aka wb whitebalance): White balance shift. temp=0 tint=0
- tint: Map blacks/whites to colors. black=#000000 white=#ffffff amount=1
- duotone: Two-color gradient map. dark=#1b1464 light=#ff5f6d amount=1
- fill (aka colorize colorfill): Fill the layer with a color (keeps alpha). color=#ffffff amount=1
- grayscale (aka bw blackwhite mono desaturate): Black & white. amount=1
- sepia: Sepia tone. amount=1
- invert (aka negative): Invert colors. amount=1
- lut (aka lut3d cube): Apply a .cube 3D LUT. file='' amount=1
- posterize: Reduce color levels. levels=6
- threshold: Black/white threshold. level=0.5
- colorwheels (aka wheels liftgammagain colorbalance threeway): Primary color wheels: tint lift / gamma / gain / offset and shift their brightness. shadows=none midtones=none highlights=none offset=none shadowsL=0 midtonesL=0 highlightsL=0 offsetL=0 mask= mix=1
- channelmixer (aka mixer channels): Channel mixer: each output channel as % of the input red, green and blue. rr=100 rg=0 rb=0 gr=0 gg=100 gb=0 br=0 bg=0 bb=100 mono=false
- leavecolor (aka colorpass keepcolor colorsplash): Leave color: keep one color, desaturate everything else. color=#e02020 tolerance=0.1 soft=0.08 amount=1
- changecolor (aka changetocolor colorreplace replacecolor): Change one color to another. from=#e02020 to=#2060ff tolerance=0.1 soft=0.08 mode=hue amount=1
- secondary (aka hslsecondary hsl2 qualifier selectivecolor): Lumetri HSL secondary: key a hue / saturation / luma range and correct only that range. hue=25 hueRange=30 satMin=0.1 lumMin=0.05 lumMax=0.95 soft=0.15 shift=0 sat=1 light=0 temp=0 tint=0 show=false invert=false
- huecurves (aka huesatcurves huevssat hslcurves): Lumetri hue/saturation curves. Each point 'x,y[,width]' adds a smooth bump: x = position 0..1 (hue or luma), y = change -1..1. hueSat='' hueHue='' hueLuma='' lumaSat='' satSat=''
- photofilter (aka filter warmingfilter coolingfilter): Photo filter: tint as with a colored lens filter. color=#ec8a00 density=0.25 preserve=true
- tritone: Map shadows, midtones and highlights to three colors. shadows=#0b0b1a midtones=#7f6a4f highlights=#fff6e5 amount=1
- autolevels (aka autocontrast autocolor autotone autocorrect): Auto levels: stretch every frame to the full range (perchannel=1 also removes color casts). amount=1 clip=0.005 perchannel=false
- legalize (aka videolimiter broadcastsafe legal): Video limiter: keep levels inside the broadcast-legal range. min=0.063 max=0.922 mode=compress
-[blur]
- blur (aka gaussian gaussianblur boxblur fastblur): Gaussian blur. radius=10 dir=both
- dirblur (aka motionblurfx directionalblur): Directional (motion) blur. angle=0 length=30
- zoomblur (aka radialblur spinblur): Radial blur: zoom (streaks from a center) or spin (rotational). amount=0.15 cx=0.5 cy=0.5 type=zoom
- tiltshift (aka miniature): Tilt-shift: a sharp band with blur above and below (miniature look). center=0.55 width=0.12 soft=0.25 radius=18 angle=0
- smooth (aka surfaceblur skinsmooth beauty bilateral smartblur): Edge-preserving blur (skin smoothing, clean surfaces). radius=6 threshold=0.08 amount=1
- lensblur (aka bokeh defocus camerablur cameralensblur): Camera lens blur with blooming bokeh highlights. radius=12 bright=1.5 threshold=0.75
- sharpen (aka unsharp): Unsharp mask sharpening. amount=1 radius=1.5
+ lumetri (aka grade color colorgrade): Primary color correction with Resolve-style contrast pivot, split toning and creative controls. exposure=0 contrast=0 pivot=0.45 highlights=0 shadows=0 whites=0 blacks=0 temp=0 tint=0 sat=100 vibrance=0 fade=0 stint=none htint=none look='' mask='' mix=1 parallel=false layer=false composite=normal node=''
+ bc (aka brightness contrast brightnesscontrast): Brightness & contrast. brightness=0 contrast=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ exposure: Exposure, offset and gamma. stops=0 offset=0 gamma=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ levels: Input/output levels. inBlack=0 inWhite=1 gamma=1 outBlack=0 outWhite=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ curves: Tone curves from control points 'x,y x,y ...' (0..1). master='' r='' g='' b='' luma='' mask='' mix=1 parallel=false layer=false composite=normal node=''
+ hue (aka huesat hsl): Hue / saturation / lightness. shift=0 sat=1 light=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ saturation (aka sat): Saturation. amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ vibrance: Vibrance (protects saturated colors). amount=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ temperature (aka wb whitebalance): White balance shift. temp=0 tint=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ tint: Map blacks/whites to colors. black=#000000 white=#ffffff amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ duotone: Two-color gradient map. dark=#1b1464 light=#ff5f6d amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ fill (aka colorize colorfill): Fill the layer with a color (keeps alpha). color=#ffffff amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ grayscale (aka bw blackwhite mono desaturate): Black & white. amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ sepia: Sepia tone. amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ invert (aka negative): Invert colors. amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lut (aka lut3d cube): Apply a .cube 1D or 3D LUT. file='' amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ posterize: Reduce color levels. levels=6 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ threshold: Black/white threshold. level=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ colorwheels (aka wheels liftgammagain colorbalance threeway): Primary color wheels: tint lift / gamma / gain / offset and shift their brightness. shadows=none midtones=none highlights=none offset=none shadowsL=0 midtonesL=0 highlightsL=0 offsetL=0 sat=100 shadowPivot=0 highlightPivot=1 tag='' mask='' mix=1 parallel=false layer=false composite=normal node=''
+ channelmixer (aka mixer channels): Channel mixer: each output channel as % of the input red, green and blue. rr=100 rg=0 rb=0 gr=0 gg=100 gb=0 br=0 bg=0 bb=100 mono=false mask='' mix=1 parallel=false layer=false composite=normal node=''
+ leavecolor (aka colorpass keepcolor colorsplash): Leave color: keep one color, desaturate everything else. color=#e02020 tolerance=0.1 soft=0.08 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ changecolor (aka changetocolor colorreplace replacecolor): Change one color to another. from=#e02020 to=#2060ff tolerance=0.1 soft=0.08 mode=hue amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ secondary (aka hslsecondary hsl2 qualifier selectivecolor): Lumetri HSL secondary: key a hue / saturation / luma range and correct only that range. hue=25 hueRange=30 satMin=0.1 lumMin=0.05 lumMax=0.95 soft=0.15 shift=0 sat=1 light=0 temp=0 tint=0 show=false invert=false mask='' mix=1 parallel=false layer=false composite=normal node=''
+ huecurves (aka huesatcurves huevssat hslcurves): Lumetri hue/saturation curves. Each point 'x,y[,width]' adds a smooth bump: x = position 0..1 (hue or luma), y = change -1..1. hueSat='' hueHue='' hueLuma='' lumaSat='' satSat='' satLuma='' mask='' mix=1 parallel=false layer=false composite=normal node=''
+ photofilter (aka filter warmingfilter coolingfilter): Photo filter: tint as with a colored lens filter. color=#ec8a00 density=0.25 preserve=true mask='' mix=1 parallel=false layer=false composite=normal node=''
+ tritone: Map shadows, midtones and highlights to three colors. shadows=#0b0b1a midtones=#7f6a4f highlights=#fff6e5 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ autolevels (aka autocontrast autocolor autotone autocorrect): Auto levels: stretch every frame to the full range (perchannel=1 also removes color casts). amount=1 clip=0.005 perchannel=false mask='' mix=1 parallel=false layer=false composite=normal node=''
+ softclip (aka highlightrolloff rolloff): Highlight roll-off: compresses highlights above the knee instead of clipping them. knee=0.75 strength=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ filmcurve (aka scurve filmic): Film-style S-curve with a soft toe and shoulder. contrast=0.3 toe=0.1 shoulder=0.1 pivot=0.45 mask='' mix=1 parallel=false layer=false composite=normal node=''
 [stylize]
- glow (aka bloom): Glow / bloom. radius=24 intensity=1 threshold=0.6 color=none
- shadow (aka dropshadow): Drop shadow. color=#000000 opacity=0.6 angle=135 distance=12 blur=16
- stroke (aka outline border): Outline around the layer's alpha. color=#ffffff width=6
- vignette: Darken the frame edges. amount=0.5 size=0.6 soft=0.5 color=#000000
- noise (aka grain filmgrain): Film grain / noise. amount=0.12 mono=true animated=true
- pixelate (aka mosaic): Pixelate. size=16
- rgbsplit (aka chromatic chromaticaberration rgbshift): RGB channel split. amount=6 angle=0
- glitch (aka datamosh): Digital glitch (slice displacement + RGB split). amount=0.5 slices=14 speed=12
- scanlines (aka crt): CRT scanlines. spacing=4 opacity=0.3
- letterbox (aka cinemabars bars): Cinematic bars. ratio=2.39 color=#000000
- findedges (aka edges sobel edgedetect): Find edges (line-drawing look). invert=true strength=1 amount=1
- emboss (aka relief): Emboss. angle=135 relief=2 amount=1 color=false
- halftone (aka colorhalftone dots comic): Halftone dots (print / comic look). size=10 angle=45 mono=true amount=1
- strobe (aka strobelight flashing): Strobe light. color=#ffffff freq=4 duty=0.25 amount=1 mode=flash
- bevel (aka bevelalpha bevelemboss): Bevel the layer's edges (text, logos). depth=6 angle=135 intensity=0.6 light=#ffffff dark=#000000
- innershadow: Inner shadow inside the layer's edges. color=#000000 opacity=0.6 angle=135 distance=8 blur=10
- outerglow (aka alphaglow halo neonglow): Colored glow around the layer's alpha (neon text, logo halos). color=#ffdd55 opacity=0.8 size=20 spread=0.1
+ halation (aka filmglow): Halation: a red-orange glow around bright highlights, as on film. threshold=0.75 radius=18 amount=0.5 color=#ff4a1a mask='' mix=1 parallel=false layer=false composite=normal node=''
+[color]
+ legalize (aka videolimiter broadcastsafe legal): Video limiter: keep levels inside the broadcast-legal range. min=0.063 max=0.922 mode=compress mask='' mix=1 parallel=false layer=false composite=normal node=''
+ primaries (aka primary lgg primarybars primariesbars): Resolve primaries: lift / gamma / gain / offset as master (Y) and per-channel (R G B) values, contrast and pivot, saturation, hue, lum mix, temperature / tint, color boost, shadows / highlights and midtone detail. liftY=0 liftR=0 liftG=0 liftB=0 gammaY=0 gammaR=0 gammaG=0 gammaB=0 gainY=1 gainR=1 gainG=1 gainB=1 offsetY=0 offsetR=0 offsetG=0 offsetB=0 contrast=1 pivot=0.435 sat=50 hue=50 lumMix=100 temp=0 tint=0 boost=0 shadows=0 highlights=0 midDetail=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ logwheels (aka logcolor logcontrols logwheel): Resolve log wheels: shadow / midtone / highlight tint and level in narrow overlapping ranges split at low and high range, plus offset, contrast and pivot (the film-style grade). shadow=none midtone=none highlight=none offset=none shadowL=0 midtoneL=0 highlightL=0 offsetL=0 low=0.333 high=0.55 contrast=1 pivot=0.435 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ hdrwheels (aka hdr hdrzones hdrpalette zones): Resolve HDR palette: exposure, saturation and tint per tonal zone (black, dark, shadow, light, highlight, specular), zones measured in stops from mid gray, plus global controls. blackExp=0 blackSat=1 blackTint=none darkExp=0 darkSat=1 darkTint=none shadowExp=0 shadowSat=1 shadowTint=none lightExp=0 lightSat=1 lightTint=none highlightExp=0 highlightSat=1 highlightTint=none specularExp=0 specularSat=1 specularTint=none exposure=0 sat=1 tint=none blackAt=-4 darkAt=-2 shadowAt=-1 lightAt=1 highlightAt=2 specularAt=3 falloff=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ colorwarper (aka warper huesatwarp colorwarp huesatmesh): Resolve color warper: move colors to new hues and saturations with pins, and lift or lower luma by color, smoothly carrying neighboring colors along. pins='' luma='' amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ colorslice (aka slice colorslices subtractive): Resolve color slice: hue, saturation and density (subtractive, film-like richness) per color vector: red, skin, yellow, green, cyan, blue, magenta. redHue=0 redSat=0 redDen=0 skinHue=0 skinSat=0 skinDen=0 yellowHue=0 yellowSat=0 yellowDen=0 greenHue=0 greenSat=0 greenDen=0 cyanHue=0 cyanSat=0 cyanDen=0 blueHue=0 blueSat=0 blueDen=0 magentaHue=0 magentaSat=0 magentaDen=0 density=0 sat=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ cst (aka colorspacetransform colorspace csc): Color space transform: convert between camera log, scene linear, ACEScct, HDR and display encodings, with tone and gamut mapping (Resolve's CST). from=rec709 to=rec709 tonemap=simple gamut=compress exposure=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+[blur]
+ blur (aka gaussian gaussianblur boxblur fastblur): Gaussian blur. radius=10 dir=both mask='' mix=1 parallel=false layer=false composite=normal node=''
+ dirblur (aka motionblurfx directionalblur): Directional (motion) blur. angle=0 length=30 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ zoomblur (aka radialblur spinblur): Radial blur: zoom (streaks from a center) or spin (rotational). amount=0.15 cx=0.5 cy=0.5 type=zoom mask='' mix=1 parallel=false layer=false composite=normal node=''
+ tiltshift (aka miniature): Tilt-shift: a sharp band with blur above and below (miniature look). center=0.55 width=0.12 soft=0.25 radius=18 angle=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ smooth (aka surfaceblur skinsmooth beauty bilateral smartblur): Edge-preserving blur (skin smoothing, clean surfaces). radius=6 threshold=0.08 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lensblur (aka bokeh defocus camerablur cameralensblur): Camera lens blur with blooming bokeh highlights. radius=12 bright=1.5 threshold=0.75 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ sharpen (aka unsharp): Unsharp mask sharpening. amount=1 radius=1.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+[stylize]
+ glow (aka bloom): Glow / bloom. radius=24 intensity=1 threshold=0.6 color=none mask='' mix=1 parallel=false layer=false composite=normal node=''
+ shadow (aka dropshadow): Drop shadow. color=#000000 opacity=0.6 angle=135 distance=12 blur=16 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ stroke (aka outline border): Outline around the layer's alpha. color=#ffffff width=6 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ vignette: Darken the frame edges. amount=0.5 size=0.6 soft=0.5 color=#000000 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ noise (aka grain filmgrain): Film grain / noise. amount=0.12 mono=true animated=true size=1 soft=0 response=0 color=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ pixelate (aka mosaic): Pixelate. size=16 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ rgbsplit (aka chromatic chromaticaberration rgbshift): RGB channel split. amount=6 angle=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ glitch (aka datamosh): Digital glitch (slice displacement + RGB split). amount=0.5 slices=14 speed=12 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ scanlines (aka crt): CRT scanlines. spacing=4 opacity=0.3 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ letterbox (aka cinemabars bars): Cinematic bars. ratio=2.39 color=#000000 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ findedges (aka edges sobel edgedetect): Find edges (line-drawing look). invert=true strength=1 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ emboss (aka relief): Emboss. angle=135 relief=2 amount=1 color=false mask='' mix=1 parallel=false layer=false composite=normal node=''
+ halftone (aka colorhalftone dots comic): Halftone dots (print / comic look). size=10 angle=45 mono=true amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ strobe (aka strobelight flashing): Strobe light. color=#ffffff freq=4 duty=0.25 amount=1 mode=flash mask='' mix=1 parallel=false layer=false composite=normal node=''
+ bevel (aka bevelalpha bevelemboss): Bevel the layer's edges (text, logos). depth=6 angle=135 intensity=0.6 light=#ffffff dark=#000000 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ innershadow: Inner shadow inside the layer's edges. color=#000000 opacity=0.6 angle=135 distance=8 blur=10 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ outerglow (aka alphaglow halo neonglow): Colored glow around the layer's alpha (neon text, logo halos). color=#ffdd55 opacity=0.8 size=20 spread=0.1 mask='' mix=1 parallel=false layer=false composite=normal node=''
 [generate]
- gradient (aka ramp gradientramp): Gradient overlay (blends over layer content). c1=#000000 c2=#ffffff type=linear angle=90 amount=1
- lightleak (aka leak): Animated warm light leaks (screen blend). color=#ff7a18 amount=0.6 speed=0.25
- fourcolor (aka 4color fourcolorgradient): Four-color corner gradient over the layer (apply to a solid for a background). tl=#ff3b6b tr=#ffb020 bl=#3b5bff br=#20d0a0 amount=1
- checker (aka checkerboard): Checkerboard pattern over the layer. size=64 c1=#ffffff c2=#000000 offset=0,0 amount=1
- grid (aka gridlines): Grid lines over the layer. spacing=80 width=2 color=#ffffff80 offset=0,0
- fractal (aka fractalnoise clouds noisetexture): Fractal noise texture over the layer (smoke, clouds, animated backgrounds; apply to a solid). scale=240 complexity=5 contrast=1 brightness=0 speed=0.3 type=smooth c1=#000000 c2=#ffffff offset=0,0 amount=1
- lensflare (aka flare): Lens flare, screen-blended over the layer (use on footage or an adjustment layer). pos=0,0 brightness=1 color=#ffd7a0 rays=10 streak=0.6 ghosts=0.5
+ gradient (aka ramp gradientramp): Gradient overlay (blends over layer content). c1=#000000 c2=#ffffff type=linear angle=90 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lightleak (aka leak): Animated warm light leaks (screen blend). color=#ff7a18 amount=0.6 speed=0.25 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ fourcolor (aka 4color fourcolorgradient): Four-color corner gradient over the layer (apply to a solid for a background). tl=#ff3b6b tr=#ffb020 bl=#3b5bff br=#20d0a0 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ checker (aka checkerboard): Checkerboard pattern over the layer. size=64 c1=#ffffff c2=#000000 offset=0,0 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ grid (aka gridlines): Grid lines over the layer. spacing=80 width=2 color=#ffffff80 offset=0,0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ fractal (aka fractalnoise clouds noisetexture): Fractal noise texture over the layer (smoke, clouds, animated backgrounds; apply to a solid). scale=240 complexity=5 contrast=1 brightness=0 speed=0.3 type=smooth c1=#000000 c2=#ffffff offset=0,0 amount=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lensflare (aka flare): Lens flare, screen-blended over the layer (use on footage or an adjustment layer). pos=0,0 brightness=1 color=#ffd7a0 rays=10 streak=0.6 ghosts=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
 [distort]
- wave (aka wavewarp): Wave warp. amp=12 length=120 speed=1 dir=h
- twirl (aka swirl): Twirl around a center. angle=90 radius=0.4 cx=0.5 cy=0.5
- bulge (aka pinch fisheye): Bulge (+) / pinch (-). amount=0.5 radius=0.4 cx=0.5 cy=0.5
- mirror: Mirror half of the frame. axis=h
- kaleido (aka kaleidoscope): Kaleidoscope. segments=6 angle=0
- flip: Flip horizontally / vertically. h=true v=false
+ wave (aka wavewarp): Wave warp. amp=12 length=120 speed=1 dir=h mask='' mix=1 parallel=false layer=false composite=normal node=''
+ twirl (aka swirl): Twirl around a center. angle=90 radius=0.4 cx=0.5 cy=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ bulge (aka pinch fisheye): Bulge (+) / pinch (-). amount=0.5 radius=0.4 cx=0.5 cy=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ mirror: Mirror half of the frame. axis=h mask='' mix=1 parallel=false layer=false composite=normal node=''
+ kaleido (aka kaleidoscope): Kaleidoscope. segments=6 angle=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ flip: Flip horizontally / vertically. h=true v=false mask='' mix=1 parallel=false layer=false composite=normal node=''
  crop: Crop layer edges (fractions of the layer). l=0 t=0 r=0 b=0 soft=0
  cornerpin (aka pin perspective): Pin the layer corners to comp points (screen replacement). tl=0,0 tr=1920,0 br=1920,1080 bl=0,1080
  transform (aka xform): Transform inside the effect stack (applies after the effects above it: shakes and pulses on top of motion). offset=0,0 scale=1,1 rot=0 skew=0 anchor=0.5,0.5 opacity=1
- offset (aka wrap scroll): Offset: shift the image with wrap-around (seamless scrolling). x=0 y=0 blend=0
- polar (aka polarcoordinates littleplanet): Polar coordinates (rect to polar = 'little planet', or back). amount=1 mode=topolar
- ripple (aka waterripple rings): Concentric ripples. amp=8 length=60 speed=1 radius=0.8 cx=0.5 cy=0.5
- lens (aka lensdistortion barrel optics opticscompensation lenscorrection): Lens distortion: barrel (+) or pincushion (-); negative removes action-cam curvature. amount=0.25 zoom=1 cx=0.5 cy=0.5
- turbulence (aka turbulentdisplace displace warpnoise): Turbulent displace: organic wobble, heat haze, liquid. amount=20 size=120 complexity=3 speed=0.5
+ offset (aka wrap scroll): Offset: shift the image with wrap-around (seamless scrolling). x=0 y=0 blend=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ polar (aka polarcoordinates littleplanet): Polar coordinates (rect to polar = 'little planet', or back). amount=1 mode=topolar mask='' mix=1 parallel=false layer=false composite=normal node=''
+ ripple (aka waterripple rings): Concentric ripples. amp=8 length=60 speed=1 radius=0.8 cx=0.5 cy=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lens (aka lensdistortion barrel optics opticscompensation lenscorrection): Lens distortion: barrel (+) or pincushion (-); negative removes action-cam curvature. amount=0.25 zoom=1 cx=0.5 cy=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ turbulence (aka turbulentdisplace displace warpnoise): Turbulent displace: organic wobble, heat haze, liquid. amount=20 size=120 complexity=3 speed=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
  tile (aka motiontile repeat): Motion tile: repeat the layer to fill a larger area (mirror for seamless edges). outW=3 outH=3 tileW=1 tileH=1 mirror=false phase=0,0
 [keying]
- chromakey (aka greenscreen keylight key): Remove a key color (green screen). color=#00ff00 similarity=0.35 smooth=0.12 spill=0.6
- lumakey: Key out dark (or bright) areas. threshold=0.1 smooth=0.1 invert=false
- choke (aka matterchoke simplechoker erode mattechoker): Matte choker: shrink (+) or spread (-) the alpha edge after a key. amount=2 soft=1
- spill (aka spillsuppress despill spillsuppressor): Spill suppressor: remove green/blue spill from edges after a key. color=#00ff00 amount=0.7
+ chromakey (aka greenscreen keylight key): Remove a key color (green screen). color=#00ff00 similarity=0.35 smooth=0.12 spill=0.6 auto=false clipBlack=0 clipWhite=1 edge=0 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lightwrap: Light wrap: the background's light bleeding onto a keyed subject's edge (pick color from the background). color=#ffffff width=12 amount=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ matteclean (aka despeckle cleanmatte): Clean a key: remove specks and fill pinholes in the alpha. size=2 soft=0.5 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ lumakey: Key out dark (or bright) areas. threshold=0.1 smooth=0.1 invert=false mask='' mix=1 parallel=false layer=false composite=normal node=''
+ choke (aka matterchoke simplechoker erode mattechoker): Matte choker: shrink (+) or spread (-) the alpha edge after a key. amount=2 soft=1 mask='' mix=1 parallel=false layer=false composite=normal node=''
+ spill (aka spillsuppress despill spillsuppressor): Spill suppressor: remove green/blue spill from edges after a key. color=#00ff00 amount=0.7 mask='' mix=1 parallel=false layer=false composite=normal node=''
 [transition]
  linearwipe: Linear wipe: hides the layer along a line (animate completion 0->100). completion=0 angle=90 feather=0
  radialwipe (aka clockwipefx): Radial wipe: clock-hand reveal around a center. completion=0 start=0 cx=0.5 cy=0.5 dir=cw feather=0
@@ -522,17 +831,20 @@ Ducking: duck A2 by=A1 amount=-12 attack=20 release=400. Master: master vol=-1 l
  highpass: High-pass filter. freq=80
  lowpass: Low-pass filter. freq=12000
  compress: Dynamic range compressor. threshold=-18 ratio=4 attack=20 release=250 makeup=0
- limiter: Peak limiter. limit=-1
+ limiter: Peak limiter. limit=-1 truepeak=0
+ multiband: 3-band compressor (crossovers low/high). low=200 high=3000 threshold=-24 ratio=3
+ declip: Repair clipped peaks. 
+ stereo: Stereo tools: mid/side width, balance, phase invert. width=1 balance=0 invertl=0 invertr=0
  gate: Noise gate. threshold=-45
- denoise: FFT noise reduction. amount=12
+ denoise: FFT noise reduction. amount=12 learn=''
  normalize: EBU R128 loudness normalization. lufs=-14 tp=-1
- reverb: Simple reverb. amount=0.3 size=0.5
+ reverb: Convolution reverb with synthesized impulse responses (type=echo: the light three-echo reverb). amount=0.3 size=0.5 type=room
  echo: Echo. delay=300 decay=0.4
  pitch: Pitch shift (keeps tempo). semitones=0
  deess: De-esser. amount=0.5
  voice: Voice enhancement chain (HPF + denoise + compress + presence). amount=1
  telephone: Telephone / radio band-pass. 
- peq: Parametric EQ: three bell bands (freq Hz, gain dB, q). f1=200 g1=0 q1=1 f2=1000 g2=0 q2=1 f3=5000 g3=0 q3=1
+ peq: Parametric EQ: three bell bands (freq Hz, gain dB, q). f1=200 g1=0 q1=1 f2=1000 g2=0 q2=1 f3=5000 g3=0 q3=1 bands=''
  bassboost: Bass boost (low shelf). gain=6 freq=120
  gain: Static gain stage. db=0
  chorus: Chorus (thicker, doubled sound). depth=0.5 mix=0.5
@@ -621,6 +933,7 @@ camera [at= dur=] [zoom=px] [pos=x,y] [z=offset] [poi=x,y] [poiZ=] [aim=0] [move
 null [at dur] [pos=] [children=<ids>]: an invisible layer to parent others to (parent <ids> <null>) and animate them together.
 Parallax recipe: background at z=800 scale=150%, b-roll at z=0, title at z=-300, all 3d=1, then camera move=pushin amount=400.
 Layers behind the camera aren't drawn. Card flips and tilts: kf <id> ry 0:-90 0.6:0@outBack (no camera needed).
+Match a real camera move (3D Camera Tracker): camtrack c1 solves the shot into a camera layer and 3D points; camtrack c1 attach text 'Hi' at=p3,p7,p9 puts a 3D layer on them (help tracking).
 ```
 
 ## text: titles, text animators, captions
@@ -715,14 +1028,50 @@ Masks (x,y,w,h are fractions of the layer; mask <id> <kind> ...):
  w=0.8 [num] Mask width as fraction of layer width
  h=0.8 [num] Mask height as fraction of layer height
  radius=0 [num] Corner radius (rect masks)
- d='' [text] (static) Path mask: SVG path in normalized 0..1 layer coordinates
+ d='' [text] SVG path in normalized 0..1 layer coordinates; matching paths can morph
  points=5 [num 2..100] Polygon/star points
  feather=0 [num 0..1000] Edge feather (px)
  expand=0 [num -1000..1000] Grow/shrink the mask (px)
  opacity=1 [num 0..1] Mask opacity
  rot=0 [num] Mask rotation
  invert=false [bool] (static) Invert the mask
- mode=add [add|subtract|intersect|difference] (static) How masks combine
+ mode=add [add|subtract|intersect|lighten|darken|difference|none] (static) How masks combine (After Effects modes): add sums, subtract cuts, intersect multiplies, lighten/darken keep the larger/smaller, none only defines a window
+ cut=true [bool] (static) Cut the layer to this mask; off (the `window` word) makes it only an effect window
+ featherBias=0 [num -1..1] Feather placement: -1 inside the edge, 0 centered, 1 outside
+ offset=0,0 [x,y] Placement offset (fraction of layer size), applied after the shape; written by `track`
+ scale=1 [num 0..100] Placement scale about the mask center; written by `track mode=similarity`
+ trot=0 [num] Placement rotation about the mask center; written by `track mode=similarity`
+ hue=0 [num] hsl masks: hue center in degrees (0 red, 120 green, 240 blue)
+ hueRange=40 [num 0..360] hsl masks: hue width in degrees (360 = any hue)
+ satLo=0.1 [num 0..1] hsl masks: lowest saturation selected
+ satHi=1 [num 0..1] hsl masks: highest saturation selected
+ lumLo=0 [num 0..1] hsl/luma masks: lowest luma selected
+ lumHi=1 [num 0..1] hsl/luma masks: highest luma selected
+ qsoft=0.1 [num 0..1] hsl/luma masks: softness of the selection edges
+ clean=0 [num 0..100] Qualifier masks: shrink and blur the key to remove speckle (px)
+ featherY=-1 [num -1..1000] Vertical feather (px); -1 = same as feather (AE's two-value feather)
+ falloff=smooth [smooth|linear] (static) Feather falloff: smooth (gaussian) or linear
+ vfeather='' [text] (static) Per-vertex feather on path masks, 'n:px ...' (vertices from 1): positive fades outward, negative inward; others use feather
+ smooth=false [bool] (static) Path masks: RotoBezier, a smooth curve through the vertices with automatic tangents
+ tension=0 [num -1..1] RotoBezier tension: 0 Catmull-Rom, 1 corners, negative rounder
+ mblur=false [bool] (static) Motion blur on an animated mask (eight samples over the shutter)
+ shutter=180 [num 0..720] Mask motion blur shutter angle
+ refine=0 [num 0..200] Refine edge: snap the soft edge to the picture's edges within this many px (hair, fur, motion blur)
+ refineSoft=0.2 [num 0..1] Refine edge smoothness: low keeps fine detail, high smooths
+ cleanBlack=0 [num 0..1] Matte finesse: alpha below this becomes 0 (removes gray in the clear area)
+ cleanWhite=1 [num 0..1] Matte finesse: alpha above this becomes 1 (fills holes in the solid area)
+ morph=none [none|shrink|grow|open|close] (static) Matte finesse morph (Resolve): shrink or grow the matte, open removes specks, close fills small holes
+ morphR=2 [num 0..100] Morph radius (px)
+ matteBlur=0 [num 0..200] Matte finesse: blur the finished matte (px)
+ rLo=0 [num 0..1] rgb masks: lowest red selected
+ rHi=1 [num 0..1] rgb masks: highest red selected
+ gLo=0 [num 0..1] rgb masks: lowest green selected
+ gHi=1 [num 0..1] rgb masks: highest green selected
+ bLo=0 [num 0..1] rgb masks: lowest blue selected
+ bHi=1 [num 0..1] rgb masks: highest blue selected
+ color=#d8a080 [color] 3d masks: the key color (pick it with preview pick=x,y)
+ tolerance=0.12 [num 0..1] 3d masks: distance from the key color still selected
+ trackLost='' [text] (static) Written by track: ranges (item seconds) where the tracker lost confidence; check reports them
 Track matte: matte <layer> <matteLayer> alpha|alphainv|luma|lumainv (the matte layer is hidden automatically).
 ```
 
@@ -765,9 +1114,9 @@ title <template> ...                    motion graphics (help templates)
 ## color: color grading
 
 ```text
-color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 sat=105`.
+color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 contrast=18 pivot=.42 sat=105 mask=m1`. Color effects accept mask=m1 to grade only that layer mask and mix=0.75 to blend the effect. Add a grade window with `mask c1 ellipse feather=24` or a Bézier path, adjust it with `set c1.m1 feather=30`, and select it per effect with mask=m1. Import custom LUTs with `lut c1 file='C:/LUTs/look.cube' amount=.8 mask=m1`; 1D, 3D and combined .cube files are supported. The Color panel also exposes Lift/Gamma/Gain/Offset primaries, curves, HSL secondary and scopes. For a Resolve-style grade (nodes, primaries, log/HDR wheels, warper, qualifiers, windows, groups, match) see help grade.
 lumetri params: exposure(stops) contrast highlights shadows whites blacks temp tint (-100..100) sat(%) vibrance fade stint htint (split-tone colors, alpha=strength).
-Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
+Other color fx: primaries (Resolve lift/gamma/gain/offset YRGB, contrast/pivot, sat, hue, lum mix, color boost, MD), logwheels, hdrwheels, colorwarper, colorslice, cst, lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
 Measure with preview scope=all (help scopes); copy a grade with paste <from> <to> color.
 Use analyze stats to check exposure first. Presets:
 cinematic (contrasty teal shadows / warm highlights), tealorange (strong teal & orange blockbuster look), vintage (faded warm film with grain), film (subtle film emulation), bw (black & white), noir (high-contrast B&W with vignette), warm (warmer white balance), cool (cooler white balance), punchy (contrast + vibrance), faded (matte, low contrast), moody (dark, desaturated, cool), airy (bright & soft), sunset (golden warm), cyberpunk (magenta/cyan neon), natural (neutral clean correction), kodak (film print: rolled-off highlights, teal shadows, warm skin, muted greens), fuji (soft cool film stock: gentle contrast, green-cyan shadows), bleach (bleach bypass: desaturated, hard contrast (action, war, grit)), commercial (bright glossy ad look with healthy skin (products, brands)), night (blue night-city with magenta highlights), pastel (lifted, soft pastel (lifestyle, fashion, beauty)), desert (hot summer warmth with muted blue skies (travel)), documentary (restrained, honest, slightly desaturated), musicvideo (contrasty purple/orange with grain and vignette)
@@ -834,6 +1183,11 @@ analyze tool: target=<media|clip> kind=<kind> [params]. Results are cached and p
  transcript: speech to text with word timings -> captions / text-based editing
  black: black segments
  stats: average brightness/saturation/contrast (exposure check)
+ noise: noise floor, hum, clipping, DC offset (t0, t1 seconds) -> use with repair
+ spectrum: energy in six bands sub..air, stereo correlation -> use with match eq
+ dynamics: integrated/short-term/momentary LUFS, loudness range, true peak
+ camtrack: 3D camera solve: camera path, focal length and 3D track points (run it with the camtrack verb)
+ planar: planar (perspective) track of a region (run it with track ... mode=perspective)
 ```
 
 ## graphics: HTML/CSS/JS motion graphics
