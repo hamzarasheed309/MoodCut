@@ -398,11 +398,11 @@ mod tests {
                 let bg = (((x * 7 + y * 13) % 31) as f32 * 2.0) as u8;
                 let (fx, fy) = (x as f32 - sx, y as f32 - sy);
                 let v = if (0.0..40.0).contains(&fx) && (0.0..40.0).contains(&fy) {
-                    // the object: random 5 px blocks plus a gradient, moving with sub-pixel offsets
-                    // (not a checker: a periodic pattern matches itself one cell away, for any tracker)
-                    let (bx, by) = ((fx / 5.0).floor() as i64, (fy / 5.0).floor() as i64);
-                    let n = ((bx * 92_837_111) ^ (by * 689_287_499)).rem_euclid(1000) as f32 / 1000.0;
-                    140.0 + 90.0 * n + fx
+                    // the object: smooth waves of unrelated frequencies, moving with sub-pixel offsets
+                    // (not a checker: a periodic pattern matches itself one cell away for any tracker,
+                    // and hard-edged blocks can't show sub-pixel motion)
+                    let n = (0.9 * fx + 0.3 * fy).sin() + (1.3 * fy - 0.5 * fx).sin() + (0.23 * fx + 0.61 * fy).sin() * 1.5;
+                    150.0 + 25.0 * n + fx
                 } else {
                     bg as f32
                 };
