@@ -389,6 +389,17 @@ pub fn lost_ranges(conf: &[f64], min: f64) -> Vec<(usize, usize)> {
 mod tests {
     use super::*;
 
+    /// Bilinear value noise (0..1) on a lattice of `s` px.
+    fn vnoise(x: f32, y: f32, s: f32, seed: i64) -> f32 {
+        let (gx, gy) = (x / s, y / s);
+        let (ix, iy) = (gx.floor() as i64, gy.floor() as i64);
+        let (tx, ty) = (gx - ix as f32, gy - iy as f32);
+        let h = |a: i64, b: i64| ((a * 92_837_111) ^ (b * 689_287_499) ^ (seed * 283_923_481)).rem_euclid(1000) as f32 / 1000.0;
+        let top = h(ix, iy) * (1.0 - tx) + h(ix + 1, iy) * tx;
+        let bot = h(ix, iy + 1) * (1.0 - tx) + h(ix + 1, iy + 1) * tx;
+        top * (1.0 - ty) + bot * ty
+    }
+
     /// A textured frame with a bright textured square at (sx, sy).
     fn scene(w: usize, h: usize, sx: f32, sy: f32) -> Gray {
         let mut d = vec![0u8; w * h];
@@ -398,11 +409,11 @@ mod tests {
                 let bg = (((x * 7 + y * 13) % 31) as f32 * 2.0) as u8;
                 let (fx, fy) = (x as f32 - sx, y as f32 - sy);
                 let v = if (0.0..40.0).contains(&fx) && (0.0..40.0).contains(&fy) {
-                    // the object: smooth waves of unrelated frequencies, moving with sub-pixel offsets
-                    // (not a checker: a periodic pattern matches itself one cell away for any tracker,
-                    // and hard-edged blocks can't show sub-pixel motion)
-                    let n = (0.9 * fx + 0.3 * fy).sin() + (1.3 * fy - 0.5 * fx).sin() + (0.23 * fx + 0.61 * fy).sin() * 1.5;
-                    150.0 + 25.0 * n + fx
+                    // the object: value noise at three scales, like real texture: structure for every
+                    // pyramid level, nothing periodic (a checker matches itself one cell away for any
+                    // tracker) and continuous, so sub-pixel motion shows
+                    let n = vnoise(fx, fy, 16.0, 1) * 0.5 + vnoise(fx, fy, 8.0, 2) * 0.3 + vnoise(fx, fy, 4.0, 3) * 0.2;
+                    90.0 + 150.0 * n
                 } else {
                     bg as f32
                 };
