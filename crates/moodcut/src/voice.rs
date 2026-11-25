@@ -417,9 +417,10 @@ fn log_line(line: &str) {
     if line.is_empty() {
         return;
     }
+    let short: String = line.chars().take(200).collect();
     let mut s = shared().lock();
-    s.install.status = line.chars().take(200).collect();
-    s.install.log.push_back(s.install.status.clone());
+    s.install.status = short.clone();
+    s.install.log.push_back(short);
     while s.install.log.len() > 40 {
         s.install.log.pop_front();
     }
