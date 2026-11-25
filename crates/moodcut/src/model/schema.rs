@@ -81,8 +81,18 @@ macro_rules! ps {
 
 /// Shared controls for color effects: a local spatial mask and Resolve-style
 /// node mix. Appended by `effect_params` to keep native effect tables concise.
-pub static COLOR_FX_MASK: P = ps!("mask", Str, S(""), "Use this layer mask as the effect's spatial window (for example m1)");
-pub static COLOR_FX_MIX: P = p!("mix", Num, N(1.0), 0.0, 1.0, U::Frac, "Blend this color effect with its input");
+pub static COLOR_FX_MASK: P = ps!("mask", Str, S(""), "Limit the effect to a mask window: m1, m1+m2 (union), m1*m2 (intersection), -m1 (outside)");
+pub static COLOR_FX_MIX: P = p!("mix", Num, N(1.0), 0.0, 1.0, U::Frac, "Blend this effect with its input");
+/// Node structure on an effect stack (Resolve-style): a parallel node takes
+/// the same input as the effect before it and adds its change.
+pub static FX_PARALLEL: P = ps!("parallel", Bool, B(false), "Parallel node: take the same input as the effect before it and add this effect's change to that one's (Resolve parallel mixer)", ["par"]);
+pub static FX_NODE: P = ps!("node", Str, S(""), "Grade node: consecutive effects with the same node label are one Resolve node (one window, one key mix); see help grade", ["nodename"]);
+/// Layer mixer node (Resolve): same input as the node before it, composited on top by its window.
+pub static FX_LAYER: P = ps!("layer", Bool, B(false), "Layer mixer node: take the same input as the node before it and composite the result on top, keyed by its window (composite= sets the mode)", ["layermixer"]);
+pub const COMPOSITE_MODES: &[&str] = &["normal", "add", "subtract", "multiply", "screen", "overlay", "softlight", "hardlight", "darken", "lighten", "difference", "color", "luminosity"];
+pub static FX_COMPOSITE: P = ps!("composite", Enum(COMPOSITE_MODES), S("normal"), "Layer mixer composite mode of a layer node", ["compositemode"]);
+/// Wet/dry for audio effects (the audio twin of the color `mix`).
+pub static AFX_MIX: P = P { name: "mix", t: T::Num, d: D::N(1.0), min: 0.0, max: 1.0, u: U::Frac, anim: false, desc: "Wet/dry: 1 = fully processed, 0.5 = half (parallel processing)", alias: &["wet"] };
 /// A static (not animatable) number with a range: audio effect settings.
 macro_rules! pr {
     ($n:expr, $d:expr, $min:expr, $max:expr, $desc:expr) => {
@@ -126,12 +136,20 @@ pub static CLIP: &[P] = &[
     ps!("hold", Bool, B(false), "Freeze frame (shows the in-point frame)", ["freeze"]),
     p!("remap", Num, N(-1.0), -1.0, INF, U::Sec, "Time remap: keyframes map item time -> source seconds (-1 = off)"),
     ps!("interp", Enum(&["none", "blend", "flow"]), S("none"), "Slow-motion frame interpolation"),
+    ps!("input", Enum(INPUT_PROFILES), S("auto"), "Input color transform to Rec.709, applied while decoding at source precision: auto (HLG/PQ from the file's tags), rec709, slog3, logc3, logc4, vlog, clog3, dlog, hlg, pq", ["colorspace", "log"]),
     p!("vol", Num, N(0.0), -96.0, 24.0, U::Db, "Audio gain in dB (accepts -6dB)", ["volume", "gain"]),
-    ps!("pan", Num, N(0.0), "Stereo pan -1 (left) .. 1 (right)"),
+    p!("pan", Num, N(0.0), -1.0, 1.0, U::None, "Stereo pan -1 (left) .. 1 (right); keyframe it to move the sound"),
     ps!("mute", Bool, B(false), "Mute the clip's audio"),
     ps!("fadeIn", Num, N(0.0), "Audio fade-in seconds", ["afadein"]),
     ps!("fadeOut", Num, N(0.0), "Audio fade-out seconds", ["afadeout"]),
+    ps!("fadeCurve", Enum(&["linear", "log", "exp", "scurve", "power"]), S("linear"), "Audio fade shape: log starts fast, exp starts slow, scurve eases both ends, power is equal-power", ["curve"]),
 ];
+
+/// Camera log and HDR transfer functions `input=` converts from.
+/// Encodings the `cst` effect converts between.
+pub const CST_SPACES: &[&str] = &["rec709", "srgb", "linear", "acescct", "slog3", "logc3", "logc4", "vlog", "clog3", "dlog", "hlg", "pq"];
+
+pub const INPUT_PROFILES: &[&str] = &["auto", "rec709", "slog3", "logc3", "logc4", "vlog", "clog3", "dlog", "hlg", "pq"];
 
 pub static NESTED: &[P] = &[
     ps!("speed", Num, N(1.0), "Playback speed of the nested comp"),
@@ -309,9 +327,56 @@ pub static MASK: &[P] = &[
     p!("opacity", Num, N(1.0), 0.0, 1.0, U::Frac, "Mask opacity"),
     p!("rot", Num, N(0.0), -INF, INF, U::Deg, "Mask rotation"),
     ps!("invert", Bool, B(false), "Invert the mask", ["inv"]),
-    ps!("mode", Enum(&["add", "subtract", "intersect", "difference"]), S("add"), "How masks combine"),
+    ps!("mode", Enum(&["add", "subtract", "intersect", "lighten", "darken", "difference", "none"]), S("add"), "How masks combine (After Effects modes): add sums, subtract cuts, intersect multiplies, lighten/darken keep the larger/smaller, none only defines a window"),
+    ps!("cut", Bool, B(true), "Cut the layer to this mask; off (the `window` word) makes it only an effect window", ["cutout"]),
+    p!("featherBias", Num, N(0.0), -1.0, 1.0, U::None, "Feather placement: -1 inside the edge, 0 centered, 1 outside", ["fbias"]),
+    p!("offset", Vec2, V(0.0, 0.0), -INF, INF, U::Frac, "Placement offset (fraction of layer size), applied after the shape; written by `track`"),
+    p!("scale", Num, N(1.0), 0.0, 100.0, U::Mult, "Placement scale about the mask center; written by `track mode=similarity`"),
+    p!("trot", Num, N(0.0), -INF, INF, U::Deg, "Placement rotation about the mask center; written by `track mode=similarity`"),
+    p!("hue", Num, N(0.0), -INF, INF, U::Deg, "hsl masks: hue center in degrees (0 red, 120 green, 240 blue)"),
+    p!("hueRange", Num, N(40.0), 0.0, 360.0, U::Deg, "hsl masks: hue width in degrees (360 = any hue)", ["hrange"]),
+    p!("satLo", Num, N(0.1), 0.0, 1.0, U::Frac, "hsl masks: lowest saturation selected"),
+    p!("satHi", Num, N(1.0), 0.0, 1.0, U::Frac, "hsl masks: highest saturation selected"),
+    p!("lumLo", Num, N(0.0), 0.0, 1.0, U::Frac, "hsl/luma masks: lowest luma selected", ["lo"]),
+    p!("lumHi", Num, N(1.0), 0.0, 1.0, U::Frac, "hsl/luma masks: highest luma selected", ["hi"]),
+    p!("qsoft", Num, N(0.1), 0.0, 1.0, U::Frac, "hsl/luma masks: softness of the selection edges", ["softness"]),
+    p!("clean", Num, N(0.0), 0.0, 100.0, U::Px, "Qualifier masks: shrink and blur the key to remove speckle (px)"),
+    p!("featherY", Num, N(-1.0), -1.0, 1000.0, U::Px, "Vertical feather (px); -1 = same as feather (AE's two-value feather)", ["fy"]),
+    ps!("falloff", Enum(&["smooth", "linear"]), S("smooth"), "Feather falloff: smooth (gaussian) or linear"),
+    ps!("vfeather", Str, S(""), "Per-vertex feather on path masks, 'n:px ...' (vertices from 1): positive fades outward, negative inward; others use feather", ["featherpts", "featherpoints"]),
+    ps!("smooth", Bool, B(false), "Path masks: RotoBezier, a smooth curve through the vertices with automatic tangents", ["rotobezier"]),
+    p!("tension", Num, N(0.0), -1.0, 1.0, U::None, "RotoBezier tension: 0 Catmull-Rom, 1 corners, negative rounder"),
+    ps!("mblur", Bool, B(false), "Motion blur on an animated mask (eight samples over the shutter)", ["motionblur"]),
+    p!("shutter", Num, N(180.0), 0.0, 720.0, U::Deg, "Mask motion blur shutter angle"),
+    p!("refine", Num, N(0.0), 0.0, 200.0, U::Px, "Refine edge: snap the soft edge to the picture's edges within this many px (hair, fur, motion blur)"),
+    p!("refineSoft", Num, N(0.2), 0.0, 1.0, U::Frac, "Refine edge smoothness: low keeps fine detail, high smooths"),
+    p!("cleanBlack", Num, N(0.0), 0.0, 1.0, U::Frac, "Matte finesse: alpha below this becomes 0 (removes gray in the clear area)"),
+    p!("cleanWhite", Num, N(1.0), 0.0, 1.0, U::Frac, "Matte finesse: alpha above this becomes 1 (fills holes in the solid area)"),
+    ps!("morph", Enum(&["none", "shrink", "grow", "open", "close"]), S("none"), "Matte finesse morph (Resolve): shrink or grow the matte, open removes specks, close fills small holes"),
+    p!("morphR", Num, N(2.0), 0.0, 100.0, U::Px, "Morph radius (px)", ["morphradius"]),
+    p!("matteBlur", Num, N(0.0), 0.0, 200.0, U::Px, "Matte finesse: blur the finished matte (px)", ["blurradius", "keyblur"]),
+    p!("rLo", Num, N(0.0), 0.0, 1.0, U::Frac, "rgb masks: lowest red selected"),
+    p!("rHi", Num, N(1.0), 0.0, 1.0, U::Frac, "rgb masks: highest red selected"),
+    p!("gLo", Num, N(0.0), 0.0, 1.0, U::Frac, "rgb masks: lowest green selected"),
+    p!("gHi", Num, N(1.0), 0.0, 1.0, U::Frac, "rgb masks: highest green selected"),
+    p!("bLo", Num, N(0.0), 0.0, 1.0, U::Frac, "rgb masks: lowest blue selected"),
+    p!("bHi", Num, N(1.0), 0.0, 1.0, U::Frac, "rgb masks: highest blue selected"),
+    p!("color", Color, C("#d8a080"), -INF, INF, U::None, "3d masks: the key color (pick it with preview pick=x,y)", ["key"]),
+    p!("tolerance", Num, N(0.12), 0.0, 1.0, U::Frac, "3d masks: distance from the key color still selected", ["tol"]),
+    ps!("trackLost", Str, S(""), "Written by track: ranges (item seconds) where the tracker lost confidence; check reports them"),
 ];
-pub const MASK_KINDS: &[&str] = &["rect", "ellipse", "path", "polygon", "star"];
+pub const MASK_KINDS: &[&str] = &["rect", "ellipse", "path", "polygon", "star", "gradient", "hsl", "rgb", "luma", "3d"];
+
+/// Masks whose alpha comes from the layer's own pixels (qualifiers).
+pub fn is_pixel_mask(kind: &str) -> bool {
+    matches!(kind, "hsl" | "luma" | "rgb" | "3d")
+}
+
+/// Effects that accept `mask=` and `mix=`: in-place native effects. Geometry
+/// and time effects (and the crop that masks use themselves) are excluded.
+pub fn windowable(def: &EffectDef) -> bool {
+    def.engine == Engine::Native && !matches!(def.cat, "transition" | "time") && !matches!(def.name, "transform" | "cornerpin" | "tile" | "crop")
+}
 
 // ---------------------------------------------------------------- text animators
 
@@ -405,6 +470,7 @@ pub static EFFECTS: &[EffectDef] = &[
         ps!("r", Str, S(""), "Red curve points"),
         ps!("g", Str, S(""), "Green curve points"),
         ps!("b", Str, S(""), "Blue curve points"),
+        ps!("luma", Str, S(""), "Luma (Y) curve points: changes brightness without changing saturation (Resolve YRGB)", ["y"]),
     ]),
     fx!("hue", ["huesat", "hsl"], Native, "color", "Hue / saturation / lightness", [
         p!("shift", Num, N(0.0), -360.0, 360.0, U::Deg, "Hue rotation", ["hue"]),
@@ -449,6 +515,10 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("midtonesL", Num, N(0.0), -100.0, 100.0, U::None, "Midtone brightness (gamma)", ["gammal", "midsl"]),
         p!("highlightsL", Num, N(0.0), -100.0, 100.0, U::None, "Highlight brightness (gain)", ["gainl"]),
         p!("offsetL", Num, N(0.0), -100.0, 100.0, U::None, "Offset brightness", ["offsetlevel"]),
+        p!("sat", Num, N(100.0), 0.0, 400.0, U::Pct, "Saturation % after the wheels (match writes it)", ["saturation"]),
+        p!("shadowPivot", Num, N(0.0), 0.0, 1.0, U::Frac, "Shadow range: lift fades out by this luma (0 = the classic full-range lift)", ["spivot"]),
+        p!("highlightPivot", Num, N(1.0), 0.0, 1.0, U::Frac, "Highlight range: gain starts above this luma (1 = the classic full-range gain)", ["hpivot"]),
+        ps!("tag", Str, S(""), "Label: match writes tag=match, color wb= writes tag=wb (so they can be redone)"),
     ]),
     fx!("channelmixer", ["mixer", "channels"], Native, "color", "Channel mixer: each output channel as % of the input red, green and blue", [
         p!("rr", Num, N(100.0), -200.0, 200.0, U::None, "Red from red %"),
@@ -497,6 +567,7 @@ pub static EFFECTS: &[EffectDef] = &[
         ps!("hueLuma", Str, S(""), "Hue vs luma, e.g. '0.6,-0.3' darkens blue sky"),
         ps!("lumaSat", Str, S(""), "Luma vs saturation, e.g. '0.05,-1' removes color from the blacks"),
         ps!("satSat", Str, S(""), "Saturation vs saturation"),
+        ps!("satLuma", Str, S(""), "Saturation vs luma, e.g. '0.8,-0.2' darkens the most saturated colors"),
     ]),
     fx!("photofilter", ["filter", "warmingfilter", "coolingfilter"], Native, "color", "Photo filter: tint as with a colored lens filter", [
         p!("color", Color, C("#ec8a00"), -INF, INF, U::None, "Filter color (warming #ec8a00, cooling #006dff)"),
@@ -514,10 +585,136 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("clip", Num, N(0.005), 0.0, 0.2, U::Frac, "Fraction clipped at black and at white"),
         ps!("perchannel", Bool, B(false), "Per channel (auto color)"),
     ]),
+    fx!("softclip", ["highlightrolloff", "rolloff"], Native, "color", "Highlight roll-off: compresses highlights above the knee instead of clipping them", [
+        p!("knee", Num, N(0.75), 0.3, 1.0, U::Frac, "Where the roll-off starts"),
+        p!("strength", Num, N(1.0), 0.0, 1.0, U::Frac, "Amount"),
+    ]),
+    fx!("filmcurve", ["scurve", "filmic"], Native, "color", "Film-style S-curve with a soft toe and shoulder", [
+        p!("contrast", Num, N(0.3), 0.0, 1.0, U::Frac, "S-curve strength"),
+        p!("toe", Num, N(0.1), 0.0, 0.5, U::Frac, "Shadow lift (toe)"),
+        p!("shoulder", Num, N(0.1), 0.0, 0.5, U::Frac, "Highlight compression (shoulder)"),
+        p!("pivot", Num, N(0.45), 0.1, 0.9, U::Frac, "Contrast pivot"),
+    ]),
+    fx!("halation", ["filmglow"], Native, "stylize", "Halation: a red-orange glow around bright highlights, as on film", [
+        p!("threshold", Num, N(0.75), 0.0, 1.0, U::Frac, "Highlights above this glow"),
+        p!("radius", Num, N(18.0), 0.0, 200.0, U::Px, "Glow radius"),
+        p!("amount", Num, N(0.5), 0.0, 2.0, U::None, "Strength"),
+        p!("color", Color, C("#ff4a1a"), -INF, INF, U::None, "Glow tint"),
+    ]),
     fx!("legalize", ["videolimiter", "broadcastsafe", "legal"], Native, "color", "Video limiter: keep levels inside the broadcast-legal range", [
         p!("min", Num, N(0.0627), 0.0, 0.5, U::Frac, "Lowest level (16/255)"),
         p!("max", Num, N(0.9216), 0.5, 1.0, U::Frac, "Highest level (235/255)"),
         ps!("mode", Enum(&["compress", "clip"]), S("compress"), "compress: rescale the full range; clip: cut off what's outside"),
+    ]),
+    fx!("primaries", ["primary", "lgg", "primarybars", "primariesbars"], Native, "color", "Resolve primaries: lift / gamma / gain / offset as master (Y) and per-channel (R G B) values, contrast and pivot, saturation, hue, lum mix, temperature / tint, color boost, shadows / highlights and midtone detail", [
+        p!("liftY", Num, N(0.0), -1.0, 1.0, U::None, "Lift (blacks), master: -1..1", ["lift"]),
+        p!("liftR", Num, N(0.0), -1.0, 1.0, U::None, "Lift, red"),
+        p!("liftG", Num, N(0.0), -1.0, 1.0, U::None, "Lift, green"),
+        p!("liftB", Num, N(0.0), -1.0, 1.0, U::None, "Lift, blue"),
+        p!("gammaY", Num, N(0.0), -1.0, 1.0, U::None, "Gamma (mids), master: + brighter, - darker", ["gamma"]),
+        p!("gammaR", Num, N(0.0), -1.0, 1.0, U::None, "Gamma, red"),
+        p!("gammaG", Num, N(0.0), -1.0, 1.0, U::None, "Gamma, green"),
+        p!("gammaB", Num, N(0.0), -1.0, 1.0, U::None, "Gamma, blue"),
+        p!("gainY", Num, N(1.0), 0.0, 4.0, U::Mult, "Gain (whites), master: 1 = unchanged", ["gain"]),
+        p!("gainR", Num, N(1.0), 0.0, 4.0, U::Mult, "Gain, red"),
+        p!("gainG", Num, N(1.0), 0.0, 4.0, U::Mult, "Gain, green"),
+        p!("gainB", Num, N(1.0), 0.0, 4.0, U::Mult, "Gain, blue"),
+        p!("offsetY", Num, N(0.0), -1.0, 1.0, U::None, "Offset (everything), master", ["offset"]),
+        p!("offsetR", Num, N(0.0), -1.0, 1.0, U::None, "Offset, red"),
+        p!("offsetG", Num, N(0.0), -1.0, 1.0, U::None, "Offset, green"),
+        p!("offsetB", Num, N(0.0), -1.0, 1.0, U::None, "Offset, blue"),
+        p!("contrast", Num, N(1.0), 0.0, 4.0, U::Mult, "Contrast around the pivot (1 = unchanged)"),
+        p!("pivot", Num, N(0.435), 0.0, 1.0, U::Frac, "Contrast pivot"),
+        p!("sat", Num, N(50.0), 0.0, 100.0, U::None, "Saturation, Resolve scale: 50 unchanged, 0 gray, 100 double", ["saturation"]),
+        p!("hue", Num, N(50.0), 0.0, 100.0, U::None, "Hue rotation, Resolve scale: 50 unchanged, 0 / 100 = -/+180 degrees"),
+        p!("lumMix", Num, N(100.0), 0.0, 100.0, U::None, "Lum mix: how much the master (Y) controls keep color (100) or act on R G B alike (0)"),
+        p!("temp", Num, N(0.0), -4000.0, 4000.0, U::None, "Temperature, Resolve units: + warmer, - cooler"),
+        p!("tint", Num, N(0.0), -100.0, 100.0, U::None, "Tint: + magenta, - green"),
+        p!("boost", Num, N(0.0), -100.0, 100.0, U::None, "Color boost: saturate (+) or mute (-) only the least saturated colors", ["colorboost"]),
+        p!("shadows", Num, N(0.0), -100.0, 100.0, U::None, "Shadows: lift (+) or deepen (-) the darkest tones"),
+        p!("highlights", Num, N(0.0), -100.0, 100.0, U::None, "Highlights: recover (-) or brighten (+) the brightest tones"),
+        p!("midDetail", Num, N(0.0), -100.0, 100.0, U::None, "Midtone detail: local contrast in the midtones (+ crisper texture, - softer skin)", ["md"]),
+    ]),
+    fx!("logwheels", ["logcolor", "logcontrols", "logwheel"], Native, "color", "Resolve log wheels: shadow / midtone / highlight tint and level in narrow overlapping ranges split at low and high range, plus offset, contrast and pivot (the film-style grade)", [
+        p!("shadow", Color, C("none"), -INF, INF, U::None, "Shadow tint, e.g. #2a6cff40 (alpha = strength)", ["shadows"]),
+        p!("midtone", Color, C("none"), -INF, INF, U::None, "Midtone tint", ["midtones", "mids"]),
+        p!("highlight", Color, C("none"), -INF, INF, U::None, "Highlight tint", ["highlights"]),
+        p!("offset", Color, C("none"), -INF, INF, U::None, "Offset tint (everything)"),
+        p!("shadowL", Num, N(0.0), -100.0, 100.0, U::None, "Shadow level", ["shadowsl"]),
+        p!("midtoneL", Num, N(0.0), -100.0, 100.0, U::None, "Midtone level", ["midtonesl", "midsl"]),
+        p!("highlightL", Num, N(0.0), -100.0, 100.0, U::None, "Highlight level", ["highlightsl"]),
+        p!("offsetL", Num, N(0.0), -100.0, 100.0, U::None, "Offset level"),
+        p!("low", Num, N(0.333), 0.0, 1.0, U::Frac, "Low range: where shadows end", ["lowrange"]),
+        p!("high", Num, N(0.55), 0.0, 1.0, U::Frac, "High range: where highlights begin", ["highrange"]),
+        p!("contrast", Num, N(1.0), 0.0, 4.0, U::Mult, "Contrast around the pivot"),
+        p!("pivot", Num, N(0.435), 0.0, 1.0, U::Frac, "Contrast pivot"),
+    ]),
+    fx!("hdrwheels", ["hdr", "hdrzones", "hdrpalette", "zones"], Native, "color", "Resolve HDR palette: exposure, saturation and tint per tonal zone (black, dark, shadow, light, highlight, specular), zones measured in stops from mid gray, plus global controls", [
+        p!("blackExp", Num, N(0.0), -4.0, 4.0, U::None, "Black zone exposure (stops)"),
+        p!("blackSat", Num, N(1.0), 0.0, 2.0, U::Mult, "Black zone saturation"),
+        p!("blackTint", Color, C("none"), -INF, INF, U::None, "Black zone tint"),
+        p!("darkExp", Num, N(0.0), -4.0, 4.0, U::None, "Dark zone exposure (stops)"),
+        p!("darkSat", Num, N(1.0), 0.0, 2.0, U::Mult, "Dark zone saturation"),
+        p!("darkTint", Color, C("none"), -INF, INF, U::None, "Dark zone tint"),
+        p!("shadowExp", Num, N(0.0), -4.0, 4.0, U::None, "Shadow zone exposure (stops)"),
+        p!("shadowSat", Num, N(1.0), 0.0, 2.0, U::Mult, "Shadow zone saturation"),
+        p!("shadowTint", Color, C("none"), -INF, INF, U::None, "Shadow zone tint"),
+        p!("lightExp", Num, N(0.0), -4.0, 4.0, U::None, "Light zone exposure (stops)"),
+        p!("lightSat", Num, N(1.0), 0.0, 2.0, U::Mult, "Light zone saturation"),
+        p!("lightTint", Color, C("none"), -INF, INF, U::None, "Light zone tint"),
+        p!("highlightExp", Num, N(0.0), -4.0, 4.0, U::None, "Highlight zone exposure (stops)"),
+        p!("highlightSat", Num, N(1.0), 0.0, 2.0, U::Mult, "Highlight zone saturation"),
+        p!("highlightTint", Color, C("none"), -INF, INF, U::None, "Highlight zone tint"),
+        p!("specularExp", Num, N(0.0), -4.0, 4.0, U::None, "Specular zone exposure (stops)"),
+        p!("specularSat", Num, N(1.0), 0.0, 2.0, U::Mult, "Specular zone saturation"),
+        p!("specularTint", Color, C("none"), -INF, INF, U::None, "Specular zone tint"),
+        p!("exposure", Num, N(0.0), -4.0, 4.0, U::None, "Global exposure (stops)", ["exp"]),
+        p!("sat", Num, N(1.0), 0.0, 2.0, U::Mult, "Global saturation", ["saturation"]),
+        p!("tint", Color, C("none"), -INF, INF, U::None, "Global tint"),
+        p!("blackAt", Num, N(-4.0), -10.0, 0.0, U::None, "Black zone: below this many stops from mid gray"),
+        p!("darkAt", Num, N(-2.0), -10.0, 0.0, U::None, "Dark zone: below this many stops"),
+        p!("shadowAt", Num, N(-1.0), -10.0, 0.0, U::None, "Shadow zone: below this many stops"),
+        p!("lightAt", Num, N(1.0), 0.0, 10.0, U::None, "Light zone: above this many stops"),
+        p!("highlightAt", Num, N(2.0), 0.0, 10.0, U::None, "Highlight zone: above this many stops"),
+        p!("specularAt", Num, N(3.0), 0.0, 10.0, U::None, "Specular zone: above this many stops"),
+        p!("falloff", Num, N(1.0), 0.1, 4.0, U::None, "Zone falloff in stops"),
+    ]),
+    fx!("colorwarper", ["warper", "huesatwarp", "colorwarp", "huesatmesh"], Native, "color", "Resolve color warper: move colors to new hues and saturations with pins, and lift or lower luma by color, smoothly carrying neighboring colors along", [
+        ps!("pins", Str, S(""), "Hue-saturation pins 'h,s>h,s[,r] ...': hue in degrees, saturation 0..1, optional reach (default 0.25), e.g. '35,0.55>24,0.45' moves orange toward skin, '120,0.5>95,0.35' turns green to olive"),
+        ps!("luma", Str, S(""), "Chroma-luma pins 'h,s>dl[,r] ...': raise (+) or lower (-) the luma of a color, e.g. '215,0.5>-0.12' darkens sky blue"),
+        p!("amount", Num, N(1.0), 0.0, 1.0, U::Frac, "Strength"),
+    ]),
+    fx!("colorslice", ["slice", "colorslices", "subtractive"], Native, "color", "Resolve color slice: hue, saturation and density (subtractive, film-like richness) per color vector: red, skin, yellow, green, cyan, blue, magenta", [
+        p!("redHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Red: hue shift"),
+        p!("redSat", Num, N(0.0), -100.0, 100.0, U::None, "Red: saturation"),
+        p!("redDen", Num, N(0.0), -100.0, 100.0, U::None, "Red: density (+ richer and darker)"),
+        p!("skinHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Skin: hue shift"),
+        p!("skinSat", Num, N(0.0), -100.0, 100.0, U::None, "Skin: saturation"),
+        p!("skinDen", Num, N(0.0), -100.0, 100.0, U::None, "Skin: density"),
+        p!("yellowHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Yellow: hue shift"),
+        p!("yellowSat", Num, N(0.0), -100.0, 100.0, U::None, "Yellow: saturation"),
+        p!("yellowDen", Num, N(0.0), -100.0, 100.0, U::None, "Yellow: density"),
+        p!("greenHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Green: hue shift"),
+        p!("greenSat", Num, N(0.0), -100.0, 100.0, U::None, "Green: saturation"),
+        p!("greenDen", Num, N(0.0), -100.0, 100.0, U::None, "Green: density"),
+        p!("cyanHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Cyan: hue shift"),
+        p!("cyanSat", Num, N(0.0), -100.0, 100.0, U::None, "Cyan: saturation"),
+        p!("cyanDen", Num, N(0.0), -100.0, 100.0, U::None, "Cyan: density"),
+        p!("blueHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Blue: hue shift"),
+        p!("blueSat", Num, N(0.0), -100.0, 100.0, U::None, "Blue: saturation"),
+        p!("blueDen", Num, N(0.0), -100.0, 100.0, U::None, "Blue: density"),
+        p!("magentaHue", Num, N(0.0), -60.0, 60.0, U::Deg, "Magenta: hue shift"),
+        p!("magentaSat", Num, N(0.0), -100.0, 100.0, U::None, "Magenta: saturation"),
+        p!("magentaDen", Num, N(0.0), -100.0, 100.0, U::None, "Magenta: density"),
+        p!("density", Num, N(0.0), -100.0, 100.0, U::None, "Density of every color", ["den"]),
+        p!("sat", Num, N(0.0), -100.0, 100.0, U::None, "Saturation of every color", ["saturation"]),
+    ]),
+    fx!("cst", ["colorspacetransform", "colorspace", "csc"], Native, "color", "Color space transform: convert between camera log, scene linear, ACEScct, HDR and display encodings, with tone and gamut mapping (Resolve's CST)", [
+        ps!("from", Enum(CST_SPACES), S("rec709"), "Input encoding and gamut", ["in", "input"]),
+        ps!("to", Enum(CST_SPACES), S("rec709"), "Output encoding and gamut", ["out", "output"]),
+        ps!("tonemap", Enum(&["simple", "luma", "none"]), S("simple"), "Tone mapping into the output range: simple rolls each channel off, luma rolls luminance off (keeps hue), none clips"),
+        ps!("gamut", Enum(&["compress", "clip"]), S("compress"), "Gamut mapping: compress out-of-gamut colors toward neutral, or clip them"),
+        p!("exposure", Num, N(0.0), -5.0, 5.0, U::None, "Exposure in stops, applied in scene linear", ["exp"]),
     ]),
     // ---- blur & sharpen
     fx!("blur", ["gaussian", "gaussianblur", "boxblur", "fastblur"], Native, "blur", "Gaussian blur", [
@@ -583,6 +780,10 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("amount", Num, N(0.12), 0.0, 1.0, U::Frac, "Amount"),
         ps!("mono", Bool, B(true), "Monochrome grain"),
         ps!("animated", Bool, B(true), "Re-seed every frame"),
+        p!("size", Num, N(1.0), 1.0, 8.0, U::Px, "Grain size (px): larger is coarser, like faster film", ["grainsize"]),
+        p!("soft", Num, N(0.0), 0.0, 1.0, U::Frac, "Grain softness", ["softness"]),
+        p!("response", Num, N(0.0), 0.0, 1.0, U::Frac, "Film response: 0 even, 1 grain mostly in the midtones (less in clean blacks and whites)"),
+        p!("color", Num, N(1.0), 0.0, 1.0, U::Frac, "Color grain amount when mono is off (0 = mono)", ["chroma"]),
     ]),
     fx!("pixelate", ["mosaic"], Native, "stylize", "Pixelate", [p!("size", Num, N(16.0), 1.0, 500.0, U::Px, "Block size")]),
     fx!("rgbsplit", ["chromatic", "chromaticaberration", "rgbshift"], Native, "stylize", "RGB channel split", [
@@ -787,6 +988,19 @@ pub static EFFECTS: &[EffectDef] = &[
         p!("similarity", Num, N(0.35), 0.0, 1.0, U::Frac, "Tolerance"),
         p!("smooth", Num, N(0.12), 0.0, 1.0, U::Frac, "Edge softness"),
         p!("spill", Num, N(0.6), 0.0, 1.0, U::Frac, "Spill suppression"),
+        ps!("auto", Bool, B(false), "Sample the backdrop color from the frame's edges instead of `color` (color=auto)"),
+        p!("clipBlack", Num, N(0.0), 0.0, 1.0, U::Frac, "Matte levels: alpha below this becomes fully transparent (cleans the backdrop)"),
+        p!("clipWhite", Num, N(1.0), 0.0, 1.0, U::Frac, "Matte levels: alpha above this becomes fully opaque (fills holes in the subject)"),
+        p!("edge", Num, N(0.0), 0.0, 50.0, U::Px, "Blur the matte edge (px)", ["edgeblur"]),
+    ]),
+    fx!("lightwrap", [], Native, "keying", "Light wrap: the background's light bleeding onto a keyed subject's edge (pick color from the background)", [
+        p!("color", Color, C("#ffffff"), -INF, INF, U::None, "Background light color (preview pick=x,y on the background)"),
+        p!("width", Num, N(12.0), 0.0, 200.0, U::Px, "How far the light reaches in from the edge"),
+        p!("amount", Num, N(0.5), 0.0, 1.0, U::Frac, "Strength"),
+    ]),
+    fx!("matteclean", ["despeckle", "cleanmatte"], Native, "keying", "Clean a key: remove specks and fill pinholes in the alpha", [
+        p!("size", Num, N(2.0), 0.0, 50.0, U::Px, "Largest speck / hole removed (px)"),
+        p!("soft", Num, N(0.5), 0.0, 20.0, U::Px, "Edge softening after cleaning (px)"),
     ]),
     fx!("lumakey", [], Native, "keying", "Key out dark (or bright) areas", [
         p!("threshold", Num, N(0.1), 0.0, 1.0, U::Frac, "Luma threshold"),
@@ -869,11 +1083,14 @@ pub static AUDIO_EFFECTS: &[EffectDef] = &[
         pr!("release", 250.0, 0.01, 9000.0, "Release ms"),
         pr!("makeup", 0.0, 0.0, 36.0, "Makeup gain dB"),
     ]),
-    fx!("limiter", ["limit"], Audio, "audio", "Peak limiter", [pr!("limit", -1.0, -24.0, 0.0, "Ceiling dBFS")]),
+    fx!("limiter", ["limit"], Audio, "audio", "Peak limiter", [pr!("limit", -1.0, -24.0, 0.0, "Ceiling dBFS"), pr!("truepeak", 0.0, 0.0, 1.0, "1 = limit true (inter-sample) peaks, 4x oversampled, for -1 dBTP delivery")]),
+    fx!("multiband", ["mbcomp", "multibandcompressor"], Audio, "audio", "3-band compressor (crossovers low/high)", [pr!("low", 200.0, 40.0, 2000.0, "Low/mid crossover Hz"), pr!("high", 3000.0, 500.0, 16000.0, "Mid/high crossover Hz"), pr!("threshold", -24.0, -60.0, 0.0, "Threshold dB"), pr!("ratio", 3.0, 1.0, 20.0, "Ratio")]),
+    fx!("declip", ["adeclip", "clipfix"], Audio, "audio", "Repair clipped peaks", []),
+    fx!("stereo", ["stereotools", "width", "balance"], Audio, "audio", "Stereo tools: mid/side width, balance, phase invert", [pr!("width", 1.0, 0.0, 3.0, "Side level (0 = mono, 1 = unchanged)"), pr!("balance", 0.0, -1.0, 1.0, "Balance -1 left .. 1 right"), pr!("invertl", 0.0, 0.0, 1.0, "1 = invert the left channel's phase"), pr!("invertr", 0.0, 0.0, 1.0, "1 = invert the right channel's phase")]),
     fx!("gate", ["noisegate"], Audio, "audio", "Noise gate", [pr!("threshold", -45.0, -80.0, 0.0, "Threshold dB")]),
-    fx!("denoise", ["noisereduction", "nr", "afftdn"], Audio, "audio", "FFT noise reduction", [pr!("amount", 12.0, 0.0, 97.0, "Reduction dB")]),
+    fx!("denoise", ["noisereduction", "nr", "afftdn"], Audio, "audio", "FFT noise reduction", [pr!("amount", 12.0, 0.0, 97.0, "Reduction dB"), ps!("learn", Str, S(""), "Noise print: learn the noise from this quiet range a-b (seconds into the clip)")]),
     fx!("normalize", ["loudnorm", "loudness"], Audio, "audio", "EBU R128 loudness normalization", [pr!("lufs", -14.0, -70.0, -5.0, "Target LUFS"), pr!("tp", -1.0, -9.0, 0.0, "True peak dBTP")]),
-    fx!("reverb", ["room"], Audio, "audio", "Simple reverb", [pr!("amount", 0.3, 0.0, 1.0, "Wet amount 0-1"), pr!("size", 0.5, 0.0, 1.0, "Room size 0-1")]),
+    fx!("reverb", ["room"], Audio, "audio", "Convolution reverb with synthesized impulse responses (type=echo: the light three-echo reverb)", [pr!("amount", 0.3, 0.0, 1.0, "Wet amount 0-1"), pr!("size", 0.5, 0.0, 1.0, "Room size 0-1"), ps!("type", Enum(&["room", "hall", "plate", "booth", "echo"]), S("room"), "Space")]),
     fx!("echo", ["delay"], Audio, "audio", "Echo", [pr!("delay", 300.0, 1.0, 5000.0, "Delay ms"), pr!("decay", 0.4, 0.0, 1.0, "Decay 0-1")]),
     fx!("pitch", ["pitchshift"], Audio, "audio", "Pitch shift (keeps tempo)", [pr!("semitones", 0.0, -24.0, 24.0, "Semitones")]),
     fx!("deess", ["deesser"], Audio, "audio", "De-esser", [pr!("amount", 0.5, 0.0, 1.0, "Intensity 0-1")]),
@@ -889,6 +1106,7 @@ pub static AUDIO_EFFECTS: &[EffectDef] = &[
         pr!("f3", 5000.0, 20.0, 20000.0, "Band 3 frequency Hz"),
         pr!("g3", 0.0, -30.0, 30.0, "Band 3 gain dB"),
         pr!("q3", 1.0, 0.1, 20.0, "Band 3 width (Q)"),
+        ps!("bands", Str, S(""), "Up to 8 bands 'f,g,q,type ...' (type bell|lowshelf|highshelf|highpass|lowpass); replaces f1..q3"),
     ]),
     fx!("bassboost", ["bass", "lowshelf"], Audio, "audio", "Bass boost (low shelf)", [pr!("gain", 6.0, -30.0, 30.0, "Gain dB"), pr!("freq", 120.0, 20.0, 1000.0, "Shelf frequency Hz")]),
     fx!("gain", ["amplify", "volume"], Audio, "audio", "Static gain stage", [pr!("db", 0.0, -60.0, 30.0, "Gain dB")]),
@@ -917,9 +1135,20 @@ pub fn effect(name: &str) -> Option<&'static EffectDef> {
 /// Properties accepted by an effect, including shared color-grade controls.
 pub fn effect_params(def: &'static EffectDef) -> Vec<&'static P> {
     let mut params: Vec<&'static P> = def.params.iter().collect();
-    if def.cat == "color" {
-        params.push(&COLOR_FX_MASK);
-        params.push(&COLOR_FX_MIX);
+    if def.engine == Engine::Audio && !def.params.iter().any(|p| p.name == "mix") {
+        params.push(&AFX_MIX);
+    }
+    if windowable(def) {
+        if !def.params.iter().any(|p| p.name == "mask") {
+            params.push(&COLOR_FX_MASK);
+        }
+        if !def.params.iter().any(|p| p.name == "mix") {
+            params.push(&COLOR_FX_MIX);
+        }
+        params.push(&FX_PARALLEL);
+        params.push(&FX_LAYER);
+        params.push(&FX_COMPOSITE);
+        params.push(&FX_NODE);
     }
     params
 }

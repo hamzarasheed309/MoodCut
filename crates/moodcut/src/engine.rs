@@ -157,6 +157,9 @@ impl<'a> Env for EnvImpl<'a> {
     fn ui(&self) -> ops::Ui {
         self.eng.ui()
     }
+    fn measure(&self, p: &Project, item: &str, times: &[f64], skip_fx: Option<&str>, region: Option<(f64, f64, f64, f64)>) -> Result<Value> {
+        self.eng.measure_item(p, item, times, skip_fx, region)
+    }
     fn sfx(&self, kind: &str, dur: f64, pitch: f64, seed: u64) -> Result<Media> {
         let k = crate::sfx::kind(kind).ok_or_else(|| anyhow!("unknown sound effect '{kind}'"))?;
         // next to the project's graphics (or in the data folder until it is saved)
@@ -419,12 +422,409 @@ impl Engine {
         *self.ui.write() = ui;
     }
 
+    /// The matte of a mask (or mask expression) on one layer at `t`, as gray
+    /// (`matte`) or as outlines with numbered path vertices over the picture
+    /// (`overlay`). `spec` is `c1.m1` or `c1.m1*m2`. This is how an AI does roto:
+    /// look, move points (`mask c1.m1 pt 3 x,y at=T`), look again.
+    pub fn matte_view(&self, comp: Option<&str>, t: f64, width: u32, spec: &str, overlay: bool) -> Result<(resvg::tiny_skia::Pixmap, String)> {
+        use crate::render::comp::MatteProbe;
+        use resvg::tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
+        let (p, _, active, _) = self.snapshot();
+        let cid = comp.map(|c| c.to_string()).unwrap_or(active);
+        let c = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?;
+        let (item, expr) = spec.split_once('.').ok_or_else(|| anyhow!("id must name a layer's mask: c1.m1 (or an expression, c1.m1*m2)"))?;
+        let it = p.item(item).ok_or_else(|| anyhow!("no layer {item}"))?;
+        if it.masks.is_empty() {
+            bail!("{item} has no masks; add one with: mask {item} ellipse window");
+        }
+        crate::ops::exec_props::check_mask_expr(it, item, expr)?;
+        let fmt = crate::model::time::fmt_t;
+        if t < it.start || t >= it.start + it.dur {
+            bail!("{item} isn't on screen at {}s (it runs {}-{}s)", fmt(t), fmt(it.start), fmt(it.start + it.dur));
+        }
+        let scale = (width.clamp(64, 1920) as f32 / c.w as f32).min(2.0);
+        let probe = MatteProbe::new(&it.id, expr);
+        let rc = RenderCtx { p: &p, frames: &self.frames, draft: true, probe: Some(&probe) };
+        let mut pic = render_frame(&rc, &c.id.clone(), t, scale)?;
+        let out = probe.out.lock().take().ok_or_else(|| anyhow!("{item} drew nothing at {}s (hidden, fully transparent or off screen)", fmt(t)))?;
+        let (w, h) = (pic.width() as i32, pic.height() as i32);
+        let r = out.rect;
+        let mut full = vec![0u8; (w * h) as usize];
+        for y in 0..r.h {
+            let oy = r.y + y;
+            if oy < 0 || oy >= h {
+                continue;
+            }
+            for x in 0..r.w {
+                let ox = r.x + x;
+                if ox >= 0 && ox < w {
+                    full[(oy * w + ox) as usize] = out.alpha[(y * r.w + x) as usize];
+                }
+            }
+        }
+        // coverage, box (comp px) and how much of the matte is soft edge
+        let sum: u64 = full.iter().map(|v| *v as u64).sum();
+        let cover = sum as f64 / (255.0 * (w * h) as f64) * 100.0;
+        let inside = full.iter().filter(|v| **v > 8).count().max(1) as f64;
+        let soft = full.iter().filter(|v| **v > 8 && **v < 247).count() as f64 / inside * 100.0;
+        let bb = crate::render::matte::bbox_of(&full, w as usize, h as usize);
+        let k = 1.0 / scale as f64;
+        let mut cap = format!("matte {spec} t={}s: covers {cover:.1}% of the frame", fmt(t));
+        match bb {
+            Some(b) => cap.push_str(&format!(", box {:.0},{:.0} {:.0}x{:.0}px, {soft:.0}% of it soft edge", b.x as f64 * k, b.y as f64 * k, b.w as f64 * k, b.h as f64 * k)),
+            None => cap.push_str(" (empty)"),
+        }
+        if bb.is_some_and(|b| b.x == 0 || b.y == 0 || b.r() >= w || b.b() >= h) {
+            cap.push_str("; touches the frame edge");
+        }
+        if !overlay {
+            let mut g = Pixmap::new(w as u32, h as u32).ok_or_else(|| anyhow!("bad size"))?;
+            for (px, v) in g.data_mut().chunks_exact_mut(4).zip(&full) {
+                px.copy_from_slice(&[*v, *v, *v, 255]);
+            }
+            return Ok((g, cap));
+        }
+        // overlay: dim outside the matte, stroke outlines, number path vertices
+        for (px, v) in pic.data_mut().chunks_exact_mut(4).zip(&full) {
+            let keep = 0.35 + 0.65 * (*v as f32 / 255.0);
+            for ch in px.iter_mut().take(3) {
+                *ch = (*ch as f32 * keep) as u8;
+            }
+        }
+        let mut paint = Paint { anti_alias: true, ..Default::default() };
+        paint.set_color(Color::from_rgba8(255, 214, 10, 255));
+        let stroke = Stroke { width: 2.0, ..Default::default() };
+        for path in &out.outlines {
+            pic.stroke_path(path, &paint, &stroke, Transform::identity(), None);
+        }
+        let size = (h as f32 * 0.035).clamp(9.0, 18.0);
+        let mut listed = vec![];
+        for (mid, vs) in &out.verts {
+            for (i, (x, y)) in vs.iter().enumerate() {
+                if let Some(dot) = PathBuilder::from_circle(*x, *y, 3.5) {
+                    pic.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
+                }
+                let tag = if out.verts.len() > 1 { format!("{mid}:{}", i + 1) } else { format!("{}", i + 1) };
+                encode::label(&mut pic, &tag, x + 4.0, y + 4.0, size);
+            }
+            listed.push(format!("{mid} has {} vertices", vs.len()));
+        }
+        if !listed.is_empty() {
+            cap.push_str(&format!("; {} (the numbers are pt indexes)", listed.join(", ")));
+        }
+        Ok((pic, cap))
+    }
+
+    /// The solved 3D track points of a camera-tracked clip (`id` is the clip
+    /// or its solve's camera) drawn through the solved camera over the frame
+    /// at `t`, numbered as `camtrack` names them (p12), colored by solve
+    /// error, with the floor grid when a ground plane is set. This is how an
+    /// AI picks points for `camtrack <clip> ground=` and `attach`.
+    pub fn points_view(&self, comp: Option<&str>, t: f64, width: u32, id: &str) -> Result<(resvg::tiny_skia::Pixmap, String)> {
+        use resvg::tiny_skia::{Color, FillRule, Paint, PathBuilder, Stroke, Transform};
+        let (p, _, active, _) = self.snapshot();
+        let cid = comp.map(|c| c.to_string()).unwrap_or(active);
+        let c = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?;
+        let (cam, cs) = p
+            .camsolves
+            .iter()
+            .find(|(cam, s)| (s.clip == id || cam.as_str() == id) && p.locate(cam).is_some())
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .ok_or_else(|| anyhow!("{id} has no camera solve: camtrack {id}"))?;
+        let m = p.media(&cs.media).ok_or_else(|| anyhow!("the solve's media {} is gone", cs.media))?.clone();
+        let v = self.analysis_for(&m, "camtrack", &cs.opts)?;
+        let pts = crate::ops::camtrack::world_points(&p, &cam, &v).ok_or_else(|| anyhow!("couldn't read {id}'s solve"))?;
+        let geo = crate::render::comp::Geo { p: &p, comp: c };
+        let camera = geo.camera(t).ok_or_else(|| anyhow!("no camera is active at {}s (the solve's camera {cam} runs with {})", crate::model::time::fmt_t(t), cs.clip))?;
+        let scale = (width.clamp(320, 1920) as f32 / c.w as f32).min(2.0);
+        let rc = RenderCtx { p: &p, frames: &self.frames, draft: true, probe: None };
+        let mut pic = render_frame(&rc, &c.id.clone(), t, scale)?;
+        let (w, h) = (pic.width() as f32, pic.height() as f32);
+        let k = scale as f64;
+        let mut paint = Paint { anti_alias: true, ..Default::default() };
+        // the floor grid
+        if cs.ground.is_some() {
+            let zoom = p.item(&cam).and_then(|x| x.props.get("zoom")).map(|a| a.v.num()).filter(|z| *z > 0.0).unwrap_or(c.w as f64 * 0.926);
+            let s = zoom * 0.25;
+            let (ox, oy) = (c.w as f64 / 2.0, c.h as f64 / 2.0);
+            paint.set_color(Color::from_rgba8(80, 200, 255, 150));
+            let mut pb = PathBuilder::new();
+            for i in -4..=4 {
+                let d = i as f64 * s;
+                for (a, b) in [((ox + d, oy, -4.0 * s), (ox + d, oy, 4.0 * s)), ((ox - 4.0 * s, oy, d), (ox + 4.0 * s, oy, d))] {
+                    if let (Some(pa), Some(pb2)) = (camera.project(a), camera.project(b)) {
+                        pb.move_to((pa.0 * k) as f32, (pa.1 * k) as f32);
+                        pb.line_to((pb2.0 * k) as f32, (pb2.1 * k) as f32);
+                    }
+                }
+            }
+            if let Some(path) = pb.finish() {
+                pic.stroke_path(&path, &paint, &Stroke { width: 1.0, ..Default::default() }, Transform::identity(), None);
+            }
+        }
+        // points: dots for all on screen, numbers for the best one in each cell
+        let cell = (h * 0.07).max(24.0);
+        let (gw, gh) = ((w / cell).ceil() as usize + 1, (h / cell).ceil() as usize + 1);
+        let mut best: Vec<Option<(usize, f32, f32, usize)>> = vec![None; gw * gh];
+        let mut on = 0usize;
+        for (n, x, err, views) in &pts {
+            let Some((sx, sy)) = camera.project((x[0], x[1], x[2])) else { continue };
+            let (px, py) = ((sx * k) as f32, (sy * k) as f32);
+            if !(0.0..w).contains(&px) || !(0.0..h).contains(&py) {
+                continue;
+            }
+            on += 1;
+            let col = if *err < 0.5 { Color::from_rgba8(60, 230, 90, 255) } else if *err < 1.5 { Color::from_rgba8(255, 214, 10, 255) } else { Color::from_rgba8(255, 70, 60, 255) };
+            paint.set_color(col);
+            if let Some(dot) = PathBuilder::from_circle(px, py, 2.5) {
+                pic.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
+            }
+            let ci = (py / cell) as usize * gw + (px / cell) as usize;
+            if ci < best.len() && best[ci].is_none_or(|b| *views > b.3) {
+                best[ci] = Some((*n, px, py, *views));
+            }
+        }
+        let size = (h * 0.026).clamp(9.0, 15.0);
+        let mut labeled = 0;
+        for (n, px, py, _) in best.iter().flatten() {
+            encode::label(&mut pic, &format!("p{n}"), px + 3.0, py + 3.0, size);
+            labeled += 1;
+        }
+        let cap = format!(
+            "{id} camera solve ({cam}) at {}s: {on} of {} points on screen, {labeled} numbered (green error < 0.5 px, yellow < 1.5, red worse){}. Pick three or more on one surface: camtrack {} ground=pA,pB,pC | camtrack {} attach text 'Title' at=pA,pB,pC; camtrack {} points near=x,y lists more",
+            crate::model::time::fmt_t(t),
+            pts.len(),
+            if cs.ground.is_some() { "; blue grid = the floor" } else { "; no floor set" },
+            cs.clip,
+            cs.clip,
+            cs.clip
+        );
+        Ok((pic, cap))
+    }
+
+    /// Renders `item` alone at comp times `times` and measures its pixels
+    /// (`render::scopes::measure`); `skip_fx` leaves one effect out, `region`
+    /// is (cx, cy, w, h) in frame fractions.
+    pub fn measure_item(&self, p: &Project, item: &str, times: &[f64], skip_fx: Option<&str>, region: Option<(f64, f64, f64, f64)>) -> Result<Value> {
+        let mut solo = p.clone();
+        let (ci, _, _) = solo.locate(item).ok_or_else(|| anyhow!("no layer {item}"))?;
+        let cid = solo.comps[ci].id.clone();
+        for t in solo.comps[ci].tracks.iter_mut() {
+            for it in t.items.iter_mut() {
+                if it.id != item {
+                    it.off = true;
+                } else if let Some(f) = skip_fx {
+                    it.fx.retain(|e| e.id != f);
+                }
+            }
+        }
+        let rc = RenderCtx { p: &solo, frames: &self.frames, draft: false, probe: None };
+        let w = solo.comps[ci].w.max(1) as f32;
+        let mut frames: Vec<resvg::tiny_skia::Pixmap> = times.iter().map(|t| render_frame(&rc, &cid, *t, (480.0 / w).min(1.0))).collect::<Result<_>>()?;
+        if let Some((cx, cy, rw, rh)) = region {
+            frames = frames
+                .iter()
+                .map(|f| {
+                    let (fw, fh) = (f.width() as f64, f.height() as f64);
+                    let (w, h) = ((rw * fw).round().max(1.0), (rh * fh).round().max(1.0));
+                    let x = ((cx * fw - w / 2.0).round()).clamp(0.0, (fw - 1.0).max(0.0));
+                    let y = ((cy * fh - h / 2.0).round()).clamp(0.0, (fh - 1.0).max(0.0));
+                    let r = crate::render::pixel::IRect { x: x as i32, y: y as i32, w: (w as i32).min(fw as i32 - x as i32).max(1), h: (h as i32).min(fh as i32 - y as i32).max(1) };
+                    crate::render::pixel::crop_pixmap(f, r)
+                })
+                .collect();
+        }
+        Ok(crate::render::scopes::measure(&frames))
+    }
+
+    /// A reference still beside the current frame: the left `split` share
+    /// shows the still (re-rendered with the grade it was saved with), the
+    /// rest the frame at `t`. Measured difference in the caption.
+    pub fn ref_view(&self, comp: Option<&str>, t: f64, width: u32, name: &str, split: f64) -> Result<(resvg::tiny_skia::Pixmap, String)> {
+        let (p, _, active, _) = self.snapshot();
+        let st = p.stills.get(name).ok_or_else(|| anyhow!("no still '{name}' ({})", p.stills.keys().cloned().collect::<Vec<_>>().join(" ")))?.clone();
+        let cid = comp.map(|c| c.to_string()).unwrap_or(active);
+        let c = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?;
+        let scale = (width.clamp(64, 1920) as f32 / c.w as f32).min(2.0);
+        let cur = render_frame(&RenderCtx { p: &p, frames: &self.frames, draft: true, probe: None }, &c.id, t, scale)?;
+        // the still: its layer alone, with the effects it had when saved
+        let mut rp = p.clone();
+        let (ri, _, _) = rp.locate(&st.item).ok_or_else(|| anyhow!("the still's layer {} is gone", st.item))?;
+        let rcid = rp.comps[ri].id.clone();
+        for tr in rp.comps[ri].tracks.iter_mut() {
+            for it in tr.items.iter_mut() {
+                if it.id == st.item {
+                    it.fx = st.fx.clone();
+                    it.grade = None;
+                    it.pregrade = None;
+                }
+            }
+        }
+        let rk = scale * c.w as f32 / rp.comps[ri].w.max(1) as f32;
+        let refr = render_frame(&RenderCtx { p: &rp, frames: &self.frames, draft: true, probe: None }, &rcid, st.t, rk)?;
+        let mut out = cur.clone();
+        let (w, h) = (out.width() as usize, out.height() as usize);
+        let sx = ((split.clamp(0.0, 1.0) * w as f64) as usize).min(w);
+        let (rw, rh) = (refr.width() as usize, refr.height() as usize);
+        let rd = refr.data();
+        for y in 0..h.min(rh) {
+            for x in 0..sx.min(rw) {
+                let (i, j) = ((y * w + x) * 4, (y * rw + x) * 4);
+                out.data_mut()[i..i + 4].copy_from_slice(&rd[j..j + 4]);
+            }
+        }
+        for y in 0..h {
+            if sx < w {
+                let i = (y * w + sx) * 4;
+                out.data_mut()[i..i + 4].copy_from_slice(&[255, 214, 10, 255]);
+            }
+        }
+        encode::label(&mut out, &format!("still {name}"), 4.0, 4.0, (h as f32 * 0.04).clamp(9.0, 18.0));
+        let d = crate::ops::grading::residual(&crate::render::scopes::measure(&[cur]), &st.stats) * 100.0;
+        Ok((out, format!("left: still {name} ({} at {}s), right: t={}s; measured difference {d:.1}% (match <clip> to=still:{name} closes it)", st.item, crate::model::time::fmt_t(st.t), crate::model::time::fmt_t(t))))
+    }
+
+    /// Renders the audio of a comp node (`master`, a track, a bus, or the track
+    /// of a clip) over a range and measures it.
+    pub fn node_audio(&self, p: &crate::model::project::Project, comp: &str, node: Option<&str>, range: Option<(f64, f64)>) -> Result<(String, crate::render::audio_scope::Pcm)> {
+        use crate::render::audio;
+        self.ff.need()?;
+        let c = p.comp(comp).ok_or_else(|| anyhow!("no comp {comp}"))?;
+        let (t0, t1) = range.unwrap_or((0.0, c.duration()));
+        let (t0, t1) = (t0.max(0.0), t1.min(c.duration()).min(t0 + 600.0));
+        if t1 <= t0 {
+            bail!("nothing to measure in that range");
+        }
+        let (name, plan) = match node {
+            None => ("master".to_string(), audio::plan(p, &self.ff, comp, t0, t1, 0)),
+            Some(n) if n.eq_ignore_ascii_case("master") => ("master".to_string(), audio::plan(p, &self.ff, comp, t0, t1, 0)),
+            Some(n) => {
+                // a clip measures through its track
+                let id = match p.locate(n) {
+                    Some((ci, ti, _)) if p.comps[ci].id == c.id => p.comps[ci].tracks[ti].id.clone(),
+                    _ => n.to_string(),
+                };
+                if c.track(&id).is_none() && !c.buses.iter().any(|b| b.id.eq_ignore_ascii_case(&id)) {
+                    bail!("no track, bus or clip {n} in {}", c.id);
+                }
+                (id.clone(), audio::plan_node(p, &self.ff, comp, t0, t1, 0, &id))
+            }
+        };
+        let mut args = vec!["-v".to_string(), "error".to_string()];
+        args.extend(audio::input_args(&plan));
+        let (gargs, _gf) = self.ff.graph_args(&plan.graph)?;
+        args.extend(gargs);
+        args.extend(["-map".to_string(), format!("[{}]", plan.label)]);
+        Ok((name, crate::render::audio_scope::decode(&self.ff, args)?))
+    }
+
+    /// One measured line per track and bus plus the master: the balance
+    /// (dialogue vs music vs effects) in one call.
+    pub fn mix_report(&self, comp: Option<&str>, range: Option<(f64, f64)>) -> Result<Vec<(String, crate::render::audio_scope::Stats)>> {
+        use crate::render::audio_scope::measure;
+        let (p, _, active, _) = self.snapshot();
+        let cid = comp.map(|c| c.to_string()).unwrap_or(active);
+        let c = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?.clone();
+        let mut nodes: Vec<String> = c.tracks.iter().filter(|t| t.items.iter().any(|i| i.kind == crate::model::project::ItemKind::Clip && i.src.as_deref().and_then(|s| p.media(s)).is_some_and(|m| m.has_audio))).map(|t| t.id.clone()).collect();
+        nodes.extend(c.buses.iter().map(|b| b.id.clone()));
+        let mut out: Vec<(String, crate::render::audio_scope::Stats)> = std::thread::scope(|s| {
+            let hs: Vec<_> = nodes.iter().map(|n| { let p = &p; let cid = &cid; s.spawn(move || self.node_audio(p, cid, Some(n.as_str()), range).map(|(name, pcm)| (name, measure(&pcm)))) }).collect();
+            hs.into_iter().filter_map(|h| h.join().ok().and_then(|r| r.ok())).collect()
+        });
+        let (_, pcm) = self.node_audio(&p, &cid, None, range)?;
+        out.push(("master".into(), measure(&pcm)));
+        Ok(out)
+    }
+
+    /// `preview scope=spectrum|spectrogram|loudness|phase|mix [target=] [range=]`:
+    /// an image plus the measured line(s).
+    pub fn audio_scope(&self, comp: Option<&str>, kind: &str, target: Option<&str>, range: Option<(f64, f64)>, width: u32) -> Result<(resvg::tiny_skia::Pixmap, String)> {
+        use crate::render::audio_scope as asc;
+        let h = width * 9 / 16;
+        if kind == "mix" {
+            let nodes = self.mix_report(comp, range)?;
+            let pm = asc::draw_mix(&nodes, width, h)?;
+            let text = nodes.iter().map(|(n, s)| asc::line(n, s)).collect::<Vec<_>>().join("\n");
+            return Ok((pm, format!("mix (bars: integrated LUFS left to right {}; marks: true peak)\n{text}", nodes.iter().map(|n| n.0.as_str()).collect::<Vec<_>>().join(" "))));
+        }
+        let (p, _, active, _) = self.snapshot();
+        let cid = comp.map(|c| c.to_string()).unwrap_or(active);
+        let (name, pcm) = self.node_audio(&p, &cid, target, range)?;
+        let s = asc::measure(&pcm);
+        Ok((asc::draw(kind, &pcm, &s, width, h)?, format!("{kind} of {name}\n{}", asc::line(&name, &s))))
+    }
+
+    /// Color of a 5x5 patch of the rendered frame at (x, y): fractions (0..1)
+    /// or comp px. RGB, HSL and luma, to set qualifiers, keys and white balance.
+    pub fn pick(&self, comp: Option<&str>, t: f64, x: f64, y: f64) -> Result<String> {
+        let (p, _, active, _) = self.snapshot();
+        let cid = comp.map(|c| c.to_string()).unwrap_or(active);
+        let c = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?;
+        let (cx, cy) = if x <= 1.0 && y <= 1.0 { (x * c.w as f64, y * c.h as f64) } else { (x, y) };
+        let pm = self.frame(Some(&c.id), t, c.w.min(1920), false)?;
+        let k = pm.width() as f64 / c.w as f64;
+        let (px, py) = ((cx * k) as i32, (cy * k) as i32);
+        let (w, h) = (pm.width() as i32, pm.height() as i32);
+        if px < 0 || py < 0 || px >= w || py >= h {
+            bail!("{x},{y} is outside the {}x{} frame", c.w, c.h);
+        }
+        let d = pm.data();
+        let mut acc = [0f64; 3];
+        let mut lumas = vec![];
+        for yy in (py - 2).max(0)..=(py + 2).min(h - 1) {
+            for xx in (px - 2).max(0)..=(px + 2).min(w - 1) {
+                let i = ((yy * w + xx) * 4) as usize;
+                let a = d[i + 3] as f64 / 255.0;
+                let un = |v: u8| if a > 0.0 { (v as f64 / 255.0 / a).min(1.0) } else { 0.0 };
+                let (r, g, b) = (un(d[i]), un(d[i + 1]), un(d[i + 2]));
+                acc[0] += r;
+                acc[1] += g;
+                acc[2] += b;
+                lumas.push(0.2126 * r + 0.7152 * g + 0.0722 * b);
+            }
+        }
+        let n = lumas.len().max(1) as f64;
+        let (r, g, b) = (acc[0] / n, acc[1] / n, acc[2] / n);
+        let mean = lumas.iter().sum::<f64>() / n;
+        let sd = (lumas.iter().map(|l| (l - mean).powi(2)).sum::<f64>() / n).sqrt();
+        let (hh, ss, ll) = crate::render::effects::rgb_to_hsl(r as f32, g as f32, b as f32);
+        let to8 = |v: f64| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        let (r8, g8, b8) = (to8(r), to8(g), to8(b));
+        Ok(format!(
+            "pick {cx:.0},{cy:.0}px t={}s (5x5 mean): rgb {r8},{g8},{b8} #{r8:02x}{g8:02x}{b8:02x} | hsl {:.0}deg,{:.0}%,{:.0}% | luma {:.0}% (sd {:.1}%)",
+            crate::model::time::fmt_t(t),
+            hh * 360.0,
+            ss * 100.0,
+            ll * 100.0,
+            mean * 100.0,
+            sd * 100.0
+        ))
+    }
+
     /// A scope (waveform, parade, vectorscope, histogram, or `all` with the frame)
     /// of the frame at `t`, and its exposure / color summary.
     pub fn scope(&self, comp: Option<&str>, t: f64, kind: &str, w: u32, h: u32) -> Result<(resvg::tiny_skia::Pixmap, String)> {
+        self.scope_in(comp, t, kind, w, h, None)
+    }
+
+    /// A scope of part of the frame: `region` is (cx, cy, w, h) in frame
+    /// fractions (skin, sky, product). `falsecolor` shows exposure zones.
+    pub fn scope_in(&self, comp: Option<&str>, t: f64, kind: &str, w: u32, h: u32, region: Option<(f64, f64, f64, f64)>) -> Result<(resvg::tiny_skia::Pixmap, String)> {
         use crate::render::scopes;
-        let frame = self.frame(comp, t, 640, true)?;
+        let mut frame = self.frame(comp, t, 640, true)?;
+        if let Some((cx, cy, rw, rh)) = region {
+            let (fw, fh) = (frame.width() as f64, frame.height() as f64);
+            let (pw, ph) = ((rw * fw).round().clamp(2.0, fw), (rh * fh).round().clamp(2.0, fh));
+            let x = (cx * fw - pw / 2.0).round().clamp(0.0, fw - pw);
+            let y = (cy * fh - ph / 2.0).round().clamp(0.0, fh - ph);
+            frame = crate::render::pixel::crop_pixmap(&frame, crate::render::pixel::IRect { x: x as i32, y: y as i32, w: pw as i32, h: ph as i32 });
+        }
         let summary = scopes::summary(&frame);
+        if kind == "falsecolor" {
+            let (pm, zones) = scopes::false_color(&frame);
+            return Ok((pm, format!("{summary}
+{zones}")));
+        }
         if kind != "all" {
             return Ok((scopes::render(&frame, kind, w, h)?, summary));
         }
@@ -697,7 +1097,12 @@ impl Engine {
 
     /// A finished analysis from the memory/disk cache, without computing it.
     pub fn cached_analysis(&self, m: &Media, kind: &str) -> Option<Value> {
-        let key = Self::analysis_key(m, kind, &BTreeMap::new());
+        self.cached_analysis_with(m, kind, &BTreeMap::new())
+    }
+
+    /// `cached_analysis` for an analysis run with options (a camera solve's range and lens).
+    pub fn cached_analysis_with(&self, m: &Media, kind: &str, opts: &BTreeMap<String, String>) -> Option<Value> {
+        let key = Self::analysis_key(m, kind, opts);
         if let Some(v) = self.analysis.lock().get(&key) {
             return Some(v.clone());
         }
@@ -735,7 +1140,7 @@ impl Engine {
         let cid = comp.map(|c| c.to_string()).unwrap_or(active);
         let c = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?;
         let scale = (width.clamp(16, 7680) as f32 / c.w as f32).min(4.0);
-        let rc = RenderCtx { p: &p, frames: &self.frames, draft };
+        let rc = RenderCtx { p: &p, frames: &self.frames, draft, probe: None };
         render_frame(&rc, &c.id.clone(), t, scale)
     }
 
@@ -743,7 +1148,7 @@ impl Engine {
         let (p, _, active, _) = self.snapshot();
         let cid = comp.map(|c| c.to_string()).unwrap_or(active);
         let id = p.comp(&cid).ok_or_else(|| anyhow!("no comp {cid}"))?.id.clone();
-        let rc = RenderCtx { p: &p, frames: &self.frames, draft: true };
+        let rc = RenderCtx { p: &p, frames: &self.frames, draft: true, probe: None };
         encode::contact_sheet(&rc, &id, times, thumb_w, cols)
     }
 
@@ -756,6 +1161,9 @@ impl Engine {
         opts.comp = comp.id.clone();
         if comp.duration() <= 0.0 {
             bail!("the timeline is empty; add media before rendering");
+        }
+        if opts.preset.eq_ignore_ascii_case("stems") {
+            return self.export_stems(&p, opts, path.as_deref());
         }
         if let Some((kind, ext)) = crate::export::sidecar(&opts.preset) {
             return self.export_sidecar(&p, opts, path.as_deref(), kind, ext);
@@ -836,6 +1244,57 @@ impl Engine {
     }
 
     /// Caption files, chapters and interchange timelines: written at once, no encode.
+    /// `render preset=stems`: one WAV per bus (or per audio track when there
+    /// are no buses) plus the full mix, each with its measured loudness.
+    fn export_stems(&self, p: &Project, mut opts: RenderOpts, path: Option<&Path>) -> Result<Arc<Job>> {
+        use crate::render::{audio, audio_scope};
+        self.ff.need()?;
+        if opts.out.as_os_str().is_empty() {
+            opts.out = encode::default_out(path, &p.name, "wav");
+        } else {
+            self.check_path(&opts.out.to_string_lossy())?;
+        }
+        let started = Instant::now();
+        let c = p.comp(&opts.comp).ok_or_else(|| anyhow!("no comp {}", opts.comp))?;
+        let (t0, t1) = (opts.t0.max(0.0), if opts.t1 > opts.t0 { opts.t1 } else { c.duration() });
+        let mut nodes: Vec<(String, String)> = c.buses.iter().filter(|b| !b.muted).map(|b| (b.id.clone(), b.name.clone().unwrap_or_default())).collect();
+        if nodes.is_empty() {
+            nodes = c.tracks.iter().filter(|t| t.kind == crate::model::project::TrackKind::Audio && !t.items.is_empty() && !t.muted).map(|t| (t.id.clone(), t.name.clone().unwrap_or_default())).collect();
+        }
+        let stem = opts.out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "mix".into());
+        let dir = opts.out.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let mut lines = vec![];
+        let mut total = 0u64;
+        let mut render_one = |label: &str, plan: audio::AudioPlan, file: PathBuf| -> Result<()> {
+            let mut args = vec!["-y".to_string(), "-v".into(), "error".into()];
+            args.extend(audio::input_args(&plan));
+            let (g, _gf) = self.ff.graph_args(&plan.graph)?;
+            args.extend(g);
+            args.extend(["-map".to_string(), format!("[{}]", plan.label), "-c:a".into(), "pcm_s24le".into(), "-ar".into(), "48000".into(), file.to_string_lossy().to_string()]);
+            self.ff.run_capture(&args)?;
+            let pcm = audio_scope::decode_file(&self.ff, &file.to_string_lossy(), 0.0, t1 - t0)?;
+            lines.push(format!("{} -> {}", audio_scope::line(label, &audio_scope::measure(&pcm)), file.display()));
+            total += std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+            Ok(())
+        };
+        for (id, name) in &nodes {
+            let safe: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+            let file = dir.join(if safe.is_empty() { format!("{stem}-{id}.wav") } else { format!("{stem}-{id}-{safe}.wav") });
+            render_one(id, audio::plan_node(p, &self.ff, &opts.comp, t0, t1, 0, id), file)?;
+        }
+        render_one("mix", audio::plan(p, &self.ff, &opts.comp, t0, t1, 0), opts.out.clone())?;
+        let id = format!("r{}", self.jobs.lock().len() + 1);
+        let r = RenderResult { out: opts.out.to_string_lossy().to_string(), frames: 0, secs: started.elapsed().as_secs_f64(), bytes: total, fps: 0.0, w: c.w, h: c.h };
+        let prog = Progress::default();
+        prog.done.store(1, Ordering::Relaxed);
+        prog.total.store(1, Ordering::Relaxed);
+        *prog.stage.lock() = format!("{} stems + mix\n{}", nodes.len(), lines.join("\n"));
+        let job = Arc::new(Job { id: id.clone(), opts, prog, started, result: Mutex::new(Some(Ok(r))) });
+        self.jobs.lock().push(job.clone());
+        self.emit("job", self.st.read().rev, "render", format!("stems {id} done"));
+        Ok(job)
+    }
+
     fn export_sidecar(&self, p: &Project, mut opts: RenderOpts, path: Option<&Path>, kind: &str, ext: &str) -> Result<Arc<Job>> {
         if opts.out.as_os_str().is_empty() {
             opts.out = encode::default_out(path, &p.name, ext);

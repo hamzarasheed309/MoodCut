@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use rayon::prelude::*;
 use resvg::tiny_skia::{Color as SkColor, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
-pub const KINDS: &[&str] = &["waveform", "parade", "vectorscope", "histogram"];
+pub const KINDS: &[&str] = &["waveform", "parade", "vectorscope", "histogram", "falsecolor"];
 
 /// Straight 0..1 RGB of every visible pixel (premultiplied data, alpha-weighted onto black).
 fn pixels(frame: &Pixmap, step: usize) -> Vec<[f32; 3]> {
@@ -202,6 +202,13 @@ pub fn render(frame: &Pixmap, kind: &str, w: u32, h: u32) -> Result<Pixmap> {
                 stroke(&mut pm, &[(x, 0.0), (x, h as f32)], [255, 255, 255, 26], 1.0, false);
             }
         }
+        "falsecolor" | "false" | "zones" => {
+            // the exposure-zone picture, fitted into the scope's box
+            let (fc, _) = false_color(frame);
+            let k = (w as f32 / fc.width().max(1) as f32).min(h as f32 / fc.height().max(1) as f32);
+            let (dx, dy) = ((w as f32 - fc.width() as f32 * k) / 2.0, (h as f32 - fc.height() as f32 * k) / 2.0);
+            pm.draw_pixmap(0, 0, fc.as_ref(), &resvg::tiny_skia::PixmapPaint { quality: resvg::tiny_skia::FilterQuality::Bilinear, ..Default::default() }, Transform::from_row(k, 0.0, 0.0, k, dx, dy), None);
+        }
         other => bail!("unknown scope '{other}' ({})", KINDS.join(" ")),
     }
     Ok(pm)
@@ -307,4 +314,108 @@ mod tests {
         white.fill(SkColor::WHITE);
         assert!(summary(&white).contains("clipped 100.0%"));
     }
+}
+
+/// Measurements of rendered frames used to match shots: luma percentiles,
+/// per-channel means in shadows / midtones / highlights (by luma thirds of
+/// the shot's own range), mean saturation and the mean of near-neutral
+/// pixels (for white balance). Values are 0..1 on straight (unpremultiplied)
+/// color; transparent pixels are ignored.
+pub fn measure(frames: &[Pixmap]) -> serde_json::Value {
+    let mut px: Vec<[f32; 3]> = vec![];
+    for f in frames {
+        for p in f.data().chunks_exact(4) {
+            if p[3] < 128 {
+                continue;
+            }
+            let k = 1.0 / p[3] as f32;
+            px.push([p[0] as f32 * k, p[1] as f32 * k, p[2] as f32 * k]);
+        }
+    }
+    if px.is_empty() {
+        return serde_json::json!({"empty": true});
+    }
+    let luma = |c: &[f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let mut ls: Vec<f32> = px.iter().map(luma).collect();
+    ls.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = |q: f32| ls[((ls.len() - 1) as f32 * q).round() as usize] as f64;
+    let (lo, hi) = (pct(0.33) as f32, pct(0.66) as f32);
+    let mut bands = [[0f64; 4]; 3];
+    let mut neutral = [0f64; 4];
+    let mut sat = 0f64;
+    // skin tones: orange hues with moderate saturation, mean hue as a unit vector
+    let (mut skin_n, mut skin_x, mut skin_y) = (0f64, 0f64, 0f64);
+    for c in &px {
+        let l = luma(c);
+        let b = if l < lo { 0 } else if l < hi { 1 } else { 2 };
+        for k in 0..3 {
+            bands[b][k] += c[k] as f64;
+        }
+        bands[b][3] += 1.0;
+        let (mx, mn) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
+        let s = if mx > 1e-4 { (mx - mn) / mx } else { 0.0 };
+        sat += s as f64;
+        if (0.12..0.9).contains(&l) && (0.12..0.8).contains(&s) {
+            let (h, _, _) = crate::render::effects::rgb_to_hsl(c[0], c[1], c[2]);
+            let deg = h * 360.0;
+            if deg <= 55.0 || deg >= 350.0 {
+                let a = (h as f64) * std::f64::consts::TAU;
+                skin_n += 1.0;
+                skin_x += a.cos();
+                skin_y += a.sin();
+            }
+        }
+        if (0.15..0.92).contains(&l) && s < 0.25 {
+            for k in 0..3 {
+                neutral[k] += c[k] as f64;
+            }
+            neutral[3] += 1.0;
+        }
+    }
+    let mean = |b: &[f64; 4]| if b[3] > 0.0 { [b[0] / b[3], b[1] / b[3], b[2] / b[3]] } else { [0.0; 3] };
+    let n = px.len() as f64;
+    // gray world when nothing in the shot is near neutral
+    let all = px.iter().fold([0f64; 3], |a, c| [a[0] + c[0] as f64, a[1] + c[1] as f64, a[2] + c[2] as f64]);
+    let neutral = if neutral[3] > n * 0.01 { mean(&neutral) } else { [all[0] / n, all[1] / n, all[2] / n] };
+    serde_json::json!({
+        "p2": pct(0.02), "p50": pct(0.5), "p98": pct(0.98),
+        "shadows": mean(&bands[0]), "mids": mean(&bands[1]), "highs": mean(&bands[2]),
+        "sat": sat / n, "neutral": neutral, "n": px.len(),
+        "skin": skin_n / n,
+        "skinHue": if skin_n > 0.0 { skin_y.atan2(skin_x).to_degrees().rem_euclid(360.0) } else { 0.0 },
+    })
+}
+
+/// Exposure zones as colors (a vision model reads these more reliably than a
+/// waveform): blue crushed, cyan dark, gray normal, green skin/mid gray,
+/// yellow bright, red clipped. Returns the image and the share of each zone.
+pub fn false_color(frame: &Pixmap) -> (Pixmap, String) {
+    const ZONES: [(f32, [u8; 3], &str); 7] = [
+        (0.02, [40, 40, 220], "crushed <2%"),
+        (0.10, [0, 170, 200], "dark 2-10%"),
+        (0.38, [70, 70, 70], "shadows 10-38%"),
+        (0.52, [40, 190, 60], "mids 38-52% (mid gray/skin)"),
+        (0.85, [150, 150, 150], "light 52-85%"),
+        (0.97, [235, 210, 0], "bright 85-97%"),
+        (2.0, [230, 30, 30], "clipped >97%"),
+    ];
+    let mut out = frame.clone();
+    let mut counts = [0usize; 7];
+    let mut n = 0usize;
+    for p in out.data_mut().chunks_exact_mut(4) {
+        if p[3] == 0 {
+            continue;
+        }
+        let k = 1.0 / p[3] as f32;
+        let l = 0.2126 * p[0] as f32 * k + 0.7152 * p[1] as f32 * k + 0.0722 * p[2] as f32 * k;
+        let z = ZONES.iter().position(|z| l < z.0).unwrap_or(6);
+        counts[z] += 1;
+        n += 1;
+        p[0] = ZONES[z].1[0];
+        p[1] = ZONES[z].1[1];
+        p[2] = ZONES[z].1[2];
+        p[3] = 255;
+    }
+    let parts: Vec<String> = ZONES.iter().zip(counts).filter(|(_, c)| *c > 0).map(|(z, c)| format!("{} {:.0}%", z.2, c as f64 / n.max(1) as f64 * 100.0)).collect();
+    (out, format!("false color: {}", parts.join(", ")))
 }

@@ -1,14 +1,15 @@
 ; MoodCut for Windows: installer (Inno Setup 6.3 or later).
 ;
-; Build:   iscc /DAppVersion=1.0.0 installer\moodcut.iss      -> dist\MoodCut-Setup-x64.exe
-; Silent:  MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopath,assoc,ffmpeg,connectai"
+; Build:   pwsh installer\get-ffmpeg.ps1                          -> dist\ffmpeg (bundled FFmpeg)
+;          iscc /DAppVersion=1.1.0 installer\moodcut.iss      -> dist\MoodCut-Setup-x64.exe
+; Silent:  MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopath,assoc,connectai"
 ;          (add /ALLUSERS to install for every user, which asks for admin rights)
 ;
 ; Installs for the current user by default: no admin prompt, like a modern app.
 ; Optional steps: desktop shortcut, PATH (so AI apps and terminals can start
-; moodcut), .mcut file association, a portable FFmpeg downloaded with a progress
-; bar, and registering MoodCut with the AI apps found on the PC. The uninstaller
-; reverses all of it.
+; moodcut), .mcut file association and registering MoodCut with the AI apps found
+; on the PC. FFmpeg is bundled ({app}\ffmpeg\bin, where MoodCut looks first), so
+; nothing has to be downloaded or installed separately. The uninstaller reverses all of it.
 
 #if VER < EncodeVer(6,3,0)
   #error The MoodCut installer needs Inno Setup 6.3 or later (it uses x64compatible and DownloadTemporaryFile)
@@ -16,7 +17,7 @@
 
 #define AppName "MoodCut"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #define AppPublisher "MoodCut"
 #define AppURL "https://github.com/hamzarasheed309/MoodCut"
@@ -29,6 +30,13 @@
 #endif
 #ifndef SourceGuiExe
   #define SourceGuiExe "..\target\release\MoodCutApp.exe"
+#endif
+; FFmpeg (ffmpeg.exe, ffprobe.exe, LICENSE.txt, SOURCE.txt) from installer\get-ffmpeg.ps1
+#ifndef FFmpegDir
+  #define FFmpegDir "..\dist\ffmpeg"
+#endif
+#if !FileExists(AddBackslash(SourcePath) + FFmpegDir + "\bin\ffmpeg.exe")
+  #error FFmpeg is missing: run "pwsh installer\get-ffmpeg.ps1" first (it fills dist\ffmpeg)
 #endif
 
 [Setup]
@@ -75,12 +83,11 @@ VersionInfoDescription={#AppName} Setup
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Messages]
-WelcomeLabel2=This will install [name/ver]: a video editor and motion graphics engine that Claude, ChatGPT and other AI apps can drive.%n%nSetup can also download FFmpeg and connect your AI apps, so MoodCut is ready to use when it finishes.
+WelcomeLabel2=This will install [name/ver]: a video editor and motion graphics engine that Claude, ChatGPT and other AI apps can drive.%n%nFFmpeg is included, and Setup can connect your AI apps, so MoodCut is ready to use when it finishes.
 FinishedLabel=MoodCut is ready. Open it from the Start menu, or ask your AI app to "use MoodCut".
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: "ffmpeg"; Description: "Download and install &FFmpeg (about 100 MB; needed to import, play and export video)"; GroupDescription: "Get ready to edit:"
 Name: "connectai"; Description: "Connect the &AI apps on this PC (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, LM Studio...)"; GroupDescription: "Get ready to edit:"
 Name: "addtopath"; Description: "Add MoodCut to &PATH (lets AI apps and terminals start it by name)"; GroupDescription: "Get ready to edit:"
 Name: "assoc"; Description: "Open .&mcut project files with MoodCut"; GroupDescription: "Get ready to edit:"
@@ -90,6 +97,12 @@ Source: "{#SourceExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceGuiExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "..\NOTICE"; DestDir: "{app}"; DestName: "NOTICE.txt"; Flags: ignoreversion
+; FFmpeg, bundled: video import, playback and export work right after setup
+Source: "{#FFmpegDir}\bin\ffmpeg.exe"; DestDir: "{app}\ffmpeg\bin"; Flags: ignoreversion
+Source: "{#FFmpegDir}\bin\ffprobe.exe"; DestDir: "{app}\ffmpeg\bin"; Flags: ignoreversion
+Source: "{#FFmpegDir}\LICENSE.txt"; DestDir: "{app}\ffmpeg"; Flags: ignoreversion
+Source: "{#FFmpegDir}\SOURCE.txt"; DestDir: "{app}\ffmpeg"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#GuiExe}"; Comment: "The AI-native video editor"
@@ -118,8 +131,6 @@ Type: filesandordirs; Name: "{app}\ffmpeg"
 
 [Code]
 const
-  FFmpegUrl1 = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip';
-  FFmpegUrl2 = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
   WebView2Url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
   WebView2Key = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   UserEnvKey = 'Environment';
@@ -193,25 +204,6 @@ begin
   end;
 end;
 
-{ ---------- FFmpeg ---------- }
-
-function FFmpegInstalled: Boolean;
-begin
-  Result := FileExists(ExpandConstant('{app}\ffmpeg\bin\ffmpeg.exe'));
-end;
-
-function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
-begin
-  if ProgressMax > 0 then
-  begin
-    WizardForm.ProgressGauge.Max := 1000;
-    WizardForm.ProgressGauge.Position := Integer(Progress * 1000 div ProgressMax);
-    WizardForm.StatusLabel.Caption := Format('Downloading FFmpeg: %d of %d MB', [Integer(Progress div 1048576), Integer(ProgressMax div 1048576)]);
-  end else
-    WizardForm.StatusLabel.Caption := Format('Downloading FFmpeg: %d MB', [Integer(Progress div 1048576)]);
-  Result := True;
-end;
-
 function RunMoodCut(Params, Status: String; AsUser: Boolean): Integer;
 var
   Code: Integer;
@@ -230,33 +222,6 @@ begin
   Result := Code;
 end;
 
-procedure InstallFFmpeg;
-var
-  Zip: String;
-  Ok: Boolean;
-begin
-  if FFmpegInstalled then exit;
-  Zip := ExpandConstant('{tmp}\ffmpeg.zip');
-  Ok := False;
-  try
-    DownloadTemporaryFile(FFmpegUrl1, 'ffmpeg.zip', '', @OnDownloadProgress);
-    Ok := True;
-  except
-    Log('FFmpeg download failed: ' + GetExceptionMessage);
-    try
-      DownloadTemporaryFile(FFmpegUrl2, 'ffmpeg.zip', '', @OnDownloadProgress);
-      Ok := True;
-    except
-      Log('FFmpeg mirror failed: ' + GetExceptionMessage);
-    end;
-  end;
-  WizardForm.ProgressGauge.Position := WizardForm.ProgressGauge.Max;
-  if Ok then
-    Ok := RunMoodCut('setup --from "' + Zip + '" --dest "' + ExpandConstant('{app}\ffmpeg\bin') + '"', 'Unpacking FFmpeg...', False) = 0;
-  if not Ok then
-    SuppressibleMsgBox('FFmpeg could not be downloaded right now.' + #13#10#13#10 + 'MoodCut will offer a one-click install the first time it opens.', mbInformation, MB_OK, IDOK);
-end;
-
 { ---------- steps ---------- }
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -265,7 +230,6 @@ begin
   begin
     InstallWebView2;
     if WizardIsTaskSelected('addtopath') then AddToPath(ExpandConstant('{app}'));
-    if WizardIsTaskSelected('ffmpeg') then InstallFFmpeg;
     if WizardIsTaskSelected('connectai') then RunMoodCut('install-ai --quiet', 'Connecting your AI apps...', True);
   end;
 end;

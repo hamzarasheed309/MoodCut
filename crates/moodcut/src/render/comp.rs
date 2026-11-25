@@ -6,6 +6,8 @@ use super::decode::{FrameRef, FrameServer, ReaderSpec};
 use super::effects::{self, FxCtx};
 use super::eval::{hash_str, Ev};
 use super::masks::{self, LBounds};
+use super::matte;
+use super::grade;
 use super::pixel::{self, blur_pixmap, lerp_into, src_over, IRect, LayerBuf, Pm};
 use super::shapes;
 use super::text::{self, TextStyle};
@@ -25,6 +27,60 @@ pub struct RenderCtx<'a> {
     pub frames: &'a FrameServer,
     /// Faster, lower-quality sampling (previews).
     pub draft: bool,
+    /// Captures one layer's mask matte while rendering (`preview view=matte`).
+    pub probe: Option<&'a MatteProbe>,
+}
+
+/// A request to capture the matte of a mask expression on one layer, exactly
+/// as the compositor rasterizes it, plus the mask outlines and path vertices.
+pub struct MatteProbe {
+    pub item: String,
+    pub expr: String,
+    pub out: parking_lot::Mutex<Option<ProbeOut>>,
+}
+
+/// A captured matte in output pixels.
+pub struct ProbeOut {
+    /// Buffer rect in output px.
+    pub rect: IRect,
+    pub alpha: Vec<u8>,
+    /// Mask outlines in output px.
+    pub outlines: Vec<resvg::tiny_skia::Path>,
+    /// Path-mask vertices in output px, per mask (numbered from 1).
+    pub verts: Vec<(String, Vec<(f32, f32)>)>,
+}
+
+impl MatteProbe {
+    pub fn new(item: &str, expr: &str) -> MatteProbe {
+        MatteProbe { item: item.to_string(), expr: expr.to_string(), out: parking_lot::Mutex::new(None) }
+    }
+}
+
+/// Fills a probe for `it` from its layer buffer (before masks cut and effects run).
+fn capture_probe(pr: &MatteProbe, it: &Item, lb: &LayerBuf, ev: &Ev, b: LBounds, m: Transform, scale: f32) {
+    let Ok(Some(e)) = matte::parse(&pr.expr) else { return };
+    let Some(mt) = matte::eval(&e, lb, &it.masks, ev, b, m, scale) else { return };
+    let mev = ev.with_lists(&[schema::MASK]);
+    let mut outlines = vec![];
+    let mut verts = vec![];
+    for id in e.ids() {
+        let Some(mk) = it.masks.iter().find(|x| x.id.eq_ignore_ascii_case(id)) else { continue };
+        if let Some(path) = masks::mask_path(mk, &mev, b).and_then(|p| p.transform(m)) {
+            outlines.push(path);
+        }
+        let v: Vec<(f32, f32)> = masks::path_vertices_px(mk, &mev, b)
+            .into_iter()
+            .map(|(x, y)| {
+                let mut pt = Point::from_xy(x, y);
+                m.map_point(&mut pt);
+                (pt.x, pt.y)
+            })
+            .collect();
+        if !v.is_empty() {
+            verts.push((mk.id.clone(), v));
+        }
+    }
+    *pr.out.lock() = Some(ProbeOut { rect: lb.rect(), alpha: mt.alpha.clone(), outlines, verts });
 }
 
 /// A clip whose file is missing, in previews: Premiere's offline red, with darker
@@ -58,11 +114,289 @@ pub fn render_frame(rc: &RenderCtx, comp_id: &str, t: f64, scale: f32) -> Result
     Ok(out)
 }
 
-/// Applies color effects with their own optional spatial mask and mix control.
-/// Non-color effects retain the existing straight-through rendering path.
+/// True for an effect marked as a parallel node.
+fn is_parallel(e: &Effect) -> bool {
+    e.props.get("parallel").is_some_and(|a| a.v.bool())
+}
+
+/// Parallel mixer: adds `after - input` to `dst` (all the same size), so
+/// each parallel node's change counts once.
+fn add_delta(dst: &mut Pixmap, after: &Pixmap, input: &Pixmap) {
+    dst.data_mut().par_chunks_mut(4).zip(after.data().par_chunks(4)).zip(input.data().par_chunks(4)).for_each(|((d, a), i)| {
+        for c in 0..4 {
+            d[c] = (d[c] as i32 + a[c] as i32 - i[c] as i32).clamp(0, 255) as u8;
+        }
+        for c in 0..3 {
+            d[c] = d[c].min(d[3]);
+        }
+    });
+}
+
+/// How a node joins the chain (Resolve's node types).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Conn {
+    /// Takes the output of the node before it.
+    Serial,
+    /// Takes the same input as the node before it; the changes are summed
+    /// (parallel mixer).
+    Parallel,
+    /// Takes the same input as the node before it; its output is composited
+    /// on top, keyed by its window (layer mixer).
+    Layer,
+}
+
+/// A grade node: consecutive effects sharing a `node` label (one corrector
+/// with one window and one key mix, as a Resolve node), or one unlabeled
+/// effect.
+struct Node<'e> {
+    fx: Vec<&'e Effect>,
+    conn: Conn,
+    label: Option<String>,
+}
+
+fn conn_of(e: &Effect) -> Conn {
+    if is_parallel(e) {
+        Conn::Parallel
+    } else if e.props.get("layer").is_some_and(|a| a.v.bool()) {
+        Conn::Layer
+    } else {
+        Conn::Serial
+    }
+}
+
+/// Groups effect lists into nodes. A node never spans two lists (pre-clip
+/// grade, the clip's own effects, the shared grade).
+fn nodes_of<'e>(segs: &[&[&'e Effect]]) -> Vec<Node<'e>> {
+    let mut out: Vec<Node> = vec![];
+    for seg in segs {
+        let start = out.len();
+        for &e in seg.iter() {
+            let label = e.props.get("node").map(|a| a.v.str()).filter(|s| !s.trim().is_empty());
+            if let Some(l) = &label {
+                if out.len() > start && out.last().and_then(|n| n.label.as_ref()) == Some(l) {
+                    out.last_mut().unwrap().fx.push(e);
+                    continue;
+                }
+            }
+            out.push(Node { fx: vec![e], conn: conn_of(e), label });
+        }
+    }
+    out
+}
+
+/// A node's window and key mix: the first effect that sets them.
+fn node_window(n: &Node, fcx: &FxCtx) -> (String, f32) {
+    let spec = n.fx.iter().map(|e| grade::window_of(e, fcx).0).find(|s| !s.is_empty()).unwrap_or_default();
+    let mix = n.fx.first().map(|e| grade::window_of(e, fcx).1).unwrap_or(1.0);
+    (spec, mix.clamp(0.0, 1.0))
+}
+
+/// Applies one node: a single effect with its own window and mix, or a
+/// multi-tool node processed as one (fused into a LUT when every tool is a
+/// per-pixel color function) and blended back once by its window and mix.
+fn apply_node(n: &Node, lb: &mut LayerBuf, fcx: &FxCtx, masks_list: &[Mask], b: LBounds, m: Transform, scale: f32) {
+    if n.fx.len() == 1 {
+        apply_effect_windowed(n.fx[0], lb, fcx, masks_list, b, m, scale);
+        return;
+    }
+    let active: Vec<&Effect> = n.fx.iter().copied().filter(|e| e.on).collect();
+    if active.is_empty() {
+        return;
+    }
+    let (spec, mix) = node_window(n, fcx);
+    if mix <= 1e-5 {
+        return;
+    }
+    let matte = match matte::parse(&spec) {
+        Ok(None) => None,
+        Ok(Some(x)) => match matte::eval(&x, lb, masks_list, fcx.ev, b, m, scale) {
+            Some(mt) => Some(mt),
+            None => return,
+        },
+        Err(_) => return,
+    };
+    if active.iter().all(|e| grade::fusable(e)) {
+        let l = grade::fused(&active, fcx);
+        let pm = lb.pm.make_mut();
+        match &matte {
+            Some(mt) => {
+                let Some(r) = mt.bbox else { return };
+                l.apply_weighted(pm, Some(&mt.alpha), mix, Some(r));
+            }
+            None => l.apply(pm, mix),
+        }
+        return;
+    }
+    if matte.is_none() && mix >= 0.99999 {
+        for e in &active {
+            effects::apply(e, lb, fcx);
+        }
+        return;
+    }
+    let full = IRect { x: 0, y: 0, w: lb.w() as i32, h: lb.h() as i32 };
+    let region = match &matte {
+        Some(mt) => match mt.bbox {
+            Some(r) => r,
+            None => return,
+        },
+        None => full,
+    };
+    let reach = active.iter().map(|e| effects::margin(e, fcx.ev, scale).ceil() as i32 + 2).max().unwrap_or(0);
+    let sub = region.pad(reach).intersect(&full);
+    if sub.is_empty() {
+        return;
+    }
+    let mut tmp = LayerBuf { pm: Pm::Owned(pixel::crop_pixmap(lb.pm.get(), sub)), x: lb.x + sub.x, y: lb.y + sub.y };
+    for e in &active {
+        effects::apply(e, &mut tmp, fcx);
+    }
+    let (dx, dy) = (lb.x, lb.y);
+    pixel::blend_region(lb.pm.make_mut(), dx, dy, region, &tmp, matte.as_ref().map(|m| m.alpha.as_slice()), mix);
+}
+
+/// Layer mixer composite of straight RGB colors (0..1): `top` over `base`.
+fn composite_rgb(mode: &str, base: [f32; 3], top: [f32; 3]) -> [f32; 3] {
+    let y = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let per = |f: &dyn Fn(f32, f32) -> f32| [f(base[0], top[0]), f(base[1], top[1]), f(base[2], top[2])];
+    match mode {
+        "add" => per(&|b, t| b + t),
+        "subtract" => per(&|b, t| b - t),
+        "multiply" => per(&|b, t| b * t),
+        "screen" => per(&|b, t| 1.0 - (1.0 - b) * (1.0 - t)),
+        "overlay" => per(&|b, t| if b < 0.5 { 2.0 * b * t } else { 1.0 - 2.0 * (1.0 - b) * (1.0 - t) }),
+        "hardlight" => per(&|b, t| if t < 0.5 { 2.0 * b * t } else { 1.0 - 2.0 * (1.0 - b) * (1.0 - t) }),
+        "softlight" => per(&|b, t| (1.0 - 2.0 * t) * b * b + 2.0 * t * b),
+        "darken" => per(&|b, t| b.min(t)),
+        "lighten" => per(&|b, t| b.max(t)),
+        "difference" => per(&|b, t| (b - t).abs()),
+        "luminosity" => {
+            let d = y(top) - y(base);
+            [base[0] + d, base[1] + d, base[2] + d]
+        }
+        "color" => {
+            let d = y(base) - y(top);
+            [top[0] + d, top[1] + d, top[2] + d]
+        }
+        _ => top,
+    }
+}
+
+/// Composites a layer node's output (`top`, same size as `dst`) over the
+/// chain so far, keyed by `alpha` (its window) times `mix`. Alpha is kept.
+fn composite_layer(dst: &mut Pixmap, top: &Pixmap, alpha: Option<&[u8]>, mix: f32, mode: &str) {
+    dst.data_mut().par_chunks_mut(4).zip(top.data().par_chunks(4)).enumerate().for_each(|(i, (d, t))| {
+        let a = alpha.map(|al| al.get(i).copied().unwrap_or(0) as f32 / 255.0).unwrap_or(1.0) * mix;
+        if a <= 0.0 || d[3] == 0 {
+            return;
+        }
+        let (da, ta) = (d[3] as f32, t[3].max(1) as f32);
+        let base = [d[0] as f32 / da, d[1] as f32 / da, d[2] as f32 / da];
+        let tc = [t[0] as f32 / ta, t[1] as f32 / ta, t[2] as f32 / ta];
+        let out = composite_rgb(mode, base, tc);
+        for c in 0..3 {
+            let v = base[c] + (out[c] - base[c]) * a;
+            d[c] = (v.clamp(0.0, 1.0) * da).round() as u8;
+        }
+    });
+}
+
+/// Applies an effect list as a node graph: serial nodes in order; a node
+/// followed by parallel nodes reads one input and sums their changes
+/// (Resolve's parallel mixer); a node followed by layer nodes reads one
+/// input and composites each layer on top by its window (layer mixer).
+/// Runs of single per-pixel color effects sharing a window are fused into
+/// one LUT pass.
+fn apply_fx_list(segs: &[&[&Effect]], lb: &mut LayerBuf, fcx: &FxCtx, masks_list: &[Mask], b: LBounds, m: Transform, scale: f32) {
+    let nodes = nodes_of(segs);
+    let mut i = 0;
+    while i < nodes.len() {
+        let par = nodes[i + 1..].iter().take_while(|n| n.conn == Conn::Parallel).count();
+        let lay = if par == 0 { nodes[i + 1..].iter().take_while(|n| n.conn == Conn::Layer).count() } else { 0 };
+        if par + lay > 0 {
+            let input = lb.pm.get().clone();
+            let (x0, y0) = (lb.x, lb.y);
+            apply_node(&nodes[i], lb, fcx, masks_list, b, m, scale);
+            for n in &nodes[i + 1..i + 1 + par + lay] {
+                let mut tmp = LayerBuf { pm: Pm::Owned(input.clone()), x: x0, y: y0 };
+                let same = |p: &Pixmap| p.width() == input.width() && p.height() == input.height();
+                if n.conn == Conn::Parallel {
+                    apply_node(n, &mut tmp, fcx, masks_list, b, m, scale);
+                    if same(lb.pm.get()) && same(tmp.pm.get()) && (lb.x, lb.y, tmp.x, tmp.y) == (x0, y0, x0, y0) {
+                        add_delta(lb.pm.make_mut(), tmp.pm.get(), &input);
+                    } else {
+                        // a tool that grew the buffer can't be summed: run it in series
+                        apply_node(n, lb, fcx, masks_list, b, m, scale);
+                    }
+                    continue;
+                }
+                // layer node: its tools on the shared input, then composited by its key
+                let (spec, mix) = node_window(n, fcx);
+                for e in n.fx.iter().filter(|e| e.on) {
+                    effects::apply(e, &mut tmp, fcx);
+                }
+                if !(same(lb.pm.get()) && same(tmp.pm.get()) && (lb.x, lb.y, tmp.x, tmp.y) == (x0, y0, x0, y0)) {
+                    apply_node(n, lb, fcx, masks_list, b, m, scale);
+                    continue;
+                }
+                let matte = match matte::parse(&spec) {
+                    Ok(None) => None,
+                    Ok(Some(x)) => match matte::eval(&x, lb, masks_list, fcx.ev, b, m, scale) {
+                        Some(mt) => Some(mt),
+                        None => continue,
+                    },
+                    Err(_) => continue,
+                };
+                let mode = n.fx.first().and_then(|e| e.props.get("composite")).map(|a| a.v.str()).unwrap_or_else(|| "normal".into());
+                composite_layer(lb.pm.make_mut(), tmp.pm.get(), matte.as_ref().map(|mt| mt.alpha.as_slice()), mix, &mode);
+            }
+            i += 1 + par + lay;
+            continue;
+        }
+        // single-effect serial nodes: fuse runs that share a window
+        if nodes[i].fx.len() == 1 {
+            let run: Vec<&Effect> = nodes[i..].iter().take_while(|n| n.fx.len() == 1 && n.conn == Conn::Serial).map(|n| n.fx[0]).collect();
+            let k = grade::run_len(&run, fcx);
+            // the last effect of a run may head a parallel or layer group: leave it out
+            let k = if k >= 2 && nodes.get(i + k).is_some_and(|x| x.conn != Conn::Serial) { k - 1 } else { k };
+            if k >= 2 {
+                apply_fused(&run[..k], lb, fcx, masks_list, b, m, scale);
+                i += k;
+                continue;
+            }
+        }
+        apply_node(&nodes[i], lb, fcx, masks_list, b, m, scale);
+        i += 1;
+    }
+}
+
+/// One fused grade, weighted in place by its window (no buffer copies).
+fn apply_fused(run: &[&Effect], lb: &mut LayerBuf, fcx: &FxCtx, masks_list: &[Mask], b: LBounds, m: Transform, scale: f32) {
+    let (spec, _) = grade::window_of(run[0], fcx);
+    let matte = match matte::parse(&spec) {
+        Ok(None) => None,
+        Ok(Some(x)) => match matte::eval(&x, lb, masks_list, fcx.ev, b, m, scale) {
+            Some(mt) => Some(mt),
+            None => return,
+        },
+        Err(_) => return,
+    };
+    let l = grade::fused(run, fcx);
+    let pm = lb.pm.make_mut();
+    match &matte {
+        Some(mt) => {
+            let Some(r) = mt.bbox else { return };
+            l.apply_weighted(pm, Some(&mt.alpha), 1.0, Some(r));
+        }
+        None => l.apply(pm, 1.0),
+    }
+}
+
+/// Applies an effect with its optional mask window (`mask=` expression) and
+/// mix. Only the window's bounding box (padded by the effect's reach) is
+/// processed and blended back in place, so cost scales with the window.
 fn apply_effect_windowed(e: &Effect, lb: &mut LayerBuf, fcx: &FxCtx, masks_list: &[Mask], b: LBounds, m: Transform, scale: f32) {
     let Some(def) = schema::effect(&e.kind) else { return };
-    if def.cat != "color" {
+    if !schema::windowable(def) {
         effects::apply(e, lb, fcx);
         return;
     }
@@ -70,30 +404,36 @@ fn apply_effect_windowed(e: &Effect, lb: &mut LayerBuf, fcx: &FxCtx, masks_list:
     if amount <= 0.00001 {
         return;
     }
-    let mask_id = e.props.get("mask").map(|a| a.eval(fcx.ev.t, fcx.ev.x).str()).unwrap_or_default();
-    let mut alpha = if matches!(mask_id.to_ascii_lowercase().as_str(), "" | "none" | "off") {
-        None
-    } else {
-        let Some(mk) = masks_list.iter().find(|mk| mk.id.eq_ignore_ascii_case(&mask_id)) else { return };
-        if !mk.on {
-            return;
-        }
-        let Some(a) = masks::mask_alpha(lb, mk, fcx.ev, b, m, scale) else { return };
-        Some(a)
+    let spec = e.props.get("mask").map(|a| a.eval(fcx.ev.t, fcx.ev.x).str()).unwrap_or_default();
+    let matte = match matte::parse(&spec) {
+        Ok(None) => None,
+        Ok(Some(x)) => match matte::eval(&x, lb, masks_list, fcx.ev, b, m, scale) {
+            Some(mt) => Some(mt),
+            None => return,
+        },
+        Err(_) => return,
     };
-    if let Some(a) = alpha.as_mut() {
-        let ev = fcx.ev.with_lists(&[schema::MASK]);
-        if masks_list.iter().find(|mk| mk.id.eq_ignore_ascii_case(&mask_id)).is_some_and(|mk| ev.str(&mk.props, "mode") == "subtract") {
-            a.iter_mut().for_each(|v| *v = 255 - *v);
-        }
-    }
-    if amount >= 0.99999 && alpha.is_none() {
+    if amount >= 0.99999 && matte.is_none() {
         effects::apply(e, lb, fcx);
         return;
     }
-    let before = lb.pm.get().clone();
-    effects::apply(e, lb, fcx);
-    pixel::mix_masked(lb.pm.make_mut(), &before, alpha.as_deref(), amount);
+    let full = IRect { x: 0, y: 0, w: lb.w() as i32, h: lb.h() as i32 };
+    let region = match &matte {
+        Some(mt) => match mt.bbox {
+            Some(r) => r,
+            None => return,
+        },
+        None => full,
+    };
+    let reach = effects::margin(e, fcx.ev, scale).ceil() as i32 + if def.cat == "color" { 0 } else { 2 };
+    let sub = region.pad(reach).intersect(&full);
+    if sub.is_empty() {
+        return;
+    }
+    let mut tmp = LayerBuf { pm: Pm::Owned(pixel::crop_pixmap(lb.pm.get(), sub)), x: lb.x + sub.x, y: lb.y + sub.y };
+    effects::apply(e, &mut tmp, fcx);
+    let (dx, dy) = (lb.x, lb.y);
+    pixel::blend_region(lb.pm.make_mut(), dx, dy, region, &tmp, matte.as_ref().map(|m| m.alpha.as_slice()), amount);
 }
 
 /// A layer's on-screen geometry at comp time `t`, in comp px: the corners of
@@ -593,12 +933,16 @@ impl<'a> CompR<'a> {
                         let sp = it.speed();
                         let remapped = it.props.get("remap").map(|a| a.is_animated()).unwrap_or(false);
                         let rate = if remapped { m.fps.max(1.0) } else { self.comp.fps / sp };
+                        // the input color transform runs first, on the source's own bit depth
+                        let ffv = effects::ff_filters(&it.fx);
+                        let input = super::colorspace::decode_filter(&ev.str(&it.props, "input"), &m.color);
+                        let vf = input.into_iter().chain((!ffv.is_empty()).then(|| ffv.clone())).collect::<Vec<_>>().join(",");
                         let mut spec = ReaderSpec {
                             path: m.path.clone(),
                             w: dw,
                             h: dh,
                             rate,
-                            vf: effects::ff_filters(&it.fx),
+                            vf,
                             alpha: m.alpha,
                             hw: self.rc.frames.hw_for(m),
                             src_dur: m.dur,
@@ -608,7 +952,7 @@ impl<'a> CompR<'a> {
                         // previews decode the proxy when there is one (decode-time FFmpeg
                         // effects work in source pixels, so those clips keep the original)
                         let mut shift = 0.0;
-                        if self.rc.draft && spec.vf.is_empty() {
+                        if self.rc.draft && ffv.is_empty() {
                             if let Some((p, offset)) = self.rc.frames.proxies.as_ref().and_then(|px| px.for_preview(m, dw)) {
                                 spec.path = p;
                                 spec.hw = false; // a small H.264 proxy decodes faster on the CPU
@@ -1004,19 +1348,23 @@ impl<'a> CompR<'a> {
             self.render_2d(it, &ev, &x, tl, b, m_out, clip, scale, &mut pre_blurred)?
         };
         let Some(lbuf) = lb.as_mut() else { return Ok(None) };
+        if let Some(pr) = self.rc.probe.filter(|pr| pr.item == it.id) {
+            capture_probe(pr, it, lbuf, &ev, b, out_t.pre_concat(ex.mat).pre_concat(w.m), scale);
+        }
         // masks & crop (mask paths live in layer px, transformed like the content)
         if !it.masks.is_empty() || it.fx.iter().any(|e| e.kind == "crop" && e.on) {
             let m_out = out_t.pre_concat(ex.mat).pre_concat(w.m);
             masks::apply_masks(lbuf, &it.masks, &it.fx, &ev, b, m_out, scale);
         }
         // native effects
-        if it.fx.iter().any(|e| e.on) {
+        if it.fx.iter().any(|e| e.on) || it.grade.is_some() || it.pregrade.is_some() {
             let fcx = FxCtx { ev: &ev, scale, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps).round() as i64, seed: x.seed };
             let m_out = out_t.pre_concat(ex.mat).pre_concat(w.m);
             // a leading blur may already have been applied at source resolution
-            for e in it.fx.iter().filter(|e| e.on).skip(pre_blurred as usize).filter(|e| !matches!(e.kind.as_str(), "crop" | "cornerpin" | "posterizetime" | "echo")) {
-                apply_effect_windowed(e, lbuf, &fcx, &it.masks, b, m_out, scale);
-            }
+            let pre = self.pre_grade(it);
+            let own: Vec<&Effect> = it.fx.iter().filter(|e| e.on).skip(pre_blurred as usize).filter(|e| !matches!(e.kind.as_str(), "crop" | "cornerpin" | "posterizetime" | "echo")).collect();
+            let shared = self.shared_grade(it);
+            apply_fx_list(&[&pre[..], &own[..], &shared[..]], lbuf, &fcx, &it.masks, b, m_out, scale);
         }
         // track matte
         if let Some(mt) = &it.matte {
@@ -1687,6 +2035,18 @@ impl<'a> CompR<'a> {
         order
     }
 
+    /// The effects of the pre-clip group grade `it` is linked to (before its own).
+    fn pre_grade(&self, it: &Item) -> Vec<&'a Effect> {
+        let p: &'a Project = self.rc.p;
+        it.pregrade.as_ref().and_then(|g| p.grades.get(g)).map(|v| v.iter().filter(|e| e.on).collect()).unwrap_or_default()
+    }
+
+    /// The effects of the shared grade `it` is linked to (after its own).
+    fn shared_grade(&self, it: &Item) -> Vec<&'a Effect> {
+        let p: &'a Project = self.rc.p;
+        it.grade.as_ref().and_then(|g| p.grades.get(g)).map(|v| v.iter().filter(|e| e.on).collect()).unwrap_or_default()
+    }
+
     fn apply_adjust(&self, it: &Item, k: f64, t: f64, out: &mut Pixmap) {
         let tl = t - it.start;
         let lists = Self::lists(it.kind);
@@ -1702,9 +2062,13 @@ impl<'a> CompR<'a> {
         let scale = self.sx.max(self.sy);
         let fcx = FxCtx { ev: &ev, scale, out_w: self.ow, out_h: self.oh, frame: (t * self.comp.fps).round() as i64, seed: x.seed };
         let effect_m = self.out_t().pre_concat(w.m);
-        for e in it.fx.iter().filter(|e| e.on) {
-            apply_effect_windowed(e, &mut lb, &fcx, &it.masks, b, effect_m, scale);
+        if let Some(pr) = self.rc.probe.filter(|pr| pr.item == it.id) {
+            capture_probe(pr, it, &lb, &ev, b, effect_m, scale);
         }
+        let pre = self.pre_grade(it);
+        let own: Vec<&Effect> = it.fx.iter().filter(|e| e.on).collect();
+        let shared = self.shared_grade(it);
+        apply_fx_list(&[&pre[..], &own[..], &shared[..]], &mut lb, &fcx, &it.masks, b, effect_m, scale);
         if !it.masks.is_empty() || it.fx.iter().any(|e| e.kind == "crop") {
             masks::apply_masks(&mut lb, &it.masks, &it.fx, &ev, b, self.out_t().pre_concat(w.m), scale);
         }

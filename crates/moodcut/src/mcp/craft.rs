@@ -191,7 +191,56 @@ marker add 12 'Export'
 title chapter num=2 text='Export' at=12 dur=2
 sfx swish at=12
 add m8 A2 at=0 dur=V1.end vol=-22dB fadeOut=2
-master lufs=-16 limiter=1";
+master lufs=-16 limiter=1
+
+## grade: log interview, windowed, tracked and matched (help grade, masks, tracking)
+add m1 V1 at=0 dur=8
+add m2 V1 at=8 dur=4
+add m3 V1 at=12 dur=4
+color c1 input=slog3
+color c1 exposure=0.3 contrast=12
+mask c1 ellipse x=.48 y=.38 w=.2 h=.3 feather=60 window
+track c1.m1
+fx c1 curves master='0,0 .4,.46 1,1' mask=m1
+mask c1 hsl hue=25 hueRange=40 window
+fx c1 secondary sat=1.05 mask=m2*m1
+grade save interview from=c1
+still save hero from=c1
+match c2,c3 to=still:hero
+fx c1 softclip
+
+## track: a 3D title locked into a moving shot, a screen replacement and a tracked grade window (help tracking, grade)
+add m1 V1 at=0 dur=8
+camtrack c1
+camtrack c1 points n=12
+camtrack c1 ground=p1,p2,p3
+camtrack c1 attach text 'OPEN DAILY' at=p1,p2,p3 size=1.2
+add m2 V2 at=0 dur=8 as=screen
+track c1 corners='.3,.3 .6,.32 .6,.6 .3,.58' to=cornerpin on=screen
+node c1 add name=Contrast
+node c1 1 primaries contrast=1.1 pivot=.42
+node c1 add name=Face
+node c1 2 window add circle x=.5 y=.45 w=.3 h=.4 feather=60
+node c1 2 track mode=similarity
+node c1 2 primaries gammaY=.03 sat=55
+node c1 add layer composite=softlight name=Glow
+node c1 3 glow radius=40 mix=.4
+
+## mix: dialogue and music buses with a shared reverb (help mix)
+add m1 V1 at=0 dur=20
+add m8 A2 at=0 dur=20
+bus add B1 name=Dialogue
+bus add B2 name=Music
+bus add B3 name=Verb
+track set V1 out=B1
+track set A2 out=B2
+send V1 B3 -18dB
+afx B3 rack=room-verb
+afx B1 rack=podcast-voice
+repair V1
+duck B2 by=B1
+kf A2 vol 0:-30 2:-18
+master lufs=-14 limiter=1 truepeak=1";
 
 #[cfg(test)]
 mod tests {
@@ -227,6 +276,7 @@ mod tests {
                 gfx: None,
                 tags: vec![],
                 note: String::new(),
+                color: String::new(),
             })
         }
         fn analyze(&self, _: &Project, _: &str, kind: &str, _: &BTreeMap<String, String>) -> Result<serde_json::Value> {
@@ -234,8 +284,17 @@ mod tests {
                 "silence" => serde_json::json!({"silences": [[2.0, 3.0], [9.0, 9.5], [16.0, 17.0], [40.0, 41.0]]}),
                 "beats" => serde_json::json!({"bpm": 120.0, "beats": (0..180).map(|i| i as f64 * 0.5).collect::<Vec<_>>()}),
                 "loudness" => serde_json::json!({"lufs": -20.0}),
+                "track" => serde_json::json!({"kind": "region", "samples": [[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.95], [1.0, 1.0, 0.0, 0.02, 0.0, 1.0, 0.01, 0.9], [2.0, 1.0, 0.0, 0.04, 0.0, 1.0, 0.02, 0.4]]}),
+                "camtrack" => crate::ops::tests::mock_camera_solve(),
+                "planar" => crate::ops::tests::mock_planar(),
+                "audiostats" => serde_json::json!({"secs": 20.0, "integrated": -21.0, "floor": -52.0, "hum": [50.0, 14.0], "bands": [-20.0, -6.0, -8.0, -5.0, -10.0, -20.0], "clipped": 0, "dc": 0.0, "corr": 0.9, "quiet_at": 3.0}),
                 _ => serde_json::json!({"segments": [{"s": 0.5, "e": 60.0, "text": "This is how we did it, step by step, for real."}]}),
             })
+        }
+        fn measure(&self, _: &Project, item: &str, _: &[f64], _: Option<&str>, _: Option<(f64, f64, f64, f64)>) -> Result<serde_json::Value> {
+            // the first clip a little brighter and warmer than the rest
+            let k = if item == "c1" { 1.1 } else { 1.0 };
+            Ok(serde_json::json!({"p2": 0.04, "p50": 0.4 * k, "p98": 0.9, "shadows": [0.1 * k, 0.1, 0.09], "mids": [0.42 * k, 0.4, 0.38], "highs": [0.8, 0.78, 0.75], "sat": 0.2, "neutral": [0.5, 0.48, 0.45], "n": 100}))
         }
         fn sfx(&self, kind: &str, dur: f64, pitch: f64, seed: u64) -> Result<Media> {
             let k = sfx::kind(kind).unwrap();
@@ -258,7 +317,111 @@ mod tests {
             }
             n += 1;
         }
-        assert_eq!(n, 7);
+        assert_eq!(n, 10);
+    }
+
+    /// Words of an example, split on spaces outside '...' quotes.
+    fn words(s: &str) -> Vec<String> {
+        let mut out = vec![];
+        let mut cur = String::new();
+        let mut quoted = false;
+        for ch in s.chars() {
+            if ch == '\'' {
+                quoted = !quoted;
+            }
+            if ch.is_whitespace() && !quoted {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            } else {
+                cur.push(ch);
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+
+    /// An example tool call (`preview t=2 scope=all`): every argument the tool has, enum values it accepts,
+    /// typed values that parse; a bare word is the tool's action / what / topic.
+    fn check_tool_call(tool: &serde_json::Value, args: &[String]) -> std::result::Result<(), String> {
+        let name = tool["name"].as_str().unwrap_or("?");
+        let props = tool["inputSchema"]["properties"].as_object().ok_or("no schema")?;
+        for a in args {
+            match a.split_once('=') {
+                Some((k, v)) => {
+                    let p = props.get(k).ok_or_else(|| format!("{name} has no argument {k}"))?;
+                    if let Some(opts) = p["enum"].as_array() {
+                        if !opts.iter().any(|o| o.as_str() == Some(v)) {
+                            return Err(format!("{name} {k}={v}: not one of {opts:?}"));
+                        }
+                    }
+                    let ok = match p["type"].as_str() {
+                        Some("number") => v.parse::<f64>().is_ok(),
+                        Some("integer") => v.parse::<i64>().is_ok(),
+                        Some("boolean") => matches!(v, "true" | "false"),
+                        _ => true,
+                    };
+                    if !ok {
+                        return Err(format!("{name} {k}={v}: wrong type ({})", p["type"]));
+                    }
+                }
+                None => {
+                    let key = ["action", "what", "topic"].into_iter().find(|k| props.contains_key(*k)).ok_or_else(|| format!("{name} takes no bare word '{a}'"))?;
+                    if key == "topic" {
+                        if crate::mcp::docs::help(a).starts_with("unknown topic") {
+                            return Err(format!("help has no topic {a}"));
+                        }
+                    } else if let Some(opts) = props[key]["enum"].as_array() {
+                        if !opts.iter().any(|o| o.as_str() == Some(a.as_str())) {
+                            return Err(format!("{name}: {a} is not one of {opts:?}"));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// help direction and help features may only teach what exists: every backticked script
+    /// line runs on a small project, every tool call names real arguments and values.
+    #[test]
+    fn direction_examples_are_real_commands() {
+        use crate::mcp::direction::{DIRECTION, FEATURES};
+        let tools = crate::mcp::tools();
+        let tools = tools.as_array().unwrap().clone();
+        let mut base = Project::new("t", 1920, 1080, 30.0);
+        ops::run(&mut base, &Mock, "s1", "import /f/talk.mp4 /f/b1.mp4 /f/b2.mp4 /f/b3.mp4 /f/b4.mp4 /f/b5.mp4 /f/photo.png /f/music.mp3 /f/logo.png").unwrap();
+        // the ids the guides name: c1 main clip, c2 b-roll above it, c3 the next shot, c4 music, t5 a
+        // title; c1 has the window m1 and color nodes 1 and 2
+        ops::run(&mut base, &Mock, "s1", "add m1 V1 at=0 dur=20\nadd m2[0-5] V2 at=4 dur=4\nadd m3[2-8] V1 at=20\nadd m8 A2 at=0 dur=26\ntext 'Headline' at=1 dur=3\nmask c1 ellipse x=.5 y=.4 w=.3 h=.4 feather=40 window\nnode c1 add\nnode c1 add").unwrap();
+        for id in ["c1", "c2", "c3", "c4", "t5"] {
+            assert!(base.item(id).is_some(), "the fixture has no {id}");
+        }
+        let mut n = 0;
+        for (guide, text) in [("direction", DIRECTION), ("features", FEATURES)] {
+            for ex in text.split('`').skip(1).step_by(2) {
+                let w = words(ex);
+                assert!(!w.is_empty(), "help {guide}: empty example");
+                if let Some(tool) = tools.iter().find(|t| t["name"].as_str() == Some(w[0].as_str())) {
+                    if let Err(e) = check_tool_call(tool, &w[1..]) {
+                        panic!("help {guide}: `{ex}`: {e}");
+                    }
+                } else {
+                    let mut p = base.clone();
+                    // the camera tracker's later steps start from a solve
+                    if ex.starts_with("camtrack c1 ") {
+                        ops::run(&mut p, &Mock, "s1", "camtrack c1").unwrap();
+                    }
+                    if let Err(e) = ops::run(&mut p, &Mock, "s1", ex) {
+                        panic!("help {guide}: `{ex}` fails: {e}");
+                    }
+                }
+                n += 1;
+            }
+        }
+        assert!(n >= 90, "only {n} examples");
     }
 
     #[test]

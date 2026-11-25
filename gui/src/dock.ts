@@ -20,7 +20,8 @@ export type PanelId =
   | "tools"
   | "align"
   | "character"
-  | "brand";
+  | "brand"
+  | "tracker";
 
 export const PANEL_TITLES: Record<PanelId, string> = {
   project: "Project",
@@ -40,6 +41,7 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   align: "Align",
   character: "Character",
   brand: "Brand Kit",
+  tracker: "Tracker",
 };
 
 export const ALL_PANELS = Object.keys(PANEL_TITLES) as PanelId[];
@@ -106,7 +108,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     name: "Color",
     desc: "Lumetri Color and Scopes around a large Program monitor",
     build: () => ({
-      root: col([row([g(["scopes", "source"]), g(["program"]), g(["lumetri", "controls"])], [0.28, 0.44, 0.28]), editBottom(["project", "effects", "history"])], [0.6, 0.4]),
+      root: col([row([g(["scopes", "source"]), g(["program"]), g(["lumetri", "controls", "tracker"])], [0.28, 0.44, 0.28]), editBottom(["project", "effects", "history"])], [0.6, 0.4]),
       floats: [],
     }),
   },
@@ -115,7 +117,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     name: "Effects",
     desc: "Effect Controls and Effects & Presets beside the Program monitor",
     build: () => ({
-      root: col([row([g(["controls", "source", "lumetri"]), g(["program"]), g(["effects", "markers"])], [0.3, 0.45, 0.25]), editBottom(["project", "history", "ai"])], [0.58, 0.42]),
+      root: col([row([g(["controls", "source", "lumetri", "tracker"]), g(["program"]), g(["effects", "markers"])], [0.3, 0.45, 0.25]), editBottom(["project", "history", "ai"])], [0.58, 0.42]),
       floats: [],
     }),
   },
@@ -135,7 +137,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     build: () => ({
       root: col(
         [
-          row([g(["project", "effects"]), g(["program"]), col([g(["controls", "character"]), g(["align", "brand", "history"])], [0.6, 0.4])], [0.22, 0.53, 0.25]),
+          row([g(["project", "effects"]), g(["program"]), col([g(["controls", "character"]), g(["tracker", "align", "brand", "history"])], [0.6, 0.4])], [0.22, 0.53, 0.25]),
           row([g(["tools"]), g(["timeline"])], [0, 1]),
         ],
         [0.6, 0.4],
@@ -166,7 +168,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
 /** Narrow windows (phones, split screens): one column of tabs. */
 function compactLayout(): Layout {
   return {
-    root: col([g(["program", "source", "scopes"]), g(["timeline"]), g(["controls", "project", "effects", "lumetri", "essential", "mixer", "ai", "markers", "history", "character", "brand", "align", "tools"])], [0.42, 0.33, 0.25]),
+    root: col([g(["program", "source", "scopes"]), g(["timeline"]), g(["controls", "project", "effects", "lumetri", "essential", "mixer", "ai", "markers", "history", "character", "brand", "align", "tracker", "tools"])], [0.42, 0.33, 0.25]),
     floats: [],
   };
 }
@@ -317,6 +319,7 @@ const HOMES: Partial<Record<PanelId, PanelId[]>> = {
   align: ["character", "controls"],
   character: ["controls", "align"],
   brand: ["character", "align", "controls"],
+  tracker: ["controls", "lumetri", "align"],
   timeline: [],
   tools: [],
 };

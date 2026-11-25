@@ -9,21 +9,22 @@ of each file.
 
 ## Install
 
-**Installer (recommended):** run `MoodCut-Setup-x64.exe`. No admin rights are needed. Leave the options ticked to get
-shortcuts, `moodcut` on PATH, `.mcut` files opening in MoodCut, FFmpeg (downloaded with a progress bar) and your AI apps
-connected (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, LM Studio, Gemini CLI, Codex). Restart those apps
+**Installer (recommended):** run `MoodCut-Setup-x64.exe`. No admin rights are needed. FFmpeg is included, so nothing
+else has to be downloaded or installed. Leave the options ticked to get shortcuts, `moodcut` on PATH, `.mcut` files
+opening in MoodCut and your AI apps connected (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, LM Studio, Gemini CLI, Codex). Restart those apps
 afterwards. Silent install for IT or scripts:
 
 ```
-MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopath,assoc,ffmpeg,connectai"
+MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopath,assoc,connectai"
 ```
 
 Add `/ALLUSERS` to install for everyone (asks for admin rights). Uninstall from Settings → Apps → MoodCut: it removes
 MoodCut from the AI apps' settings and PATH too.
 
-**Portable:** copy `MoodCutApp.exe` and `moodcut.exe` to one folder (ideally on your `PATH`) and double-click
-`MoodCutApp.exe`. Click **Install FFmpeg**
-when MoodCut offers it (about 100 MB, no admin rights), then **Connect AI** to set up your AI apps.
+**Portable:** unzip `MoodCut-<version>-windows-x64-portable.zip` from the
+[latest release](https://github.com/hamzarasheed309/MoodCut/releases/latest) anywhere (ideally a folder on your `PATH`)
+and double-click `MoodCutApp.exe`. FFmpeg is in the zip's `ffmpeg` folder, where MoodCut looks first. Click
+**Connect AI** to set up your AI apps. (A bare `MoodCutApp.exe` without that folder offers to download FFmpeg.)
 
 Windows may show *"Windows protected your PC"* because the files aren't code-signed yet: choose **More info → Run
 anyway** (once).
@@ -32,7 +33,7 @@ Requirements: Windows 10 (1803) or 11, 64-bit, and the Microsoft WebView2 runtim
 installer adds it on Windows 10 if missing). The editor always runs in MoodCut's own native app window; if WebView2
 is unavailable, MoodCut displays a setup error instead of opening a browser. The frontend, engine, and HTTP MCP
 endpoint start together in the same app process. Everything MoodCut stores (settings,
-proxies, caches, a portable FFmpeg when installed from the editor) lives in `%APPDATA%\MoodCut`; projects live wherever
+proxies, caches, a downloaded FFmpeg if you ever used the bare exe) lives in `%APPDATA%\MoodCut`; projects live wherever
 you save them.
 
 See the [main README](../README.md) for what MoodCut can do and how the AI drives it.

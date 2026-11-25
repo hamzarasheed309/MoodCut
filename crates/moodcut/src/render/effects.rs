@@ -52,7 +52,7 @@ pub fn margin(e: &Effect, ev: &Ev, scale: f32) -> f32 {
     let p = &e.props;
     let m = match def.name {
         "blur" => pe.f(p, "radius") * 1.6,
-        "glow" | "lensblur" => pe.f(p, "radius") * 1.6,
+        "glow" | "lensblur" | "halation" => pe.f(p, "radius") * 1.6,
         "outerglow" => pe.f(p, "size") * 2.0,
         "ripple" => pe.f(p, "amp"),
         "turbulence" => pe.f(p, "amount"),
@@ -360,6 +360,14 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
             let lg = comp(curve_lut(&ev.str(p, "g")));
             let lb_ = comp(curve_lut(&ev.str(p, "b")));
             map_lut(pm, &lr, &lg, &lb_);
+            // the luma curve (Resolve YRGB): brightness changes, color difference kept
+            if let Some(yl) = curve_lut(&ev.str(p, "luma")) {
+                map_rgb(pm, |r, g, b| {
+                    let y = luma(r, g, b);
+                    let d = yl[(y.clamp(0.0, 1.0) * 255.0).round() as usize] as f32 / 255.0 - y;
+                    (r + d, g + d, b + d)
+                });
+            }
         }
         "hue" => {
             let sh = ev.f(p, "shift") / 360.0;
@@ -609,20 +617,102 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
             let amt = ev.f(p, "amount") * 255.0;
             let mono = ev.bool(p, "mono");
             let seed = if ev.bool(p, "animated") { cx.seed ^ (cx.frame as u64).wrapping_mul(7919) } else { cx.seed };
+            let size = ev.f(p, "size").max(1.0) * s.max(0.05);
+            let soft = ev.f(p, "soft").clamp(0.0, 1.0);
+            let resp = ev.f(p, "response").clamp(0.0, 1.0);
+            let chroma = if mono { 0.0 } else { ev.f(p, "color").clamp(0.0, 1.0) };
+            if size <= 1.05 && soft <= 0.0 && resp <= 0.0 && (mono || chroma >= 0.999) {
+                pm.data_mut().par_chunks_mut(w as usize * 4).enumerate().for_each(|(y, row)| {
+                    for x in 0..w as usize {
+                        let px = &mut row[x * 4..x * 4 + 4];
+                        let a = px[3] as f32;
+                        if a == 0.0 {
+                            continue;
+                        }
+                        let gx = (x as i32 + ox) as u32;
+                        let gy = (y as i32 + oy) as u32;
+                        let n0 = hash2(gx, gy, seed);
+                        for k in 0..3 {
+                            let nv = if mono { n0 } else { hash2(gx, gy, seed.wrapping_add(k as u64 * 101)) };
+                            let r = ((nv & 0xffff) as f32 / 65535.0 - 0.5) * amt * (a / 255.0);
+                            px[k] = (px[k] as f32 + r).round().clamp(0.0, a) as u8;
+                        }
+                    }
+                });
+                return;
+            }
+            // film grain: a noise field at 1/size resolution (in comp space,
+            // so it doesn't swim with the layer buffer), softened and sampled
+            // bilinearly, stronger in the midtones as `response` rises
+            let nch = if chroma > 0.0 { 3 } else { 1 };
+            let cx0 = (ox as f32 / size).floor() as i64 - 1;
+            let cy0 = (oy as f32 / size).floor() as i64 - 1;
+            let fw = (w as f32 / size).ceil() as usize + 4;
+            let fh = (h as f32 / size).ceil() as usize + 4;
+            let mut field = vec![0f32; fw * fh * nch];
+            field.par_chunks_mut(fw * nch).enumerate().for_each(|(cy, row)| {
+                for cxi in 0..fw {
+                    let (gx, gy) = ((cx0 + cxi as i64) as u32, (cy0 + cy as i64) as u32);
+                    for k in 0..nch {
+                        let nv = hash2(gx, gy, seed.wrapping_add(k as u64 * 101));
+                        row[cxi * nch + k] = (nv & 0xffff) as f32 / 65535.0 - 0.5;
+                    }
+                }
+            });
+            if soft > 0.0 {
+                let r = (soft * 2.0).round().max(1.0) as usize;
+                let gain = (2 * r + 1) as f32;
+                for k in 0..nch {
+                    let mut ch: Vec<f32> = (0..fw * fh).map(|i| field[i * nch + k]).collect();
+                    for pass in 0..2 {
+                        let src = ch.clone();
+                        for y in 0..fh {
+                            for x in 0..fw {
+                                let mut acc = 0.0;
+                                for d in -(r as i64)..=(r as i64) {
+                                    let (sx, sy) = if pass == 0 { ((x as i64 + d).clamp(0, fw as i64 - 1) as usize, y) } else { (x, (y as i64 + d).clamp(0, fh as i64 - 1) as usize) };
+                                    acc += src[sy * fw + sx];
+                                }
+                                ch[y * fw + x] = acc / gain;
+                            }
+                        }
+                    }
+                    for (i, v) in ch.into_iter().enumerate() {
+                        field[i * nch + k] = v * gain;
+                    }
+                }
+            }
+            let field = &field;
             pm.data_mut().par_chunks_mut(w as usize * 4).enumerate().for_each(|(y, row)| {
+                let fy = (y as i32 + oy) as f32 / size - cy0 as f32;
+                let y0 = (fy.floor().max(0.0) as usize).min(fh - 2);
+                let ty = (fy - y0 as f32).clamp(0.0, 1.0);
                 for x in 0..w as usize {
                     let px = &mut row[x * 4..x * 4 + 4];
                     let a = px[3] as f32;
                     if a == 0.0 {
                         continue;
                     }
-                    let gx = (x as i32 + ox) as u32;
-                    let gy = (y as i32 + oy) as u32;
-                    let n0 = hash2(gx, gy, seed);
-                    for k in 0..3 {
-                        let nv = if mono { n0 } else { hash2(gx, gy, seed.wrapping_add(k as u64 * 101)) };
-                        let r = ((nv & 0xffff) as f32 / 65535.0 - 0.5) * amt * (a / 255.0);
-                        px[k] = (px[k] as f32 + r).round().clamp(0.0, a) as u8;
+                    let fx = (x as i32 + ox) as f32 / size - cx0 as f32;
+                    let x0 = (fx.floor().max(0.0) as usize).min(fw - 2);
+                    let tx = (fx - x0 as f32).clamp(0.0, 1.0);
+                    let at = |k: usize| {
+                        let g = |xx: usize, yy: usize| field[(yy * fw + xx) * nch + k];
+                        (g(x0, y0) * (1.0 - tx) + g(x0 + 1, y0) * tx) * (1.0 - ty) + (g(x0, y0 + 1) * (1.0 - tx) + g(x0 + 1, y0 + 1) * tx) * ty
+                    };
+                    let l = luma(px[0] as f32, px[1] as f32, px[2] as f32) / a;
+                    let wr = 1.0 - resp + resp * 4.0 * l * (1.0 - l);
+                    let k = amt * (a / 255.0) * wr;
+                    let vals = if nch == 3 {
+                        let v = [at(0), at(1), at(2)];
+                        let m = (v[0] + v[1] + v[2]) / 3f32.sqrt();
+                        [m + (v[0] - m) * chroma, m + (v[1] - m) * chroma, m + (v[2] - m) * chroma]
+                    } else {
+                        let m = at(0);
+                        [m, m, m]
+                    };
+                    for c in 0..3 {
+                        px[c] = (px[c] as f32 + vals[c] * k).round().clamp(0.0, a) as u8;
                     }
                 }
             });
@@ -869,7 +959,9 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
             remap(pm, |x, y| (if fh { wf - x } else { x }, if fv { hf - y } else { y }));
         }
         "chromakey" => {
-            let kc = ev.color(p, "color");
+            let kc = if ev.bool(p, "auto") { backdrop_color(pm).unwrap_or(ev.color(p, "color")) } else { ev.color(p, "color") };
+            let (cb0, cw0) = (ev.f(p, "clipBlack"), ev.f(p, "clipWhite").max(ev.f(p, "clipBlack") + 0.01));
+            let edge = ev.f(p, "edge") * s;
             let sim = ev.f(p, "similarity");
             let smooth = ev.f(p, "smooth").max(0.001);
             let spill = ev.f(p, "spill");
@@ -894,11 +986,79 @@ pub fn apply(e: &Effect, lb: &mut LayerBuf, cx: &FxCtx) {
                 if c[dom] > others {
                     c[dom] -= (c[dom] - others) * spill;
                 }
+                let k = ((k - cb0) / (cw0 - cb0)).clamp(0.0, 1.0);
                 let na = a * k;
                 for i in 0..3 {
                     px[i] = (c[i].clamp(0.0, 1.0) * na * 255.0) as u8;
                 }
                 px[3] = (na * 255.0) as u8;
+            });
+            if edge > 0.3 {
+                soften_alpha(pm, |al, w, h| pixel::blur_mask(al, w, h, edge / 2.0));
+            }
+        }
+        "matteclean" => {
+            let size = ev.f(p, "size") * s;
+            let soft = ev.f(p, "soft") * s;
+            soften_alpha(pm, |al, w, h| {
+                let mut v = al.to_vec();
+                // open (remove specks), then close (fill pinholes)
+                super::masks::expand_alpha(&mut v, w, h, -size);
+                super::masks::expand_alpha(&mut v, w, h, size * 2.0);
+                super::masks::expand_alpha(&mut v, w, h, -size);
+                if soft > 0.3 {
+                    pixel::blur_mask(&mut v, w, h, soft / 2.0);
+                }
+                al.copy_from_slice(&v);
+            });
+        }
+        "lightwrap" => {
+            let c = ev.color(p, "color");
+            let width = (ev.f(p, "width") * s).max(0.5);
+            let amount = ev.f(p, "amount").clamp(0.0, 1.0);
+            let (w, h) = (pm.width() as usize, pm.height() as usize);
+            let alpha: Vec<u8> = pm.data().chunks_exact(4).map(|p| p[3]).collect();
+            let mut inside = alpha.clone();
+            pixel::blur_mask(&mut inside, w, h, width / 2.0);
+            // light reaches in where the blurred alpha drops below the real one
+            pm.data_mut().par_chunks_mut(4).zip(alpha.par_iter().zip(inside.par_iter())).for_each(|(px, (a, b))| {
+                if *a == 0 {
+                    return;
+                }
+                let wrap = ((*a as f32 - *b as f32) / 255.0).max(0.0) * 2.0 * amount;
+                if wrap <= 0.0 {
+                    return;
+                }
+                let af = *a as f32 / 255.0;
+                for (i, cc) in [c.r, c.g, c.b].iter().enumerate() {
+                    let v = px[i] as f32 / 255.0;
+                    // screen the light over the edge
+                    let lit = v + cc * af * wrap * (1.0 - v / af.max(1e-3));
+                    px[i] = (lit.clamp(0.0, af) * 255.0) as u8;
+                }
+            });
+        }
+        "halation" => {
+            let thr = ev.f(p, "threshold");
+            let amount = ev.f(p, "amount");
+            let c = ev.color(p, "color");
+            let mut glow = pm.clone();
+            glow.data_mut().par_chunks_mut(4).for_each(|px| {
+                let a = px[3] as f32 / 255.0;
+                let l = if a > 0.0 { luma(px[0] as f32 / 255.0 / a, px[1] as f32 / 255.0 / a, px[2] as f32 / 255.0 / a) } else { 0.0 };
+                let k = smoothstep(thr, (thr + 0.15).min(1.0), l) * a;
+                px[0] = (c.r * k * 255.0) as u8;
+                px[1] = (c.g * k * 255.0) as u8;
+                px[2] = (c.b * k * 255.0) as u8;
+                px[3] = (k * 255.0) as u8;
+            });
+            blur_pixmap(&mut glow, (ev.f(p, "radius") * s / 2.0).max(0.5), 0);
+            pm.data_mut().par_chunks_mut(4).zip(glow.data().par_chunks(4)).for_each(|(d, g)| {
+                for i in 0..3 {
+                    // screen blend, clamped to valid premultiplied values
+                    let (x, y) = (d[i] as f32 / 255.0, (g[i] as f32 / 255.0 * amount).min(1.0));
+                    d[i] = ((x + y - x * y).min(d[3] as f32 / 255.0) * 255.0) as u8;
+                }
             });
         }
         "lumakey" => {
@@ -1031,4 +1191,57 @@ pub fn ff_filters(fx: &[Effect]) -> String {
         }
     }
     v.join(",")
+}
+
+/// Runs `f` on the alpha channel and rescales the color to match, keeping
+/// the pixels validly premultiplied.
+fn soften_alpha(pm: &mut Pixmap, f: impl FnOnce(&mut [u8], usize, usize)) {
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let old: Vec<u8> = pm.data().chunks_exact(4).map(|p| p[3]).collect();
+    let mut new = old.clone();
+    f(&mut new, w, h);
+    pm.data_mut().par_chunks_mut(4).zip(old.par_iter().zip(new.par_iter())).for_each(|(px, (o, n))| {
+        if o == n {
+            return;
+        }
+        if *o == 0 {
+            px.copy_from_slice(&[0, 0, 0, 0]);
+            return;
+        }
+        let k = *n as f32 / *o as f32;
+        for c in px.iter_mut().take(3) {
+            *c = ((*c as f32 * k).round().min(*n as f32)) as u8;
+        }
+        px[3] = *n;
+    });
+}
+
+/// The backdrop color of a green/blue screen: the mean of saturated pixels
+/// on the frame's border, where the screen almost always shows.
+fn backdrop_color(pm: &Pixmap) -> Option<Color> {
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let ring = (w.min(h) / 20).max(1);
+    let d = pm.data();
+    let (mut acc, mut n) = ([0f64; 3], 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            if x >= ring && x < w - ring && y >= ring && y < h - ring {
+                continue;
+            }
+            let i = (y * w + x) * 4;
+            let a = d[i + 3] as f32 / 255.0;
+            if a < 0.9 {
+                continue;
+            }
+            let (r, g, b) = (d[i] as f32 / 255.0 / a, d[i + 1] as f32 / 255.0 / a, d[i + 2] as f32 / 255.0 / a);
+            let (_, s, l) = rgb_to_hsl(r, g, b);
+            if s > 0.3 && l > 0.15 && l < 0.85 {
+                acc[0] += r as f64;
+                acc[1] += g as f64;
+                acc[2] += b as f64;
+                n += 1;
+            }
+        }
+    }
+    (n > 16).then(|| Color { r: (acc[0] / n as f64) as f32, g: (acc[1] / n as f64) as f32, b: (acc[2] / n as f64) as f32, a: 1.0 })
 }

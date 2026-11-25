@@ -98,14 +98,14 @@ Resolve open with the original media, and a CMX3600 EDL.
 ## Install (Windows)
 
 **Installer (recommended).** Download [`MoodCut-Setup-x64.exe`](../../releases/latest/download/MoodCut-Setup-x64.exe)
-(also in [`release/windows-x64`](release/windows-x64/)) and run it. It installs for your user with no admin prompt and,
-in the same few clicks, can:
+(also in [`release/windows-x64`](release/windows-x64/)) and run it. It installs for your user with no admin prompt.
+**FFmpeg is included**, so import, playback and export work as soon as setup finishes: nothing else to download or
+install. In the same few clicks Setup can also:
 
 - add Start menu and desktop shortcuts (MoodCut opens as its own Windows app, with its own window, icon and taskbar
   button, like Premiere Pro: no browser, no console window) and put `moodcut` on your `PATH` so AI apps and terminals
   can start it,
 - open `.mcut` project files with MoodCut,
-- download a portable **FFmpeg** with a progress bar (about 100 MB, kept next to MoodCut),
 - **connect the AI apps it finds**: Claude Desktop (including the Microsoft Store build), Claude Code, Cursor, VS Code,
   Windsurf, LM Studio, Gemini CLI and Codex.
 
@@ -117,14 +117,15 @@ Uninstalling (Settings → Apps) reverses all of it, including the AI apps' sett
 irm https://raw.githubusercontent.com/hamzarasheed309/MoodCut/HEAD/install.ps1 | iex
 ```
 
-**Portable:** [`MoodCutApp.exe`](release/windows-x64/) (the editor) and `moodcut.exe` (the command line and what AI apps
-start) work from any folder: double-click `MoodCutApp.exe`; it offers to install FFmpeg into `%APPDATA%\MoodCut` on
-first run. Both are the same program, so `moodcut.exe` alone also opens the editor (from a terminal, or with a console
+**Portable:** unzip `MoodCut-<version>-windows-x64-portable.zip` from the [latest release](../../releases/latest) anywhere
+and double-click `MoodCutApp.exe` (the editor); `moodcut.exe` is the command line and what AI apps start. FFmpeg is in
+the zip's `ffmpeg` folder, where MoodCut looks first. (Only the bare exe without that folder offers to download FFmpeg
+into `%APPDATA%\MoodCut` on first run.) Both are the same program, so `moodcut.exe` alone also opens the editor (from a terminal, or with a console
 window flashing up when double-clicked). Windows may show *"Windows protected your PC"* because the app
 isn't code-signed yet: **More info → Run anyway**.
 
 When MoodCut opens you land on **Home**: start a YouTube, Reel/TikTok, square or 4K project, reopen a recent one, and
-finish setup (FFmpeg, AI apps) with one click each. `moodcut doctor` checks everything from a terminal.
+connect your AI apps with one click. `moodcut doctor` checks everything from a terminal.
 
 Linux and macOS: `curl -fsSL https://raw.githubusercontent.com/hamzarasheed309/MoodCut/HEAD/install.sh | sh`
 (a prebuilt binary on Linux x64, otherwise a source build).
@@ -438,8 +439,9 @@ cargo build --release                         # target/release/moodcut(.exe)
 cargo test
 ```
 
-The Windows installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php): `iscc /DAppVersion=1.0.0
-installer\moodcut.iss` writes `dist\MoodCut-Setup-x64.exe` (CI builds it, installs it silently, checks FFmpeg, PATH and
+The Windows installer is built with [Inno Setup 6](https://jrsoftware.org/isinfo.php): `pwsh installer\get-ffmpeg.ps1` (the
+bundled FFmpeg, into `distfmpeg`) then `iscc /DAppVersion=1.1.0 installer\moodcut.iss` writes `dist\MoodCut-Setup-x64.exe`
+(CI builds it, installs it silently, checks the bundled FFmpeg is the one MoodCut uses, PATH and
 the file association, and uninstalls it again). `moodcut brand` regenerates the logos, icons and installer artwork from
 `crates/moodcut/src/brand.rs`; see [docs/BRAND.md](docs/BRAND.md).
 

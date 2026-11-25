@@ -33,7 +33,7 @@ fn project(script: &str) -> Project {
 
 fn frame(p: &Project, t: f64) -> Pixmap {
     let frames = FrameServer::new(Arc::new(Ff::missing()), false);
-    let rc = RenderCtx { p, frames: &frames, draft: true };
+    let rc = RenderCtx { p, frames: &frames, draft: true, probe: None };
     render_frame(&rc, &p.main, t, 0.5).unwrap()
 }
 
@@ -210,7 +210,87 @@ fn offline_media_shows_red_in_previews_and_stops_exports() {
     assert!(a == 255 && r > 100 && g < 60 && b < 60, "offline red expected, got {:?}", [r, g, b, a]);
     // an export stops and names the clip
     let frames = FrameServer::new(Arc::new(Ff::missing()), false);
-    let rc = RenderCtx { p: &p, frames: &frames, draft: false };
+    let rc = RenderCtx { p: &p, frames: &frames, draft: false, probe: None };
     let e = format!("{:#}", render_frame(&rc, &p.main, 0.5, 0.5).unwrap_err());
     assert!(e.contains("missing") && e.contains("c1") && e.contains("relink"), "{e}");
+}
+
+#[test]
+fn window_masks_limit_effects_without_cutting() {
+    let full = "comp set bg=none\nsolid #3366cc w=640 h=360 pos=320,180 at=0 dur=2 as=box";
+    // a plain mask still cuts the layer
+    let cut = frame(&project(&format!("{full}\nmask box ellipse w=0.3 h=0.3\nfx box invert mask=m1")), 1.0);
+    assert_eq!(px(&cut, 5, 5)[3], 0, "a plain mask cuts");
+    // a window keeps the whole layer and only inverts inside
+    let win = frame(&project(&format!("{full}\nmask box ellipse w=0.3 h=0.3 window\nfx box invert mask=m1")), 1.0);
+    assert_premul(&win, "window");
+    let (w, h) = (win.width(), win.height());
+    assert_eq!(px(&win, 5, 5)[3], 255, "a window doesn't cut");
+    let (outside, inside) = (px(&win, 5, 5), px(&win, w / 2, h / 2));
+    assert!(outside[2] > 150 && inside[2] < 100, "inverted only inside: {outside:?} {inside:?}");
+    // an expression: outside the window (-m1) blurs, inside stays sharp
+    let p = project(&format!("{full}\nmask box ellipse w=0.3 h=0.3 window\nfx box invert mask=-m1"));
+    let neg = frame(&p, 1.0);
+    assert!(px(&neg, 5, 5)[2] < 100 && px(&neg, w / 2, h / 2)[2] > 150);
+    // mix halves the effect
+    let half = frame(&project(&format!("{full}\nfx box invert mix=0.5")), 1.0);
+    let c = px(&half, 5, 5);
+    assert!((100..156).contains(&c[2]), "mix=0.5 -> {c:?}");
+    // non-color effects take windows too
+    let blur = frame(&project(&format!("{full}\nmask box rect w=0.2 h=0.2 window\nfx box blur radius=20 mask=m1")), 1.0);
+    assert_eq!(px(&blur, 5, 5)[3], 255);
+}
+
+#[test]
+fn mask_expressions_are_checked_at_edit_time() {
+    let base = "solid #3366cc w=640 h=360 pos=320,180 at=0 dur=2 as=box\nmask box ellipse window";
+    let mut p = Project::new("t", 640, 360, 30.0);
+    assert!(ops::run(&mut p, &NoMedia, "s1", &format!("{base}\nfx box blur radius=4 mask=m1+m2")).is_err());
+    let mut p = Project::new("t", 640, 360, 30.0);
+    assert!(ops::run(&mut p, &NoMedia, "s1", &format!("{base}\nmask box rect window\nfx box blur radius=4 mask='m1*-m2'")).is_ok());
+    let mut p = Project::new("t", 640, 360, 30.0);
+    assert!(ops::run(&mut p, &NoMedia, "s1", &format!("{base}\nfx box invert mask='m1+'")).is_err());
+}
+
+#[test]
+fn qualifier_masks_select_by_color() {
+    // a red-to-blue gradient; an hsl window around red inverts only the red end
+    let p = project("comp set bg=none
+solid #ff0000 color2=#0000ff gradType=linear gradAngle=0 w=640 h=360 pos=320,180 at=0 dur=2 as=g
+mask g hsl hue=0 hueRange=40 window
+fx g invert mask=m1");
+    let pm = frame(&p, 1.0);
+    let w = pm.width();
+    let (l, r) = (px(&pm, 2, 90), px(&pm, w - 3, 90));
+    assert!(l[0] < 80 && l[1] > 170, "red end became cyan: {l:?}");
+    assert!(r[2] > 170 && r[0] < 80, "blue end untouched: {r:?}");
+}
+
+#[test]
+fn path_vertices_can_be_moved_and_keyed() {
+    let s = "solid #3366cc w=640 h=360 pos=320,180 at=0 dur=2 as=box\nmask box path d='M0.1,0.1 L0.9,0.1 L0.5,0.9 Z'\nmask box.m1 pt 2 0.8,0.2\nmask box.m1 pt 3 0.5,0.7 at=1";
+    let p = project(s);
+    let it = p.comps[0].tracks.iter().flat_map(|t| &t.items).find(|i| i.name.as_deref() == Some("box")).unwrap();
+    let d = &it.masks[0].props["d"];
+    assert_eq!(d.k.len(), 1);
+    assert_eq!(d.k[0].v.str(), "M0.1,0.1 L0.8,0.2 L0.5,0.7 Z");
+}
+
+#[test]
+fn fused_grade_matches_effects_one_by_one() {
+    let base = "comp set bg=none\nsolid #c04020 color2=#2040c0 gradType=linear gradAngle=0 w=640 h=360 pos=320,180 at=0 dur=2 as=g";
+    let chain = ["lumetri exposure=0.3 contrast=12", "curves master='0,0 0.5,0.6 1,1'", "saturation amount=1.3", "temperature temp=20"];
+    // mix just under 1 keeps every effect a pass of its own
+    let fused = chain.iter().map(|c| format!("fx g {c}")).collect::<Vec<_>>().join("\n");
+    let single = chain.iter().map(|c| format!("fx g {c} mix=0.999")).collect::<Vec<_>>().join("\n");
+    let a = frame(&project(&format!("{base}\n{fused}")), 1.0);
+    let b = frame(&project(&format!("{base}\n{single}")), 1.0);
+    let maxd = a.data().iter().zip(b.data()).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap();
+    assert!(maxd <= 6, "fused grade differs by {maxd}");
+    // and inside a window
+    let fw = frame(&project(&format!("{base}\nmask g ellipse w=0.5 h=0.5 window\n{}", chain.iter().map(|c| format!("fx g {c} mask=m1")).collect::<Vec<_>>().join("\n"))), 1.0);
+    assert_premul(&fw, "fused window");
+    let (w, h) = (fw.width(), fw.height());
+    assert_eq!(px(&fw, 2, 2), px(&frame(&project(base), 1.0), 2, 2), "outside the window is untouched");
+    assert_ne!(px(&fw, w / 2, h / 2), px(&frame(&project(base), 1.0), w / 2, h / 2));
 }

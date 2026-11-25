@@ -9,6 +9,7 @@
 //!   moodcut doctor     check FFmpeg, encoders, GPU, fonts, speech-to-text
 
 pub mod analyze;
+pub mod bench;
 pub mod brand;
 pub mod cache;
 pub mod check;
@@ -183,10 +184,10 @@ enum Cmd {
     },
     /// Check FFmpeg, encoders, GPU, fonts and speech-to-text.
     Doctor,
-    /// Measure compositor speed (no encoding).
+    /// Measure compositor and audio speed (no encoding). Without a project: fixed synthetic scenes.
     #[command(hide = true)]
     Bench {
-        project: String,
+        project: Option<String>,
         #[arg(long, default_value = "0-5")]
         range: String,
         #[arg(long, default_value_t = 1.0)]
@@ -575,12 +576,16 @@ fn real_main() -> Result<()> {
         }
         Cmd::Bench { project, range, scale } => {
             let eng = load_engine()?;
+            let Some(project) = project else {
+                print!("{}", bench::run(&eng)?);
+                return Ok(());
+            };
             eng.open(&project)?;
             let (t0, t1) = parse_range(&range)?;
             let (p, _, active, _) = eng.snapshot();
             let fps = p.comp(&active).map(|c| c.fps).unwrap_or(30.0);
             let frames = render::decode::FrameServer::new(eng.ff.clone(), false);
-            let rc = render::comp::RenderCtx { p: &p, frames: &frames, draft: false };
+            let rc = render::comp::RenderCtx { p: &p, frames: &frames, draft: false, probe: None };
             let n = ((t1 - t0) * fps).round() as u64;
             let start = std::time::Instant::now();
             let mut worst = (0.0f64, 0.0f64);

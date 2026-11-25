@@ -427,6 +427,7 @@ impl Ff {
                 gfx: None,
                 tags: vec![],
                 note: String::new(),
+                color: String::new(),
             });
         }
         self.need()?;
@@ -466,6 +467,7 @@ impl Ff {
             gfx: None,
             tags: vec![],
             note: String::new(),
+            color: String::new(),
         };
         if let Some(a) = a {
             m.channels = a["channels"].as_u64().unwrap_or(2) as u32;
@@ -486,6 +488,10 @@ impl Ff {
                 m.w = v["width"].as_u64().unwrap_or(0) as u32;
                 m.h = v["height"].as_u64().unwrap_or(0) as u32;
                 m.codec = v["codec_name"].as_str().unwrap_or("").to_string();
+                let (trc, prim) = (v["color_transfer"].as_str().unwrap_or(""), v["color_primaries"].as_str().unwrap_or(""));
+                if !trc.is_empty() || !prim.is_empty() {
+                    m.color = format!("{trc}/{prim}");
+                }
                 let pix = v["pix_fmt"].as_str().unwrap_or("");
                 m.alpha = pix.starts_with("yuva") || pix.starts_with("rgba") || pix.starts_with("bgra") || pix.starts_with("argb") || pix.starts_with("abgr") || pix.starts_with("ya") || pix.starts_with("gbrap") || pix == "pal8" || pix == "rgba64be" || pix == "rgba64le";
                 m.fps = parse_rate(v["avg_frame_rate"].as_str().unwrap_or("0/0")).filter(|f| *f > 0.0 && *f < 1000.0).or_else(|| parse_rate(v["r_frame_rate"].as_str().unwrap_or("0/0"))).unwrap_or(30.0);
@@ -519,6 +525,27 @@ impl Ff {
     }
 
     /// Runs ffmpeg with args, capturing stderr. Returns (stdout, stderr).
+    /// `-filter_complex` arguments for `graph`. Graphs longer than a few KB go
+    /// through a temporary file (Windows caps a command line at 32,767
+    /// characters, and every clip adds to an audio graph): `-/filter_complex`
+    /// on FFmpeg 7 and later, `-filter_complex_script` before. Keep the guard
+    /// alive until FFmpeg has started; dropping it deletes the file.
+    pub fn graph_args(&self, graph: &str) -> Result<(Vec<String>, Option<GraphFile>)> {
+        let force = std::env::var("MOODCUT_GRAPH_FILE").is_ok_and(|v| v == "1");
+        if graph.len() <= 2048 && !force {
+            return Ok((vec!["-filter_complex".into(), graph.to_string()], None));
+        }
+        let gf = GraphFile::write(graph)?;
+        let flag = if self.script_flag_is_legacy() { "-filter_complex_script" } else { "-/filter_complex" };
+        Ok((vec![flag.into(), gf.path.to_string_lossy().to_string()], Some(gf)))
+    }
+
+    /// FFmpeg before 7.0 has no `-/option file` syntax. Unknown version
+    /// strings (git builds) are recent ones.
+    fn script_flag_is_legacy(&self) -> bool {
+        ffmpeg_major(&self.version()).is_some_and(|m| m < 7)
+    }
+
     pub fn run_capture(&self, args: &[String]) -> Result<(Vec<u8>, String)> {
         self.need()?;
         let out = command(&self.ffmpeg_path()).args(["-hide_banner", "-nostdin"]).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
@@ -528,6 +555,40 @@ impl Ff {
             bail!("ffmpeg failed: {}", tail.into_iter().rev().collect::<Vec<_>>().join(" | "));
         }
         Ok((out.stdout, err))
+    }
+}
+
+/// Major version from `ffmpeg -version`'s third word ("7.1", "n6.1.2",
+/// "4.4.2-0ubuntu0.22.04.1"); None for git snapshots ("2025-01-20-git-...", "N-118...").
+pub fn ffmpeg_major(v: &str) -> Option<u32> {
+    let v = v.strip_prefix('n').unwrap_or(v);
+    let head: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if head.is_empty() || head.len() > 2 || !v[head.len()..].starts_with('.') {
+        return None;
+    }
+    head.parse().ok()
+}
+
+/// A filtergraph in a temporary file, deleted when dropped.
+pub struct GraphFile {
+    pub path: PathBuf,
+}
+
+impl GraphFile {
+    pub fn write(graph: &str) -> Result<GraphFile> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join("moodcut-graphs");
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join(format!("g{}-{}.txt", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, graph).with_context(|| format!("writing {}", path.display()))?;
+        Ok(GraphFile { path })
+    }
+}
+
+impl Drop for GraphFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 

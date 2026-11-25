@@ -875,7 +875,7 @@ async fn api_catalog() -> Response {
     };
     let pjson = |l: &[schema::P]| -> Vec<Value> { l.iter().map(|p| pjson_one(p)).collect() };
     let pjson_refs = |l: &[&schema::P]| -> Vec<Value> { l.iter().map(|p| pjson_one(p)).collect() };
-    let fx: Vec<Value> = schema::EFFECTS.iter().map(|e| json!({"name": e.name, "cat": e.cat, "desc": e.desc, "ff": e.engine == schema::Engine::Ff, "params": pjson_refs(&schema::effect_params(e))})).collect();
+    let fx: Vec<Value> = schema::EFFECTS.iter().map(|e| json!({"name": e.name, "cat": e.cat, "desc": e.desc, "ff": e.engine == schema::Engine::Ff, "node": schema::windowable(e), "params": pjson_refs(&schema::effect_params(e))})).collect();
     let afx: Vec<Value> = schema::AUDIO_EFFECTS.iter().map(|e| json!({"name": e.name, "desc": e.desc, "params": pjson(e.params)})).collect();
     let tr: Vec<Value> = schema::TRANSITIONS.iter().map(|t| json!({"name": t.name, "desc": t.desc, "params": pjson(t.params)})).collect();
     let anims: Vec<Value> = crate::ops::presets::LAYER_ENTER.iter().chain(crate::ops::presets::LAYER_EXIT).chain(crate::ops::presets::LAYER_LOOP).chain(crate::ops::presets::LAYER_ONESHOT).map(|(n, d)| json!({"name": n, "desc": d})).collect();
@@ -1308,6 +1308,14 @@ struct ScopeQ {
     w: Option<u32>,
     #[serde(default)]
     h: Option<u32>,
+    /// matte | overlay with id=<layer>.<mask>; points with id=<camera-tracked clip>
+    #[serde(default)]
+    view: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    /// audio scopes: master, a track, a bus or a clip
+    #[serde(default)]
+    target: Option<String>,
 }
 
 /// Lumetri scopes for the editor: a JPEG data URL plus the exposure summary.
@@ -1317,6 +1325,14 @@ async fn api_scope(State(st): State<St>, Query(q): Query<ScopeQ>) -> Response {
         let kind = q.kind.unwrap_or_else(|| "waveform".into());
         let w = q.w.unwrap_or(384).clamp(96, 1600);
         let h = q.h.unwrap_or(if kind == "vectorscope" { w } else { w * 9 / 16 }).clamp(96, 1600);
+        if let (Some(v), Some(id)) = (q.view.as_deref(), q.id.as_deref()) {
+            let (pm, text) = if v == "points" { eng.points_view(q.comp.as_deref(), q.t, w.max(640), id)? } else { eng.matte_view(q.comp.as_deref(), q.t, w.max(320), id, v == "overlay")? };
+            return Ok((encode::encode_jpeg(&pm, 85)?, text));
+        }
+        if crate::render::audio_scope::KINDS.contains(&kind.as_str()) {
+            let (pm, text) = eng.audio_scope(q.comp.as_deref(), &kind, q.target.as_deref(), None, w)?;
+            return Ok((encode::encode_jpeg(&pm, 85)?, text));
+        }
         let (pm, text) = eng.scope(q.comp.as_deref(), q.t, &kind, w, h)?;
         Ok((encode::encode_jpeg(&pm, 85)?, text))
     })

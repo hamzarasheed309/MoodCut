@@ -281,7 +281,8 @@ impl Val {
 
 /// Interpolate SVG path control points when both paths have matching topology.
 /// SimplifyingPathParser canonicalizes relative and shorthand commands first;
-/// unsupported or mismatched paths retain the usual discrete string behavior.
+/// Paths whose topology differs are resampled ([`morph_resampled`]); paths that
+/// don't parse (or have several subpaths that differ) keep the discrete behavior.
 fn morph_path_data(a: &str, b: &str, t: f64) -> Option<String> {
     use svgtypes::SimplePathSegment as S;
 
@@ -301,7 +302,7 @@ fn morph_path_data(a: &str, b: &str, t: f64) -> Option<String> {
     fn mix(a: f64, b: f64, t: f64) -> String { num(a + (b - a) * t) }
 
     let (aa, bb) = (parse(a)?, parse(b)?);
-    if aa.len() != bb.len() { return None; }
+    if aa.len() != bb.len() { return morph_resampled(&aa, &bb, t); }
     let mut out = Vec::with_capacity(aa.len() * 36);
     for (x, y) in aa.iter().zip(&bb) {
         let segment = match (x, y) {
@@ -314,11 +315,148 @@ fn morph_path_data(a: &str, b: &str, t: f64) -> Option<String> {
                 format!("Q {} {} {} {}", mix(*ax1, *bx1, t), mix(*ay1, *by1, t), mix(*ax, *bx, t), mix(*ay, *by, t))
             }
             (S::ClosePath, S::ClosePath) => "Z".to_string(),
-            _ => return None,
+            _ => return morph_resampled(&aa, &bb, t),
         };
         out.push(segment);
     }
     Some(out.join(" "))
+}
+
+/// One cubic: start, two controls, end.
+type Cub = [f64; 8];
+
+/// A single-subpath SVG path as a run of cubics (lines and quadratics are
+/// raised to cubics) and whether it is closed. None for several subpaths.
+fn path_cubics(segs: &[svgtypes::SimplePathSegment]) -> Option<(Vec<Cub>, bool)> {
+    use svgtypes::SimplePathSegment as S;
+    let mut it = segs.iter();
+    let (sx, sy) = match it.next()? {
+        S::MoveTo { x, y } => (*x, *y),
+        _ => return None,
+    };
+    let (mut cx, mut cy) = (sx, sy);
+    let mut out: Vec<Cub> = vec![];
+    let mut closed = false;
+    for s in it {
+        if closed {
+            return None;
+        }
+        match *s {
+            S::MoveTo { .. } => return None,
+            S::LineTo { x, y } => {
+                out.push([cx, cy, cx + (x - cx) / 3.0, cy + (y - cy) / 3.0, cx + (x - cx) * 2.0 / 3.0, cy + (y - cy) * 2.0 / 3.0, x, y]);
+                (cx, cy) = (x, y);
+            }
+            S::CurveTo { x1, y1, x2, y2, x, y } => {
+                out.push([cx, cy, x1, y1, x2, y2, x, y]);
+                (cx, cy) = (x, y);
+            }
+            S::Quadratic { x1, y1, x, y } => {
+                out.push([cx, cy, cx + (x1 - cx) * 2.0 / 3.0, cy + (y1 - cy) * 2.0 / 3.0, x + (x1 - x) * 2.0 / 3.0, y + (y1 - y) * 2.0 / 3.0, x, y]);
+                (cx, cy) = (x, y);
+            }
+            S::ClosePath => closed = true,
+        }
+    }
+    if closed && ((cx - sx).abs() > 1e-9 || (cy - sy).abs() > 1e-9) {
+        out.push([cx, cy, cx + (sx - cx) / 3.0, cy + (sy - cy) / 3.0, cx + (sx - cx) * 2.0 / 3.0, cy + (sy - cy) * 2.0 / 3.0, sx, sy]);
+    }
+    (!out.is_empty()).then_some((out, closed))
+}
+
+fn split_cub(c: &Cub, t: f64) -> (Cub, Cub) {
+    let l = |a: (f64, f64), b: (f64, f64)| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+    let (p0, p1, p2, p3) = ((c[0], c[1]), (c[2], c[3]), (c[4], c[5]), (c[6], c[7]));
+    let (q0, q1, q2) = (l(p0, p1), l(p1, p2), l(p2, p3));
+    let (r0, r1) = (l(q0, q1), l(q1, q2));
+    let m = l(r0, r1);
+    ([p0.0, p0.1, q0.0, q0.1, r0.0, r0.1, m.0, m.1], [m.0, m.1, r1.0, r1.1, q2.0, q2.1, p3.0, p3.1])
+}
+
+/// Splits the longest cubics in half until there are `n`.
+fn subdivide(v: &mut Vec<Cub>, n: usize) {
+    let len = |c: &Cub| (0..3).map(|k| ((c[k * 2 + 2] - c[k * 2]).powi(2) + (c[k * 2 + 3] - c[k * 2 + 1]).powi(2)).sqrt()).sum::<f64>();
+    while v.len() < n {
+        let Some(i) = (0..v.len()).max_by(|&a, &b| len(&v[a]).total_cmp(&len(&v[b]))) else { return };
+        let (a, b) = split_cub(&v[i], 0.5);
+        v[i] = a;
+        v.insert(i + 1, b);
+    }
+}
+
+fn reverse_cubs(v: &[Cub]) -> Vec<Cub> {
+    v.iter().rev().map(|c| [c[6], c[7], c[4], c[5], c[2], c[3], c[0], c[1]]).collect()
+}
+
+/// Morph between paths whose topology differs (vertex counts or segment
+/// types), as After Effects interpolates mask shapes: both become runs of
+/// cubics, the shorter run is subdivided where its segments are longest,
+/// and for closed shapes the second is rotated (and reversed if that pairs
+/// the points better) so each vertex travels the shortest way.
+fn morph_resampled(a: &[svgtypes::SimplePathSegment], b: &[svgtypes::SimplePathSegment], t: f64) -> Option<String> {
+    let (mut ca, closed_a) = path_cubics(a)?;
+    let (mut cb, closed_b) = path_cubics(b)?;
+    if closed_a != closed_b {
+        return None;
+    }
+    let n = ca.len().max(cb.len());
+    subdivide(&mut ca, n);
+    subdivide(&mut cb, n);
+    let cost = |x: &[Cub], y: &[Cub], r: usize| -> f64 { (0..n).map(|i| (x[i][0] - y[(i + r) % n][0]).powi(2) + (x[i][1] - y[(i + r) % n][1]).powi(2)).sum() };
+    let rev = reverse_cubs(&cb);
+    let mut best = (f64::INFINITY, 0usize, false);
+    let shifts = if closed_a { n } else { 1 };
+    for r in 0..shifts {
+        for (flip, cand) in [(false, &cb), (true, &rev)] {
+            let c = cost(&ca, cand, r);
+            if c < best.0 {
+                best = (c, r, flip);
+            }
+        }
+    }
+    let src = if best.2 { &rev } else { &cb };
+    let mut out = String::with_capacity(n * 64);
+    for i in 0..n {
+        let (x, y) = (&ca[i], &src[(i + best.1) % n]);
+        let m: Vec<f64> = (0..8).map(|k| x[k] + (y[k] - x[k]) * t).collect();
+        if i == 0 {
+            out.push_str(&format!("M {} {}", fmt_coord(m[0]), fmt_coord(m[1])));
+        }
+        out.push_str(&format!(" C {} {} {} {} {} {}", fmt_coord(m[2]), fmt_coord(m[3]), fmt_coord(m[4]), fmt_coord(m[5]), fmt_coord(m[6]), fmt_coord(m[7])));
+    }
+    if closed_a {
+        out.push_str(" Z");
+    }
+    Some(out)
+}
+
+fn fmt_coord(n: f64) -> String {
+    let mut s = format!("{:.6}", if n.abs() < 0.0000005 { 0.0 } else { n });
+    while s.contains('.') && s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    s
+}
+
+#[cfg(test)]
+mod morph_tests {
+    use super::*;
+
+    #[test]
+    fn mismatched_paths_morph() {
+        let tri = Val::S("M0.5,0.1 L0.9,0.9 L0.1,0.9 Z".into());
+        let sq = Val::S("M0.1,0.1 L0.9,0.1 L0.9,0.9 L0.1,0.9 Z".into());
+        let Val::S(mid) = tri.lerp(&sq, 0.5) else { panic!("not a string") };
+        assert!(mid.starts_with("M ") && mid.ends_with(" Z"), "{mid}");
+        assert_eq!(mid.matches(" C ").count(), 4);
+        // lines and curves at the same place morph too
+        let curve = Val::S("M0,0 C0.3,0 0.6,0 1,0".into());
+        let line = Val::S("M0,0 L1,1".into());
+        assert!(matches!(curve.lerp(&line, 0.5), Val::S(s) if s.contains(" C ")));
+    }
 }
 
 /// Formats a number compactly: up to 3 decimals, trailing zeros removed.

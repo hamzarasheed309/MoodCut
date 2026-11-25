@@ -2,7 +2,7 @@
 import { useState } from "preact/hooks";
 import { levels } from "../meter";
 import { catalog, comp, findItem, mediaById, run, selection } from "../store";
-import type { Effect, PDef, Track } from "../types";
+import type { Bus, Effect, PDef, Track } from "../types";
 import { fmtNum, staticVal } from "../util";
 import { NumField, Slider } from "./Controls";
 
@@ -133,6 +133,60 @@ function Strip({ t }: { t: Track }) {
         </button>
       </div>
       <FxChips list={t.afx || []} target={t.id} />
+      <Routing id={t.id} out={t.out} sends={t.sends || []} verb={`track set ${t.id}`} />
+    </div>
+  );
+}
+
+/** Output bus and sends of a track or bus: `track set A1 out=B1`, `send A1 B2 -12dB`. */
+function Routing({ id, out, sends, verb }: { id: string; out?: string; sends: { to: string; db: number; pre?: boolean }[]; verb: string }) {
+  const buses = (comp.value?.buses || []).filter((b) => b.id !== id);
+  if (!buses.length) return null;
+  return (
+    <div class="routing">
+      <select value={out || "master"} title="Output" onChange={(e) => run(`${verb} out=${(e.target as HTMLSelectElement).value}`, true)}>
+        <option value="master">→ master</option>
+        {buses.map((b) => (
+          <option key={b.id} value={b.id}>→ {b.id}{b.name ? ` ${b.name}` : ""}</option>
+        ))}
+      </select>
+      {sends.map((s) => (
+        <div key={s.to} class="send" title={`send to ${s.to}${s.pre ? " (pre-fader)" : ""}`}>
+          <small>{s.to}</small>
+          <NumField value={s.db} step={1} min={-96} max={12} onCommit={(v) => run(`send ${id} ${s.to} ${fmtNum(v, 1)}dB${s.pre ? " pre" : ""}`, true)} />
+          <button class="btn sm ghost" title="Remove the send" onClick={() => run(`send ${id} ${s.to} off`, true)}>×</button>
+        </div>
+      ))}
+      <select value="" title="Add a send" onChange={(e) => { const v = (e.target as HTMLSelectElement).value; if (v) run(`send ${id} ${v} -12dB`, true); }}>
+        <option value="">+ send</option>
+        {buses.filter((b) => !sends.some((s) => s.to === b.id)).map((b) => (
+          <option key={b.id} value={b.id}>{b.id}{b.name ? ` ${b.name}` : ""}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/** A bus strip: volume, pan, mute, effects and its own routing. */
+function BusStrip({ b }: { b: Bus }) {
+  const vol = b.vol ?? 0;
+  return (
+    <div class="strip bus">
+      <b>{b.id}</b>
+      <small title={b.name}>{b.name || (b.duck ? `ducks under ${b.duck.by}` : "bus")}</small>
+      <input class="pan" type="range" min={-1} max={1} step={0.05} value={b.pan ?? 0} onDblClick={() => run(`bus set ${b.id} pan=0`, true)} onChange={(e) => run(`bus set ${b.id} pan=${(e.target as HTMLInputElement).value}`, true)} />
+      <input class="fader" type="range" min={-60} max={12} step={0.5} value={vol} title="Bus volume (double-click: 0 dB)" onDblClick={() => run(`bus set ${b.id} vol=0`, true)} onChange={(e) => run(`bus set ${b.id} vol=${(e.target as HTMLInputElement).value}`, true)} />
+      <NumField value={vol} step={0.5} min={-96} max={24} onCommit={(v) => run(`bus set ${b.id} vol=${fmtNum(v, 2)}`, true)} />
+      <div class="ms">
+        <button class={"btn sm" + (b.muted ? " on" : "")} onClick={() => run(`bus set ${b.id} mute=${b.muted ? 0 : 1}`, true)}>
+          M
+        </button>
+        <button class="btn sm ghost" title="Delete the bus (its sources go back to the master)" onClick={() => run(`bus del ${b.id}`, true)}>
+          ×
+        </button>
+      </div>
+      <FxChips list={b.afx || []} target={b.id} />
+      <Routing id={b.id} out={b.out} sends={b.sends || []} verb={`bus set ${b.id}`} />
     </div>
   );
 }
@@ -173,7 +227,10 @@ export function EssentialSound() {
               <label title="Match each clip to the loudness target of its type">Loudness</label>
               <div class="ctl">
                 <input type="checkbox" checked={match} onChange={(e) => setMatch((e.target as HTMLInputElement).checked)} />
-                <button class="btn sm" style={{ marginLeft: "auto", flex: "0 0 auto" }} onClick={() => run(`sound ${clips.join(",")} clear`)}>
+                <button class="btn sm" style={{ marginLeft: "auto", flex: "0 0 auto" }} title="Measure hum, clipping, rumble and noise, then add only the fixes needed" onClick={() => run(`repair ${clips.join(",")}`)}>
+                  Repair
+                </button>
+                <button class="btn sm" style={{ flex: "0 0 auto" }} onClick={() => run(`sound ${clips.join(",")} clear`)}>
                   Clear tags
                 </button>
               </div>
@@ -198,6 +255,9 @@ export function AudioMixer() {
         {audio.map((t) => (
           <Strip key={t.id} t={t} />
         ))}
+        {(c.buses || []).map((b) => (
+          <BusStrip key={b.id} b={b} />
+        ))}
         <div class="strip master">
           <b>Master</b>
           <small>{m.lufs !== undefined ? `${m.lufs} LUFS` : "\u00a0"}</small>
@@ -214,10 +274,17 @@ export function AudioMixer() {
             <input type="checkbox" checked={!!m.limiter} onChange={(e) => run(`master limiter=${(e.target as HTMLInputElement).checked ? 1 : 0}`, true)} />
             limiter
           </label>
+          <label class="lim" title="Limit true (inter-sample) peaks for -1 dBTP delivery">
+            <input type="checkbox" checked={!!m.truepeak} onChange={(e) => run(`master truepeak=${(e.target as HTMLInputElement).checked ? 1 : 0}`, true)} />
+            true peak
+          </label>
           <FxChips list={m.afx || []} target="master" />
         </div>
         <button class="btn sm add-track" title="Add an audio track" onClick={() => run("track add A", true)}>
           + A
+        </button>
+        <button class="btn sm add-track" title="Add a submix bus (dialogue, music, a shared reverb)" onClick={() => run("bus add", true)}>
+          + Bus
         </button>
       </div>
     </div>

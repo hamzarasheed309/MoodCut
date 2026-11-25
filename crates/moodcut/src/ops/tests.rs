@@ -44,6 +44,7 @@ impl Env for Mock {
             gfx: None,
             tags: vec![],
             note: String::new(),
+            color: String::new(),
         })
     }
     fn analyze(&self, _p: &Project, _m: &str, kind: &str, _o: &BTreeMap<String, String>) -> Result<serde_json::Value> {
@@ -57,9 +58,31 @@ impl Env for Mock {
                     {"w": "Hello", "s": 0.5, "e": 0.9}, {"w": "world", "s": 0.9, "e": 1.3}, {"w": "this", "s": 1.4, "e": 1.6},
                     {"w": "is", "s": 1.6, "e": 1.8}, {"w": "MoodCut.", "s": 1.8, "e": 2.6}]}
             ]}),
+            "camtrack" => mock_camera_solve(),
+            "planar" => mock_planar(),
+            "track" => serde_json::json!({"kind": "region", "samples": [[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.95], [1.0, 1.0, 0.0, 0.02, 0.0, 1.0, 0.01, 0.9]]}),
             _ => bail!("no analysis {kind}"),
         })
     }
+}
+
+/// A camera dollying right while panning a little, and four points (three
+/// of them on a floor below the camera).
+pub(crate) fn mock_camera_solve() -> serde_json::Value {
+    serde_json::json!({
+        "kind": "camera", "w": 960, "h": 540, "fps": 30.0, "f": 900.0, "rms": 0.4, "nodal": false, "keyframes": 3, "reference": 0,
+        "frames": [[0.0, 0, 0, 0, 0, 0, 0], [1.0, 0, 0.05, 0, 0.1, 0, 0], [2.0, 0, 0.1, 0, 0.2, 0, 0]],
+        "points": [[0.0, 0.3, 1.0, 0.2, 30], [0.3, 0.32, 1.2, 0.3, 25], [-0.3, 0.28, 1.1, 0.3, 20], [0.1, -0.1, 1.4, 0.5, 10]]
+    })
+}
+
+/// A plane drifting right and down; confidence drops at the end.
+pub(crate) fn mock_planar() -> serde_json::Value {
+    serde_json::json!({"kind": "planar", "mode": "perspective", "fps": 30.0, "samples": [
+        [0.0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.95],
+        [1.0, 1, 0, 0.01, 0, 1, 0.005, 0, 0, 1, 0.9],
+        [2.0, 1, 0, 0.02, 0, 1, 0.01, 0, 0, 1, 0.3]
+    ]})
 }
 
 fn proj() -> Project {
@@ -836,4 +859,146 @@ fn a_look_only_takes_back_what_it_added() {
     // internal bookkeeping doesn't show in the AI's views
     let view = super::outline::item_detail(&p, p.item("c1").unwrap());
     assert!(!view.contains("_look"), "{view}");
+}
+
+// ---------------------------------------------------------------- masks, tracking, nodes, camera tracking
+
+#[test]
+fn masks_and_effects_count_their_own_ids() {
+    // a script can name the mask it just made, whatever effects came first
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\ncolor c1 exposure=0.2\nfx c1 blur\nmask c1 ellipse window\nfx c1 sharpen mask=m1");
+    let it = p.item("c1").unwrap();
+    assert_eq!(it.masks[0].id, "m1");
+    assert_eq!(it.fx.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), vec!["f1", "f2", "f3"]);
+    // Resolve window names
+    ok(&mut p, "mask c1 circle window\nmask c1 linear w=.5 h=.2 window");
+    let kinds: Vec<&str> = p.item("c1").unwrap().masks.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, vec!["ellipse", "ellipse", "rect"]);
+}
+
+#[test]
+fn shape_masks_become_paths_and_vertices_convert() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\nmask c1 rect x=.5 y=.5 w=.2 h=.2 window\nmask c1.m1 topath");
+    let m = p.item("c1").unwrap().masks[0].clone();
+    assert_eq!(m.kind, "path");
+    let d = m.props["d"].v.str();
+    let v = crate::render::shapes::path_vertices(&d);
+    assert_eq!(v.len(), 4, "{d}");
+    assert!((v[0].0 - 0.4).abs() < 1e-3 && (v[0].1 - 0.4).abs() < 1e-3, "{v:?}");
+    ok(&mut p, "mask c1.m1 pt 3 first\nmask c1.m1 pt 2 smooth");
+    let d2 = p.item("c1").unwrap().masks[0].props["d"].v.str();
+    let v2 = crate::render::shapes::path_vertices(&d2);
+    assert_eq!(v2.len(), 4);
+    assert!((v2[0].0 - 0.6).abs() < 1e-3 && (v2[0].1 - 0.6).abs() < 1e-3, "vertex 3 is first: {v2:?}");
+    assert!(d2.contains('C'), "a smooth vertex has curved segments: {d2}");
+    assert!(err(&mut p, "mask c1 hsl window\nmask c1.m2 topath").contains("only shape masks"));
+}
+
+#[test]
+fn perspective_mask_tracking_keys_the_path() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\nmask c1 rect x=.5 y=.5 w=.2 h=.2 window\ntrack c1.m1 mode=perspective");
+    let m = p.item("c1").unwrap().masks[0].clone();
+    assert_eq!(m.kind, "path");
+    let d = &m.props["d"];
+    assert!(d.k.len() >= 2, "keyed path");
+    let last = crate::render::shapes::path_vertices(&d.k.last().unwrap().v.str());
+    assert!((last[0].0 - 0.42).abs() < 1e-3 && (last[0].1 - 0.41).abs() < 1e-3, "{last:?}");
+    // the weak last frame is remembered for check
+    assert!(!m.props["trackLost"].v.str().is_empty());
+    // rotation (planar) writes placement, not the path
+    ok(&mut p, "mask c1 ellipse x=.3 y=.3 w=.1 h=.1 window\ntrack c1.m2 mode=rotation");
+    let m2 = p.item("c1").unwrap().masks[1].clone();
+    assert_eq!(m2.kind, "ellipse");
+    assert!(m2.props["offset"].is_animated() && m2.props["trot"].is_animated() && !m2.props.contains_key("scale"));
+}
+
+#[test]
+fn planar_corner_pin_and_rotating_null() {
+    let mut p = proj();
+    ok(&mut p, "import /v/a.mp4 /v/b.mp4\nappend m1[0-5]\nadd m2 V2 at=0 dur=5\ntrack c1 corners='.4,.4 .6,.4 .6,.6 .4,.6' to=cornerpin on=c2");
+    let pin = p.item("c2").unwrap().fx.iter().find(|e| e.kind == "cornerpin").unwrap().clone();
+    let tl = &pin.props["tl"];
+    assert!(tl.is_animated());
+    // fractions through the clip's on-screen box (1920x1080 comp): .4,.4 -> 768,432, then +0.02 x
+    let (x, y) = tl.k.last().unwrap().v.vec();
+    assert!((x - (0.42 * 1920.0)).abs() < 0.5 && (y - (0.41 * 1080.0)).abs() < 0.5, "{x},{y}");
+    let log = ok(&mut p, "track c1 region=.5,.5,.2,.2 to=null mode=similarity");
+    assert!(log.iter().any(|l| l.contains("similarity")), "{log:?}");
+    let null = p.comps[0].items().find(|i| i.kind == ItemKind::Null).unwrap();
+    assert!(null.props["pos"].is_animated() && null.props.contains_key("rot") && null.props.contains_key("scale"));
+}
+
+#[test]
+fn node_editor_builds_a_resolve_graph() {
+    let mut p = proj();
+    ok(
+        &mut p,
+        "import /v/a.mp4
+append m1[0-5]
+node c1 add name=Balance
+node c1 1 primaries gainR=1.05
+node c1 1 curves luma='0,0 .5,.55 1,1'
+node c1 add parallel
+node c1 2 qualify hsl hue=25
+node c1 2 window add circle x=.5 y=.4 w=.3 h=.4
+node c1 2 huecurves hueSat='.07,-.2'
+node c1 add layer composite=softlight
+node c1 3 mix=0.5
+node c1 add outside after=2",
+    );
+    let it = p.item("c1").unwrap().clone();
+    let nodes = super::nodes::nodes(&it);
+    assert_eq!(nodes.len(), 4, "{:?}", super::nodes::describe(&it));
+    // node 1: two tools sharing one label
+    assert_eq!(nodes[0].fx.len(), 2);
+    assert_eq!(nodes[0].label.as_deref(), Some("Balance"));
+    // node 2: parallel, keyed by window * qualifier, on every tool
+    let n2: Vec<&Effect> = nodes[1].fx.iter().map(|&i| &it.fx[i]).collect();
+    assert!(n2.iter().all(|e| e.props["parallel"].v.bool() && e.props["mask"].v.str() == "m2*m1"), "{:?}", super::nodes::describe(&it));
+    // the outside node went in right after node 2 with the inverse key; the layer node is now 4
+    assert_eq!(it.fx[nodes[2].fx[0]].props["mask"].v.str(), "-(m2*m1)");
+    assert!(it.fx[nodes[3].fx[0]].props["layer"].v.bool());
+    assert_eq!(it.fx[nodes[3].fx[0]].props["mix"].v.num(), 0.5);
+    assert_eq!(it.fx[nodes[3].fx[0]].props["composite"].v.str(), "softlight");
+    let view = crate::mcp::docs::grade_view(&p, Some("c1"));
+    assert!(view.contains("1 Balance") && view.contains("(parallel)") && view.contains("(layer softlight)"), "{view}");
+    // node edits
+    ok(&mut p, "node c1 1 off\nnode c1 1 on\nnode c1 4 up\nnode c1 2 reset");
+    assert!(err(&mut p, "node c1 9 primaries").contains("node(s)"));
+    assert!(err(&mut p, "node c1 1 transform").contains("can't go in a node"));
+}
+
+#[test]
+fn camera_solve_keys_a_camera_and_places_layers_on_points() {
+    let mut p = proj();
+    let log = ok(&mut p, "import /v/a.mp4\nappend m1[0-5]\ncamtrack c1");
+    assert!(log.iter().any(|l| l.contains("camera solved") && l.contains("4 points")), "{log:?}");
+    let cam = p.comps[0].items().find(|i| i.kind == ItemKind::Camera).unwrap().clone();
+    // the solve was 960 px wide in a 1920 comp: zoom doubles the focal length
+    assert_eq!(cam.props["zoom"].v.num(), 1800.0);
+    assert!(!cam.props["aim"].v.bool());
+    assert!(cam.props["pos"].is_animated() && cam.props["ry"].is_animated());
+    // the reference frame's camera is the comp's default camera
+    let (x, y) = cam.props["pos"].k[0].v.vec();
+    assert!((x - 960.0).abs() < 1e-6 && (y - 540.0).abs() < 1e-6 && cam.props["z"].k[0].v.num().abs() < 1e-6);
+    let log = ok(&mut p, "camtrack c1 attach text 'OPEN' at=p1,p2,p3 size=2");
+    assert!(log.iter().any(|l| l.contains("attached to p1,p2,p3")), "{log:?}");
+    let txt = p.comps[0].items().find(|i| i.kind == ItemKind::Text).unwrap().clone();
+    assert!(txt.props["3d"].v.bool());
+    // lying on a floor seen from above: turned about x
+    assert!(txt.props["rx"].v.num().abs() > 45.0, "{:?}", txt.props["rx"]);
+    let before = txt.props["pos"].v.vec();
+    ok(&mut p, "camtrack c1 ground=p1,p2,p3 origin=p1");
+    let txt2 = p.item(&txt.id).unwrap();
+    assert_ne!(txt2.props["pos"].v.vec(), before, "attached layers move with the new world");
+    assert!(p.camsolves.values().next().unwrap().ground.is_some());
+    let log = ok(&mut p, "camtrack c1 points n=2");
+    assert!(log.iter().any(|l| l.contains("p1 ")), "{log:?}");
+    assert!(err(&mut p, "camtrack c1 attach null at=p9").contains("p1..p4"));
+    // the same through track
+    ok(&mut p, "track c1 to=camera");
+    assert_eq!(p.comps[0].items().filter(|i| i.kind == ItemKind::Camera).count(), 1, "re-solving reuses the camera");
 }

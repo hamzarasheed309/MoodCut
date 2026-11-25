@@ -7,6 +7,7 @@
 //! - `preview` returns one contact-sheet image instead of N frames.
 
 pub mod craft;
+pub mod direction;
 pub mod docs;
 pub mod stdio;
 
@@ -24,6 +25,7 @@ pub const INSTRUCTIONS: &str = "MoodCut is a local video editor + motion graphic
 Ids: m# media, c# clips, t# text, g# shapes, s# comps; tracks V1 (bottom) V2.. and A1... Times in seconds. \
 Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to video with alpha, imported as media); put every text, color and number people may change in a {{name|default}} field so they can edit it in the editor without code. \
 For a complete edit from one request follow help('workflow'); run check (with expect) before every render and fix what it reports. \
+Direct it like a top creative director: read help('direction') first (brief -> concept -> treatment -> build -> review, design and editing direction, and the ground rules: only commands that exist in help, ids from replies, describe only what a preview or transcript showed, measure before changing, report only what a reply or frame confirmed, say plainly when MoodCut can't do something); help('features') says when to use each feature, how, how to verify it, and when not to. \
 Work like a senior editor and motion designer, never generic: read help('style') and the closest help('recipes') before building; set a brand kit (brand <preset> or the client's font/colors), one look, 2-3 reusable motion moves, and sound design (sfx whoosh/hit/riser); check target=reels|tiktok|shorts|youtube flags hooks, pacing, platform safe zones and craft issues. \
 Premiere/After Effects tools and panels (rolling edits, lift/extract, paste attributes, align, keyframe assistant, cameras, Lumetri, scopes, Essential Sound) are script commands: help('tools'). \
 The edit tool description has a cheat sheet; call help(topic) for full references (edit, tools, effects, transitions, anim, 3d, text, templates, macros, graphics, color, scopes, render).";
@@ -81,7 +83,10 @@ Sound: afx <clip|A1|master> eq bass=3 | afx A1.a1 off|del|ratio=4 | sound <clip>
 Pro: title lowerthird text='Jane' sub='CEO' | captions <clip> | autocut silence <clip> | montage m1,m2 music=m3 beats=2 | reframe 9:16 | duck A1 by=A2 | parent <a> <b> | precomp <ids>\n\
 Tools (help tools): roll <id> +0.3 | lift|extract 2 5 | swap a b | paste <from> <to> fx | stagger <ids> by=0.1 | align <ids> center | ease <id> all easy | kf <id> all reverse | null | camera move=pushin layers=V2 | sound <clip> dialogue | workarea 2 8\n\
 Finish (help style, sfx, brand): brand bold | sfx whoosh on=transitions | sfx hit at=0.1 | speedramp V1 at=3 to=4x | punchin V1 | jcut c4 by=0.4 | captions V1 style=punch | anim t1 slamIn|wipeInLeft|whipInRight\n\
-Selectors: sel (editor selection) after:T at:T kind:text V2:after:5; time playhead. Scopes: preview scope=waveform|vectorscope|all.\n\
+Masks/track (help masks, tracking): mask c1 ellipse window | mask c1.m1 pt 3 .4,.3 at=2 | fx c1 blur mask=m1*-m2 | track c1.m1 mode=perspective | track c1 corners='..' to=cornerpin on=c5 | camtrack c1 -> preview view=points id=c1 -> camtrack c1 attach text 'Hi' at=p3,p7,p9\n\
+Grade, Resolve style (help grade): color c1 input=slog3 wb=auto | node c1 add | node c1 1 primaries gainR=1.03 gammaY=.02 | node c1 add parallel | node c1 2 qualify hsl hue=25 | node c1 2 huecurves hueSat='.07,-.2' | grade save look from=c1 | match c2..c9 to=c1\n\
+Mix (help mix): bus add B1 name=Dialogue | track set A1 out=B1 | send A1 B2 -12dB | kf A1 vol 0:-6 4:0 | afx B1 rack=podcast-voice | repair A1 | roomtone A1\n\
+Selectors: sel (editor selection) after:T at:T kind:text V2:after:5; time playhead. Scopes: preview scope=waveform|vectorscope|all|spectrum|mix.\n\
 Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02, 90f, end, c3.end+0.5, @marker. undo / redo alone. help('edit') lists everything.",
             "inputSchema": {"type": "object", "properties": {"script": {"type": "string", "description": "MoodCut Script lines"}}, "required": ["script"]},
             "annotations": {"title": "Edit timeline", "destructiveHint": false, "idempotentHint": false, "openWorldHint": false}
@@ -90,7 +95,7 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
             "name": "view",
             "description": "Read state as compact text. what: timeline (default; detail 0 summary, 1 items, 2 all props) | item (id) | media | comps | markers | transcript (id) | search (q: words in media names/notes/tags and every analyzed transcript, with times) | history | log | json (id or comp).",
             "inputSchema": {"type": "object", "properties": {
-                "what": {"type": "string", "enum": ["timeline", "item", "media", "comps", "markers", "transcript", "search", "history", "log", "json"]},
+                "what": {"type": "string", "enum": ["timeline", "item", "media", "comps", "markers", "transcript", "search", "history", "log", "json", "mix", "grade"]},
                 "id": {"type": "string"}, "detail": {"type": "integer", "minimum": 0, "maximum": 2}, "comp": {"type": "string"},
                 "q": {"type": "string"}, "limit": {"type": "integer"}
             }},
@@ -98,12 +103,14 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
         },
         {
             "name": "preview",
-            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Scopes: scope=waveform|parade|vectorscope|histogram|all at t gives the Lumetri scope plus measured levels, clipping and color cast (grade by numbers). Small widths save tokens.",
+            "description": "Look at the edit or the footage. Timeline: t=seconds for one frame, or n=frames for a labeled contact sheet across range (default whole comp). Footage: media=m1..m48 | all | tag:broll | kind:video gives poster frames labeled id+length (48 per sheet, offset pages); media=m5 n=8 [range=a-b] gives a filmstrip of that file with source times (pick in/out points). Scopes: scope=waveform|parade|vectorscope|histogram|falsecolor|all at t gives the scope plus measured levels, clipping and color cast (grade by numbers); region=cx,cy,w,h scopes a patch (skin, sky). ref=<still> split=0.5 shows a saved still beside the frame. Masks: view=matte|overlay id=c1.m1 (or c1.m1*m2) shows the matte as gray, or outlines with numbered path vertices for `mask c1.m1 pt N x,y`. 3D camera track: view=points id=c1 shows the solved track points numbered (p12) through the solved camera, to pick points for `camtrack c1 ground=` and `camtrack c1 attach`. pick=x,y (0-1 or px) reads RGB/HSL/luma of a 5x5 patch. Small widths save tokens.",
             "inputSchema": {"type": "object", "properties": {
                 "t": {"type": "number"}, "times": {"type": "array", "items": {"type": "number"}}, "n": {"type": "integer", "minimum": 1, "maximum": 24},
                 "range": {"type": "string", "description": "a-b seconds"}, "width": {"type": "integer"}, "comp": {"type": "string"},
                 "media": {"type": "string"}, "offset": {"type": "integer"},
-                "scope": {"type": "string", "enum": ["waveform", "parade", "vectorscope", "histogram", "all"]}
+                "scope": {"type": "string", "enum": ["waveform", "parade", "vectorscope", "histogram", "falsecolor", "all", "spectrum", "spectrogram", "loudness", "phase", "mix"]},
+                "view": {"type": "string", "enum": ["matte", "overlay", "points"]}, "id": {"type": "string"}, "pick": {"type": "string"},
+                "region": {"type": "string"}, "ref": {"type": "string"}, "split": {"type": "number"}, "target": {"type": "string"}
             }},
             "annotations": {"title": "Preview frames", "readOnlyHint": true, "openWorldHint": false}
         },
@@ -111,14 +118,14 @@ Refs: $ = last created item, $2 = 2nd created in this script. Times: 12.5, 1:02,
             "name": "analyze",
             "description": "Analyze media or a clip's media (cached): silence (thresh,min) | scenes (thresh) | loudness | beats | transcript (lang, model, src=.srt) | black | stats (exposure hints). target can be many: m1..m40, all, tag:interviews, kind:video (runs in parallel, one line each).",
             "inputSchema": {"type": "object", "properties": {
-                "target": {"type": "string"}, "kind": {"type": "string", "enum": ["silence", "scenes", "loudness", "beats", "transcript", "black", "stats"]},
+                "target": {"type": "string"}, "kind": {"type": "string", "enum": ["silence", "scenes", "loudness", "beats", "transcript", "black", "stats", "noise", "spectrum", "dynamics"]},
                 "params": {"type": "object", "additionalProperties": {"type": ["string", "number"]}}
             }, "required": ["target", "kind"]},
             "annotations": {"title": "Analyze", "readOnlyHint": true, "openWorldHint": false}
         },
         {
             "name": "render",
-            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl. Options: out, range a-b or work (the work area), scale, hw (auto, the default: the best GPU's encoder; off: CPU encoding; nvenc | qsv | amf), wait=true to block until done.",
+            "description": "Export. action: start (default) | status | list | cancel. preset: mp4 youtube social draft hevc av1 prores prores4444 webm webm-alpha mov-alpha gif png mp3 wav; deliverables without encoding: srt vtt (captions), chapters (YouTube, from markers), xml (Premiere Pro / Resolve timeline), edl, stems (a WAV per bus plus the mix, each with measured loudness). Options: out, range a-b or work (the work area), scale, hw (auto, the default: the best GPU's encoder; off: CPU encoding; nvenc | qsv | amf), wait=true to block until done.",
             "inputSchema": {"type": "object", "properties": {
                 "action": {"type": "string", "enum": ["start", "status", "list", "cancel"]},
                 "preset": {"type": "string"}, "out": {"type": "string"}, "range": {"type": "string"}, "scale": {"type": "number"},
@@ -154,7 +161,7 @@ html: full page or body fragment (Inter built in; library media as src='mc://m3'
         },
         {
             "name": "help",
-            "description": "MoodCut reference on demand. topic: workflow style recipes platforms sfx brand edit tools time props effects audio transitions anim 3d text shapes templates macros color scopes expr render analyze graphics examples fonts.",
+            "description": "MoodCut reference on demand. Start with direction (creative direction and the no-guessing rules) and features (when and how to use each feature). topic: workflow direction features style recipes platforms sfx brand edit tools masks tracking grade mix time props effects audio transitions anim 3d text shapes templates macros color scopes expr render analyze graphics examples fonts.",
             "inputSchema": {"type": "object", "properties": {"topic": {"type": "string"}}},
             "annotations": {"title": "Help", "readOnlyHint": true, "openWorldHint": false}
         }
@@ -468,6 +475,8 @@ impl Mcp {
                 let l = eng.log.lock();
                 l.iter().rev().take(20).map(|e| format!("[{} {}{}] {}", e.rev, e.source, if e.ok { "" } else { " ERR" }, e.script.lines().next().unwrap_or(""))).collect::<Vec<_>>().join("\n")
             }
+            "mix" => crate::mcp::docs::mix_view(&p, &comp, eng.mix_report(Some(&comp), None).ok()),
+            "grade" => crate::mcp::docs::grade_view(&p, s(a, "id").as_deref()),
             "json" => {
                 let id = s(a, "id").unwrap_or(comp.clone());
                 if let Some(it) = p.item(&id) {
@@ -483,15 +492,64 @@ impl Mcp {
     }
 
     fn t_preview(&self, eng: &Arc<Engine>, a: &Value) -> Value {
+        if let Some(pk) = s(a, "pick") {
+            let r = (|| -> anyhow::Result<String> {
+                let (p, _, active, _) = eng.snapshot();
+                let comp = s(a, "comp").unwrap_or(active);
+                let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
+                let t = a["t"].as_f64().or(eng.ui().playhead).unwrap_or(0.0).clamp(0.0, (c.duration() - c.frame_dur()).max(0.0));
+                let (x, y) = pk.split_once(',').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?))).ok_or_else(|| anyhow::anyhow!("pick=x,y (fractions 0-1 or comp px)"))?;
+                eng.pick(Some(&c.id), t, x, y)
+            })();
+            return match r {
+                Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
+                Err(e) => err_result(format!("{e:#}")),
+            };
+        }
         let r = (|| -> anyhow::Result<(Vec<u8>, String)> {
             let (p, _, active, _) = eng.snapshot();
+            if let Some(view) = s(a, "view") {
+                let comp = s(a, "comp").unwrap_or_else(|| active.clone());
+                let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
+                let id = s(a, "id").ok_or_else(|| anyhow::anyhow!("view={view} needs id=<layer>.<mask> (e.g. id=c1.m1), or for view=points the camera-tracked clip (id=c1)"))?;
+                let t = a["t"].as_f64().or(eng.ui().playhead).unwrap_or(0.0).clamp(0.0, (c.duration() - c.frame_dur()).max(0.0));
+                let w = a["width"].as_u64().unwrap_or(512).clamp(64, 1920) as u32;
+                if view == "points" || view == "track" || view == "tracks" {
+                    let (pm, text) = eng.points_view(Some(&c.id), t, w.max(640), &id)?;
+                    return Ok((encode::encode_jpeg(&pm, 82)?, text));
+                }
+                let overlay = match view.as_str() {
+                    "matte" => false,
+                    "overlay" => true,
+                    o => anyhow::bail!("view must be matte, overlay or points, not {o}"),
+                };
+                let (pm, text) = eng.matte_view(Some(&c.id), t, w, &id, overlay)?;
+                return Ok((encode::encode_jpeg(&pm, 82)?, text));
+            }
+            if let Some(name) = s(a, "ref") {
+                let comp = s(a, "comp").unwrap_or_else(|| active.clone());
+                let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
+                let t = a["t"].as_f64().or(eng.ui().playhead).unwrap_or(0.0).clamp(0.0, (c.duration() - c.frame_dur()).max(0.0));
+                let w = a["width"].as_u64().unwrap_or(640).clamp(64, 1920) as u32;
+                let (pm, text) = eng.ref_view(Some(&c.id), t, w, &name, a["split"].as_f64().unwrap_or(0.5))?;
+                return Ok((encode::encode_jpeg(&pm, 82)?, text));
+            }
+            if let Some(kind) = s(a, "scope").filter(|k| crate::render::audio_scope::KINDS.contains(&k.as_str())) {
+                let comp = s(a, "comp").unwrap_or_else(|| active.clone());
+                let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
+                let range = s(a, "range").and_then(|r| r.split_once('-').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?))));
+                let w = a["width"].as_u64().unwrap_or(640).clamp(128, 1280) as u32;
+                let (pm, text) = eng.audio_scope(Some(&c.id), &kind, s(a, "target").as_deref(), range, w)?;
+                return Ok((encode::encode_jpeg(&pm, 82)?, text));
+            }
             if let Some(kind) = s(a, "scope") {
                 let comp = s(a, "comp").unwrap_or_else(|| active.clone());
                 let c = p.comp(&comp).ok_or_else(|| anyhow::anyhow!("no comp {comp}"))?;
                 let t = a["t"].as_f64().or(eng.ui().playhead).unwrap_or(c.duration() / 2.0).clamp(0.0, (c.duration() - c.frame_dur()).max(0.0));
                 let w = a["width"].as_u64().unwrap_or(if kind == "all" { 640 } else { 384 }).clamp(128, 1280) as u32;
                 let h = if kind == "vectorscope" { w } else { w * 9 / 16 };
-                let (pm, text) = eng.scope(Some(&c.id), t, &kind, w, h)?;
+                let region = s(a, "region").map(|r| r.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 4).map(|v| (v[0], v[1], v[2], v[3]));
+                let (pm, text) = eng.scope_in(Some(&c.id), t, &kind, w, h, region)?;
                 return Ok((encode::encode_jpeg(&pm, 82)?, format!("{kind} t={}s\n{text}", crate::model::time::fmt_t(t))));
             }
             if let Some(spec) = s(a, "media") {
@@ -752,7 +810,8 @@ pub fn prompts() -> Vec<Prompt> {
             build: |g| {
                 format!(
                     "Use MoodCut to make this video: {brief}.\nFootage: {folder}. Target length: {len}. Format: {fmt}. Music: {music}.\n\
-                     Work like a senior editor and motion designer: read help('style') and the closest help('recipes'), then follow help('workflow') \
+                     Direct it like a top creative director: read help('direction') (and help('features') for which tool serves each choice), \
+                     write a five-line treatment, then read help('style') and the closest help('recipes'), then follow help('workflow') \
                      end to end: import and look at the footage (poster sheets, transcripts), plan a structure with a hook in the first 2 seconds, \
                      set a brand kit and one look, assemble, polish (titles with one consistent entrance, captions if there is speech), add sound \
                      design (help sfx), mix to -14 LUFS, then run check with the platform target and expect (duration and size) and fix everything \
@@ -912,13 +971,81 @@ pub fn prompts() -> Vec<Prompt> {
             args: &[("look", "the look to aim for (natural, cinematic, warm, teal-orange, moody...)", false), ("target", "web or broadcast (broadcast keeps levels legal)", false)],
             build: |g| {
                 format!(
-                    "Color grade my MoodCut edit like a colorist, aiming for a {look} look. Read help('scopes') and help('color'). For every \
-                     distinct shot on the main video track: preview scope=all at its middle, then correct first (exposure, whites/blacks, \
-                     temp/tint until the cast is neutral and luma sits about 2-98% without clipping) with color <clip> key=value, then apply \
-                     the look consistently (color preset, colorwheels, huecurves; secondary hue=25 to protect skin), and check the scope \
-                     again. Match shots that cut together (paste <graded> <others> color). {legal}Summarize the grade per shot.",
+                    "Color grade my MoodCut edit like a colorist, aiming for a {look} look. Read help('grade'), help('scopes') and help('masks'). \
+                     For every distinct shot on the main video track: preview scope=all at its middle (scope=falsecolor reads exposure at a glance); \
+                     log footage gets color <clip> input=<profile> first, a cast gets color <clip> wb=auto (or wb=pick:x,y on something white). \
+                     Correct (exposure, whites/blacks, contrast until luma sits about 2-98% without clipping), then grade the hero shot: the look \
+                     (color preset, colorwheels, filmcurve, softclip), windows for faces or skies (mask <clip> ellipse window; track <clip>.m1 \
+                     when the subject moves; fx ... mask=m1) and qualifiers (mask <clip> hsl hue=25 window to protect skin). Save it as a shared \
+                     grade (grade save look from=<hero>; grade apply look <others>) and a still (still save hero from=<hero>), then \
+                     match <others> to=still:hero and confirm with preview ref=hero. {legal}Summarize the grade per shot (view what=grade).",
                     look = opt(g("look"), "natural, polished"),
                     legal = if g("target").is_some_and(|t| t.contains("broad")) { "Finish with fx <all clips> legalize and a scope check (outside 16-235 must be ~0%). " } else { "" },
+                )
+            },
+        },
+        Prompt {
+            name: "roto-and-track",
+            title: "Rotoscope and track",
+            desc: "Isolate a moving subject with a tracked mask, refine it by eye, and use it for a grade, a blur or a composite.",
+            args: &[("clip", "the clip id", true), ("subject", "what to isolate (a face, a product, the sky...)", true), ("use", "what the mask is for (grade, blur, replace a screen...)", false)],
+            build: |g| {
+                format!(
+                    "Isolate {subject} in {clip} for {usage}. Read help('masks') and help('tracking'). Find a frame where it is clear \
+                     (preview t=..), draw a mask around it (an ellipse or a path; add window if it limits effects rather than cutting), \
+                     check it with preview view=overlay id={clip}.m1, then track {clip}.m1 (mode=similarity if it turns or scales). \
+                     Look at every !lost range with view=overlay and fix it with mask {clip}.m1 pt <n> x,y at=<t> or kf {clip}.m1 offset ..., \
+                     then check the matte with view=matte at three points. For a screen replacement use track {clip} corners=... to=cornerpin \
+                     on=<layer>. Apply the effect with mask=m1 (or m1*m2 with a qualifier) and show the result.",
+                    clip = opt(g("clip"), "c1"),
+                    subject = opt(g("subject"), "the subject"),
+                    usage = opt(g("use"), "a local grade"),
+                )
+            },
+        },
+        Prompt {
+            name: "audio-mix",
+            title: "Mix the audio",
+            desc: "Route dialogue, music and effects to buses, repair and match the dialogue, and deliver at a loudness target.",
+            args: &[("target", "loudness target: web (-14), podcast (-16), broadcast (-23)", false)],
+            build: |g| {
+                let lufs = match g("target").map(|t| t.to_ascii_lowercase()) {
+                    Some(t) if t.contains("broad") => "-23",
+                    Some(t) if t.contains("pod") => "-16",
+                    _ => "-14",
+                };
+                format!(
+                    "Mix my MoodCut edit like a dialogue mixer. Read help('mix'). Start with view what=mix and preview scope=mix. \
+                     Make buses for dialogue, music and effects (bus add B1 name=Dialogue ...) and route every track (track set <track> out=<bus>). \
+                     Repair the dialogue (repair <track>, roomtone <track> after autocuts), match speakers (match <clip> to=<clip> eq loudness), \
+                     process the dialogue bus (afx B1 rack=podcast-voice or your own chain), give it a shared reverb only if the room needs one \
+                     (bus add B4 name=Verb, afx B4 rack=room-verb, send <track> B4 -20dB), duck the music bus under it (duck B2 by=B1), \
+                     and automate levels where needed (kf <track> vol ...). Measure again with preview scope=mix: dialogue about -18 LUFS \
+                     before the master, music 8-15 LU under it, no clipping, correlation above 0. Finish with master lufs={lufs} limiter=1 \
+                     truepeak=1, run check, and offer render preset=stems."
+                )
+            },
+        },
+        Prompt {
+            name: "creative-direction",
+            title: "Direct a video from a brief",
+            desc: "Creative-director workflow: brief, concept and treatment first, then a designed edit, reviewed and checked before delivery.",
+            args: &[("brief", "what it is for, who it is for, the message", true), ("platform", "reels, tiktok, shorts, youtube, social, ad or broadcast", false), ("footage", "folder or media ids to use (optional)", false), ("brand", "brand font and colors, or a brand preset (optional)", false), ("length", "target length in seconds (optional)", false)],
+            build: |g| {
+                format!(
+                    "Be the creative director and editor for this in MoodCut: {brief}.\nPlatform: {platform}. Footage: {footage}. Brand: {brand}. Length: {len}.\n\
+                     First read help('direction') and help('features'). Look at the material before deciding anything (poster sheets, filmstrips, \
+                     transcripts), and only describe what you have seen. Then write me the brief in four lines, a concept in one line and a five-line \
+                     treatment (structure with timings, look, type and motion, sound), and build it: bottom-up as in help('workflow'), using only \
+                     commands from help and ids from MoodCut's replies. Review it as the audience and as the client (preview contact sheets, check \
+                     with the platform target and expect), fix the three biggest problems, check again, and render. Report the concept, your key \
+                     choices and why, what check and the previews confirmed, and anything you could not do or verify. Ask me only for facts you \
+                     can't know (names, claims, prices, logos); make the creative decisions yourself.",
+                    brief = opt(g("brief"), "a short video"),
+                    platform = opt(g("platform"), "choose from the brief and say why"),
+                    footage = opt(g("footage"), "the project's media library"),
+                    brand = opt(g("brand"), "none given: choose a brand preset that fits the brief"),
+                    len = g("length").map(|l| format!("{l} s")).unwrap_or_else(|| "what suits the platform and the material".into()),
                 )
             },
         },

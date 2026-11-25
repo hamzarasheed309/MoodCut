@@ -41,6 +41,17 @@ impl SubKind {
     }
 }
 
+/// Validates a `mask=` expression against the item's masks.
+pub(crate) fn check_mask_expr(it: &Item, id: &str, v: &str) -> Result<()> {
+    let Some(e) = crate::render::matte::parse(v)? else { return Ok(()) };
+    for m in e.ids() {
+        if !it.masks.iter().any(|x| x.id.eq_ignore_ascii_case(m)) {
+            bail!("{id} has no mask '{m}'; add one with `mask {id}` first");
+        }
+    }
+    Ok(())
+}
+
 pub fn sub_list(it: &Item, k: SubKind) -> &Vec<Effect> {
     match k {
         SubKind::Fx => &it.fx,
@@ -189,11 +200,8 @@ impl<'a> Exec<'a> {
             }
             let (sch, what) = self.target_schema(t)?;
             let p = find_in(&sch, k).ok_or_else(|| unknown_prop(&sch, k, &what))?;
-            if sk == SubKind::Fx && p.name == "mask" && !matches!(v.to_ascii_lowercase().as_str(), "" | "none" | "off") {
-                let it = self.item_at(l);
-                if !it.masks.iter().any(|m| m.id.eq_ignore_ascii_case(v)) {
-                    bail!("{} has no mask '{}'; add one with `mask {}` first", t.item, v, t.item);
-                }
+            if sk == SubKind::Fx && p.name == "mask" {
+                check_mask_expr(self.item_at(l), &t.item, v)?;
             }
             let val = schema::clamp_val(p, schema::parse_val(p, v, cx)?);
             let anim = self.target_anim_mut(t, p.name, val.clone())?;
@@ -302,6 +310,10 @@ impl<'a> Exec<'a> {
     pub fn c_kf(&mut self, a: &mut A, mode: u8) -> Result<()> {
         let spec = a.shift().ok_or_else(|| anyhow!("kf <id|id.fN> <prop> <t:v[@ease]> ... [ease=] [loop=cycle|pingpong|offset]"))?;
         let prop = a.shift().ok_or_else(|| anyhow!("kf needs a property name"))?;
+        // track and bus automation (vol / pan over comp time)
+        if self.p.locate(&spec).is_none() && !spec.contains('.') && (self.comp().track(&spec).is_some() || self.comp().buses.iter().any(|b| b.id.eq_ignore_ascii_case(&spec))) {
+            return self.kf_auto(&spec, &prop, a);
+        }
         if self.kf_assist(&spec, &prop, a)? {
             return Ok(());
         }
@@ -498,11 +510,8 @@ impl<'a> Exec<'a> {
             let p = find_in(&params, k).ok_or_else(|| unknown_prop(&params, k, def.name))?;
             props.insert(p.name.to_string(), Anim::new(schema::clamp_val(p, schema::parse_val(p, v, cx)?)));
         }
-        if def.cat == "color" {
-            let mask = props.get("mask").map(|a| a.v.str()).unwrap_or_default();
-            if !matches!(mask.to_ascii_lowercase().as_str(), "" | "none" | "off") && !it.masks.iter().any(|m| m.id.eq_ignore_ascii_case(&mask)) {
-                bail!("{id} has no mask '{mask}'; add one with `mask {id}` first");
-            }
+        if let Some(mask) = props.get("mask").map(|a| a.v.str()) {
+            check_mask_expr(&it, id, &mask)?;
         }
         if def.name == "lut" {
             let f = props.get("file").map(|a| a.v.str()).unwrap_or_default();
@@ -534,6 +543,11 @@ impl<'a> Exec<'a> {
     pub fn c_fx(&mut self, a: &mut A, audio: bool) -> Result<()> {
         let verb = if audio { "afx" } else { "fx" };
         let spec = a.shift().ok_or_else(|| anyhow!("{verb} <id> <effect> [params] | {verb} <id.fN> param=v|del|on|off|up|down | {verb} <id> clear"))?;
+        if audio {
+            if let Some(r) = a.take(&["rack", "preset"]) {
+                return self.afx_rack(&spec, &r);
+            }
+        }
         // track / master audio effects
         if audio && self.is_audio_bus(&spec) {
             return self.track_afx(&spec, a);
@@ -613,7 +627,7 @@ impl<'a> Exec<'a> {
 
     /// A track (`A1`; video tracks carry their clips' audio too, not an item id) or `master`.
     fn is_audio_bus(&self, spec: &str) -> bool {
-        spec.eq_ignore_ascii_case("master") || (parse_track_spec(spec).is_some() && self.p.locate(spec).is_none())
+        spec.eq_ignore_ascii_case("master") || (parse_track_spec(spec).is_some() && self.p.locate(spec).is_none()) || (self.comp().buses.iter().any(|b| b.id.eq_ignore_ascii_case(spec)) && self.p.locate(spec).is_none())
     }
 
     /// The effect list of an audio track or the master bus.
@@ -627,6 +641,9 @@ impl<'a> Exec<'a> {
         Ok(if spec.eq_ignore_ascii_case("master") {
             let m = &mut self.p.comps[ci].master;
             (&mut m.afx, &mut m.afx_seq)
+        } else if self.p.comps[ci].buses.iter().any(|b| b.id.eq_ignore_ascii_case(spec)) {
+            let b = self.p.comps[ci].buses.iter_mut().find(|b| b.id.eq_ignore_ascii_case(spec)).unwrap();
+            (&mut b.afx, &mut b.afx_seq)
         } else {
             let t = self.p.comps[ci].track_mut(spec).ok_or_else(|| anyhow!("no track {spec}"))?;
             (&mut t.afx, &mut t.afx_seq)
@@ -646,8 +663,9 @@ impl<'a> Exec<'a> {
             anyhow!("unknown audio effect '{name}'.{hint} (help audio)")
         })?;
         let mut props = Props::new();
+        let params = schema::effect_params(def);
         for (k, v) in a.rest() {
-            let p = schema::find(def.params, &k).ok_or_else(|| unknown_prop(&def.params.iter().collect::<Vec<_>>(), &k, def.name))?;
+            let p = find_in(&params, &k).ok_or_else(|| unknown_prop(&params, &k, def.name))?;
             props.insert(p.name.to_string(), Anim::new(schema::clamp_val(p, schema::parse_val(p, &v, cx)?)));
         }
         let (list, seq) = self.bus(spec)?;
@@ -907,9 +925,28 @@ impl<'a> Exec<'a> {
             }
             a.flag("set");
             let inv = a.flag("invert");
+            let window = a.flag("window");
+            let cut = a.flag("cut");
+            if let Some(i) = a.pos.iter().position(|p| p.eq_ignore_ascii_case("pt") || p.eq_ignore_ascii_case("point")) {
+                a.pos.remove(i);
+                return self.mask_point(&id, &sid, a);
+            }
+            if a.flag("topath") || a.flag("path") || a.flag("tobezier") {
+                return self.mask_to_path(&id, &sid);
+            }
+            if a.flag("track") {
+                // `mask c1.m1 track mode=perspective` is `track c1.m1 mode=perspective`
+                a.pos.insert(0, format!("{id}.{sid}"));
+                return self.c_tracker(a);
+            }
             let mut kvs = a.rest();
             if inv {
                 kvs.push(("invert".into(), "1".into()));
+            }
+            if window {
+                kvs.push(("cut".into(), "0".into()));
+            } else if cut {
+                kvs.push(("cut".into(), "1".into()));
             }
             return self.set_sub(&Target { item: id, sub: Some((k, sid)) }, &kvs);
         }
@@ -922,18 +959,29 @@ impl<'a> Exec<'a> {
             }
             return Ok(());
         }
+        if kind == "trace" || kind == "autotrace" {
+            return self.mask_trace(&spec, a);
+        }
+        // After Effects shape names and Resolve's power window names
         let kind = match kind.as_str() {
-            "circle" | "oval" => "ellipse".to_string(),
-            "square" | "box" => "rect".to_string(),
+            "circle" | "oval" | "circular" => "ellipse".to_string(),
+            "square" | "box" | "rectangle" | "linear" => "rect".to_string(),
+            "curve" | "bezier" | "pen" | "freeform" => "path".to_string(),
+            "ramp" | "grad" | "lineargradient" => "gradient".to_string(),
+            "key3d" | "color" | "colorkey" => "3d".to_string(),
             k => k.to_string(),
         };
         if !schema::MASK_KINDS.contains(&kind.as_str()) {
             bail!("unknown mask shape '{kind}' ({})", schema::MASK_KINDS.join(" "));
         }
         let inv = a.flag("invert");
+        let window = a.flag("window");
         let mut kvs = a.rest();
         if inv {
             kvs.push(("invert".into(), "1".into()));
+        }
+        if window {
+            kvs.push(("cut".into(), "0".into()));
         }
         for id in self.targets(&spec)? {
             let l = self.relocate(&id)?;
@@ -949,8 +997,200 @@ impl<'a> Exec<'a> {
             let it = self.item_mut_at(l);
             let mid = it.next_sub("m");
             it.masks.push(Effect { id: mid.clone(), kind: kind.clone(), on: true, props });
-            self.note(format!("+{id}.{mid} mask {kind}"));
+            self.note(format!("+{id}.{mid} mask {kind}{}", if window { " window" } else { "" }));
         }
+        Ok(())
+    }
+
+    /// Path-mask vertex edits, After Effects style:
+    /// `mask c1.m1 pt <n> x,y [in=x,y] [out=x,y] [at=T]` moves a vertex (and
+    /// sets its tangent handles); with `at=` the path is keyed there so roto
+    /// corrections stay small. `pt <n> del` deletes a vertex and `pt add
+    /// after=<n>` adds one on the segment after it; both change every key, as
+    /// adding or deleting a vertex does in AE.
+    fn mask_point(&mut self, id: &str, sid: &str, a: &mut A) -> Result<()> {
+        let usage = "mask <id>.<mask> pt <n> [x,y] [in=x,y] [out=x,y] [at=T] | pt <n> smooth|corner [at=T] | pt <n> first | pt <n> del | pt add after=<n>  (vertices count from 1; x,y are 0..1 layer fractions)";
+        let xy = |s: &str| -> Result<(f64, f64)> { s.split_once(',').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?))).ok_or_else(|| anyhow!(usage)) };
+        let make_first = a.flag("first") || a.flag("firstvertex");
+        let smooth = a.flag("smooth") || a.flag("bezier");
+        let corner = a.flag("corner") || a.flag("sharp");
+        let first = a.shift().ok_or_else(|| anyhow!(usage))?;
+        let at = a.take(&["at", "t"]);
+        let inh = a.take(&["in", "inhandle"]).map(|s| xy(&s)).transpose()?;
+        let outh = a.take(&["out", "outhandle"]).map(|s| xy(&s)).transpose()?;
+        let after = a.take(&["after"]);
+        let del = a.flag("del") || a.flag("delete") || a.flag("rm");
+        if make_first {
+            // vertex order changes in the base shape and every key, as in AE
+            let n: usize = first.parse().map_err(|_| anyhow!(usage))?;
+            let l = self.relocate(id)?;
+            let mk = self.item_at(l).masks.iter().find(|m| m.id == sid).cloned().ok_or_else(|| anyhow!("{id} has no mask {sid}"))?;
+            if mk.kind != "path" {
+                bail!("{id}.{sid} is a {} mask; make it a path first: mask {id}.{sid} topath", mk.kind);
+            }
+            let target = Target { item: id.to_string(), sub: Some((SubKind::Mask, sid.to_string())) };
+            let slot = self.target_anim_mut(&target, "d", Val::S(String::new()))?;
+            let base = crate::render::shapes::first_vertex(&slot.v.str(), n).ok_or_else(|| anyhow!("{id}.{sid}: vertex {n} isn't on a closed shape"))?;
+            let mut keys = slot.k.clone();
+            for k in keys.iter_mut() {
+                k.v = Val::S(crate::render::shapes::first_vertex(&k.v.str(), n).ok_or_else(|| anyhow!("the key at {} has no vertex {n}", fmt_t(k.t)))?);
+            }
+            slot.v = Val::S(base);
+            slot.k = keys;
+            self.note(format!("~{id}.{sid} vertex {n} is now the first vertex"));
+            return Ok(());
+        }
+        if smooth || corner {
+            let n: usize = first.parse().map_err(|_| anyhow!(usage))?;
+            let l = self.relocate(id)?;
+            let dur = self.item_at(l).dur;
+            let mk = self.item_at(l).masks.iter().find(|m| m.id == sid).cloned().ok_or_else(|| anyhow!("{id} has no mask {sid}"))?;
+            if mk.kind != "path" {
+                bail!("{id}.{sid} is a {} mask; make it a path first: mask {id}.{sid} topath", mk.kind);
+            }
+            let anim = mk.props.get("d").cloned().unwrap_or_else(|| Anim::new(Val::S(String::new())));
+            let tl = match &at {
+                Some(s) => Some(self.rel_time(s, dur)?),
+                None => None,
+            };
+            let cur = match tl {
+                Some(t) => anim.keyed(t).str(),
+                None => anim.v.str(),
+            };
+            let d = crate::render::shapes::convert_vertex(&cur, n, smooth).ok_or_else(|| anyhow!("{id}.{sid} has no vertex {n}"))?;
+            let target = Target { item: id.to_string(), sub: Some((SubKind::Mask, sid.to_string())) };
+            let slot = self.target_anim_mut(&target, "d", Val::S(cur.clone()))?;
+            match tl {
+                Some(t) => slot.add_key(Key { t, v: Val::S(d), e: Ease::Linear }),
+                None if slot.k.is_empty() => slot.v = Val::S(d),
+                None => bail!("{id}.{sid} path is keyframed; give at=<time>"),
+            }
+            self.note(format!("~{id}.{sid} pt {n} {}", if smooth { "smooth" } else { "corner" }));
+            return Ok(());
+        }
+        let l = self.relocate(id)?;
+        let dur = self.item_at(l).dur;
+        let mk = self.item_at(l).masks.iter().find(|m| m.id == sid).cloned().ok_or_else(|| anyhow!("{id} has no mask {sid}"))?;
+        if mk.kind != "path" {
+            bail!("{id}.{sid} is a {} mask; pt edits path masks (make one with `mask {id} path d='M.. L.. Z'`)", mk.kind);
+        }
+        let anim = mk.props.get("d").cloned().unwrap_or_else(|| Anim::new(Val::S(String::new())));
+        let target = Target { item: id.to_string(), sub: Some((SubKind::Mask, sid.to_string())) };
+        let add = first.eq_ignore_ascii_case("add") || first.eq_ignore_ascii_case("insert");
+        if add || del {
+            // topology edits apply to the base shape and every key
+            let n: usize = if add { after.or_else(|| a.shift()) } else { Some(first.clone()) }.and_then(|s| s.parse().ok()).ok_or_else(|| anyhow!(usage))?;
+            let edit = |d: &str| if add { crate::render::shapes::insert_vertex(d, n) } else { crate::render::shapes::delete_vertex(d, n) };
+            let count = crate::render::shapes::path_vertices(&anim.v.str()).len();
+            let slot = self.target_anim_mut(&target, "d", anim.v.clone())?;
+            let base = edit(&slot.v.str()).ok_or_else(|| {
+                if add {
+                    anyhow!("{id}.{sid} has {count} vertices; add after=1..{count}")
+                } else {
+                    anyhow!("{id}.{sid} has {count} vertices; del takes 1..{count} and a closed shape keeps 3")
+                }
+            })?;
+            let mut keys = slot.k.clone();
+            for k in keys.iter_mut() {
+                k.v = Val::S(edit(&k.v.str()).ok_or_else(|| anyhow!("the key at {} has a different vertex count; edit it with at=", fmt_t(k.t)))?);
+            }
+            slot.v = Val::S(base);
+            slot.k = keys;
+            self.note(format!("~{id}.{sid} {} vertex {n} ({} now)", if add { "added after" } else { "deleted" }, if add { count + 1 } else { count - 1 }));
+            return Ok(());
+        }
+        let n: usize = first.parse().map_err(|_| anyhow!(usage))?;
+        let to = match a.shift() {
+            Some(s) => Some(xy(&s)?),
+            None => None,
+        };
+        if to.is_none() && inh.is_none() && outh.is_none() {
+            bail!(usage);
+        }
+        let tl = match &at {
+            Some(s) => Some(self.rel_time(s, dur)?),
+            None => None,
+        };
+        let cur = match tl {
+            Some(t) => anim.keyed(t).str(),
+            None => anim.v.str(),
+        };
+        let count = crate::render::shapes::path_vertices(&cur).len();
+        let range = || anyhow!("{id}.{sid} has {count} vertices; pt takes 1..{count}");
+        let mut d = cur.clone();
+        if let Some((x, y)) = to {
+            d = crate::render::shapes::move_vertex(&d, n, x, y).ok_or_else(range)?;
+        }
+        if inh.is_some() || outh.is_some() {
+            d = crate::render::shapes::set_handles(&d, n, inh, outh).ok_or_else(range)?;
+        }
+        let slot = self.target_anim_mut(&target, "d", Val::S(cur.clone()))?;
+        match tl {
+            Some(t) => slot.add_key(Key { t, v: Val::S(d), e: Ease::Linear }),
+            None if slot.k.is_empty() => slot.v = Val::S(d),
+            None => bail!("{id}.{sid} path is keyframed; give at=<time> to key the corrected shape"),
+        }
+        let when = tl.map(|t| format!(" at {}", fmt_t(t))).unwrap_or_default();
+        let moved = to.map(|(x, y)| format!(" -> {},{}", fmt_num(x), fmt_num(y))).unwrap_or_default();
+        let handles = if inh.is_some() || outh.is_some() { " (handles set)" } else { "" };
+        self.note(format!("~{id}.{sid} pt {n}{moved}{handles}{when}"));
+        Ok(())
+    }
+
+    /// Layer size in px (the space masks are drawn in) for layers with a fixed box.
+    fn layer_px(&self, it: &Item, ci: usize) -> Result<(f64, f64)> {
+        let vc = self.vctx_of(ci);
+        Ok(match it.kind {
+            ItemKind::Clip => {
+                let m = it.src.as_deref().and_then(|s| self.p.media(s)).ok_or_else(|| anyhow!("{} has no media", it.id))?;
+                (m.w.max(1) as f64, m.h.max(1) as f64)
+            }
+            ItemKind::Comp => {
+                let c = it.src.as_deref().and_then(|s| self.p.comp(s)).ok_or_else(|| anyhow!("{} has no comp", it.id))?;
+                (c.w as f64, c.h as f64)
+            }
+            ItemKind::Solid => {
+                let get = |n: &str| it.props.get(n).map(|a| a.v.num()).unwrap_or_else(|| schema::find(schema::SOLID, n).map(|p| schema::default_val(p, vc).num()).unwrap_or(1.0));
+                (get("w").max(1.0), get("h").max(1.0))
+            }
+            ItemKind::Adjust => (vc.cw, vc.ch),
+            _ => bail!("{} is a {}; mask paths convert on clips, comps, solids and adjustment layers", it.id, it.kind.name()),
+        })
+    }
+
+    /// `mask <id>.<mask> topath`: a shape mask becomes a path mask with the
+    /// same outline (its rotation and placement baked in), so its vertices can
+    /// be edited, tracked in perspective and morphed (After Effects turns
+    /// shape masks into Bezier paths the same way).
+    fn mask_to_path(&mut self, id: &str, sid: &str) -> Result<()> {
+        let l = self.relocate(id)?;
+        let it = self.item_at(l).clone();
+        let mk = it.masks.iter().find(|m| m.id == sid).cloned().ok_or_else(|| anyhow!("{id} has no mask {sid}"))?;
+        match mk.kind.as_str() {
+            "path" => {
+                self.note(format!("{id}.{sid} is already a path"));
+                return Ok(());
+            }
+            "rect" | "ellipse" | "polygon" | "star" => {}
+            k => bail!("{id}.{sid} is a {k} mask; only shape masks (rect ellipse polygon star) become paths"),
+        }
+        const SHAPE: [&str; 11] = ["x", "y", "w", "h", "rot", "radius", "points", "expand", "offset", "scale", "trot"];
+        if mk.props.iter().any(|(k, a)| a.is_animated() && SHAPE.contains(&k.as_str())) {
+            bail!("{id}.{sid} has keyframes on its shape or placement; a path takes the shape at one time: remove those keys (kf- {id}.{sid} <prop>) or key the path after converting");
+        }
+        let (lw, lh) = self.layer_px(&it, l.0)?;
+        let vc = self.vctx_of(l.0);
+        let val = |name: &str| -> Val { mk.props.get(name).map(|a| a.v.clone()).unwrap_or_else(|| schema::find(schema::MASK, name).map(|p| schema::default_val(p, vc)).unwrap_or_default()) };
+        let d = super::tracking::mask_as_path(&mk.kind, &val, lw, lh).ok_or_else(|| anyhow!("{id}.{sid} has no outline to convert"))?;
+        let n = crate::render::shapes::path_vertices(&d).len();
+        let it = self.item_mut_at(l);
+        let m = it.masks.iter_mut().find(|m| m.id == sid).ok_or_else(|| anyhow!("{id} lost mask {sid}"))?;
+        let kind = std::mem::replace(&mut m.kind, "path".into());
+        for p in SHAPE {
+            m.props.remove(p);
+        }
+        m.props.insert("d".into(), Anim::new(Val::S(d)));
+        self.note(format!("~{id}.{sid} {kind} -> path ({n} vertices; edit them with mask {id}.{sid} pt <n> x,y)"));
         Ok(())
     }
 
@@ -1067,8 +1307,17 @@ impl<'a> Exec<'a> {
 
     pub fn c_color(&mut self, a: &mut A) -> Result<()> {
         let spec = a.shift().ok_or_else(|| anyhow!("color <ids> <preset|none> | color <ids> exposure=.. contrast=.. temp=.. sat=.."))?;
+        let input = a.take(&["input", "colorspace"]);
+        let wb = a.take(&["wb", "whitebalance"]);
         let preset = a.shift();
         let kvs = a.rest();
+        if input.is_some() || wb.is_some() {
+            let ids = self.targets(&spec)?;
+            self.color_extras(&ids, input, wb)?;
+            if preset.is_none() && kvs.is_empty() {
+                return Ok(());
+            }
+        }
         if let Some(p) = &preset {
             if !matches!(p.to_ascii_lowercase().as_str(), "none" | "off" | "reset") && presets::color_preset(p).is_none() {
                 let hint = schema::suggest(presets::COLOR_PRESETS.iter().map(|(n, _)| *n), p).map(|h| format!(" Did you mean '{h}'?")).unwrap_or_default();

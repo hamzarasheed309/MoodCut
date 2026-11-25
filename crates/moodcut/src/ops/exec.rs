@@ -27,6 +27,14 @@ pub trait Env {
         let _ = (kind, dur, pitch, seed);
         bail!("sound effects need the MoodCut engine")
     }
+    /// Renders `item` alone (other layers hidden) at comp times `times` and
+    /// measures the pixels (see `render::scopes::measure`), for `match` and
+    /// `color wb=`. `skip_fx` leaves out one of its effects (the old match).
+    /// `region` is (cx, cy, w, h) in fractions of the frame.
+    fn measure(&self, p: &Project, item: &str, times: &[f64], skip_fx: Option<&str>, region: Option<(f64, f64, f64, f64)>) -> Result<serde_json::Value> {
+        let _ = (p, item, times, skip_fx, region);
+        bail!("measuring pictures needs the MoodCut engine")
+    }
 }
 
 /// Editor-window state shared with scripts (and shown to AI clients by `view`).
@@ -730,6 +738,15 @@ impl<'a> Exec<'a> {
             "unimport" => self.c_unimport(&mut a),
             "comp" | "seq" | "sequence" => self.c_comp(&mut a),
             "track" => self.c_track(&mut a),
+            "camtrack" | "cameratrack" | "track3d" | "3dtrack" | "solvecamera" => self.c_camtrack(&mut a),
+            "node" | "nodes" => self.c_node(&mut a),
+            "grade" => self.c_grade(&mut a),
+            "bus" => self.c_bus(&mut a),
+            "send" => self.c_send(&mut a),
+            "repair" => self.c_repair(&mut a),
+            "roomtone" => self.c_roomtone(&mut a),
+            "still" => self.c_still(&mut a),
+            "match" => self.c_match(&mut a),
             "add" | "place" | "overlay" => self.c_add(&mut a, false),
             "append" => self.c_add(&mut a, true),
             "insert" => {
@@ -768,7 +785,7 @@ impl<'a> Exec<'a> {
             "mask" => self.c_mask(&mut a),
             "matte" | "trackmatte" => self.c_matte(&mut a),
             "parent" => self.c_parent(&mut a),
-            "color" | "grade" => self.c_color(&mut a),
+            "color" => self.c_color(&mut a),
             "lut" => self.c_lut(&mut a),
             "marker" | "mark" => self.c_marker(&mut a),
             "master" => self.c_master(&mut a),
@@ -999,7 +1016,11 @@ impl<'a> Exec<'a> {
     }
 
     fn c_track(&mut self, a: &mut A) -> Result<()> {
-        let sub = a.shift().ok_or_else(|| anyhow!("track add|set|del|duck ..."))?.to_ascii_lowercase();
+        // `track c1.m1 ...` / `track c1 region=...`: the tracker, not a track subcommand
+        if a.pos.first().is_some_and(|s| !matches!(s.to_ascii_lowercase().as_str(), "add" | "new" | "set" | "del" | "delete" | "rm" | "duck")) {
+            return self.c_tracker(a);
+        }
+        let sub = a.shift().ok_or_else(|| anyhow!("track add|set|del|duck ... | track <clip>.<mask> | track <clip> region=... to=null"))?.to_ascii_lowercase();
         let ci = self.ci();
         match sub.as_str() {
             "add" | "new" => {
@@ -1018,7 +1039,18 @@ impl<'a> Exec<'a> {
                     let (k, i) = parse_track_spec(&tid).ok_or_else(|| anyhow!("bad track '{tid}'"))?;
                     self.p.comps[ci].ensure_track(k, i);
                 }
-                let kvs = a.rest();
+                let mut kvs = a.rest();
+                // routing is validated against the buses first
+                if let Some(i) = kvs.iter().position(|(k, _)| matches!(k.to_ascii_lowercase().as_str(), "out" | "output")) {
+                    let (_, v) = kvs.remove(i);
+                    let tid2 = self.p.comps[ci].track(&tid).unwrap().id.clone();
+                    let out = if matches!(v.to_ascii_lowercase().as_str(), "master" | "main" | "none") { None } else { Some(self.check_route(&tid2, &v)?) };
+                    self.p.comps[ci].track_mut(&tid2).unwrap().out = out.clone();
+                    self.note(format!("~{tid2} out={}", out.unwrap_or_else(|| "master".into())));
+                    if kvs.is_empty() {
+                        return Ok(());
+                    }
+                }
                 let t = self.p.comps[ci].track_mut(&tid).unwrap();
                 for (k, v) in &kvs {
                     let b = || !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off");
@@ -1067,7 +1099,23 @@ impl<'a> Exec<'a> {
             self.note(format!("~{tid} duck off"));
             return Ok(());
         }
-        let by_id = self.p.comps[ci].track(&by).ok_or_else(|| anyhow!("no track {by}"))?.id.clone();
+        let bus_id = |c: &Comp, x: &str| c.buses.iter().find(|b| b.id.eq_ignore_ascii_case(x)).map(|b| b.id.clone());
+        let by_id = match self.p.comps[ci].track(&by) {
+            Some(t) => t.id.clone(),
+            None => bus_id(&self.p.comps[ci], &by).ok_or_else(|| anyhow!("no track or bus {by}"))?,
+        };
+        if let Some(bid) = bus_id(&self.p.comps[ci], &tid) {
+            let amount: f64 = a.take(&["amount", "db", "gain"]).map(|s| s.trim_end_matches("dB").trim_end_matches("db").parse()).transpose()?.unwrap_or(-12.0);
+            let attack: f64 = a.take(&["attack"]).map(|s| s.trim_end_matches("ms").parse()).transpose()?.unwrap_or(20.0);
+            let release: f64 = a.take(&["release"]).map(|s| s.trim_end_matches("ms").parse()).transpose()?.unwrap_or(400.0);
+            if bid == by_id || self.makes_loop(&by_id, &bid) {
+                bail!("{bid} can't duck under {by_id}: it feeds it");
+            }
+            let b = self.p.comps[ci].buses.iter_mut().find(|b| b.id == bid).unwrap();
+            b.duck = Some(Duck { by: by_id.clone(), amount: -amount.abs(), attack, release });
+            self.note(format!("~{bid} ducks {}dB under {by_id}", fmt_num(-amount.abs())));
+            return Ok(());
+        }
         let amount: f64 = a.take(&["amount", "db", "gain"]).map(|s| s.trim_end_matches("dB").trim_end_matches("db").parse()).transpose()?.unwrap_or(-12.0);
         let attack: f64 = a.take(&["attack"]).map(|s| s.trim_end_matches("ms").parse()).transpose()?.unwrap_or(20.0);
         let release: f64 = a.take(&["release"]).map(|s| s.trim_end_matches("ms").parse()).transpose()?.unwrap_or(400.0);
@@ -2042,7 +2090,8 @@ impl<'a> Exec<'a> {
                     m.lufs = if v == "off" || v == "none" { None } else { Some(v.trim_end_matches("lufs").trim_end_matches("LUFS").parse()?) }
                 }
                 "limiter" | "limit" => m.limiter = !matches!(v.as_str(), "0" | "false" | "off"),
-                other => bail!("unknown master setting '{other}' (vol lufs limiter)"),
+                "truepeak" | "tp" => m.truepeak = !matches!(v.as_str(), "0" | "false" | "off"),
+                other => bail!("unknown master setting '{other}' (vol lufs limiter truepeak)"),
             }
         }
         let m = &self.p.comps[ci].master;
@@ -2057,6 +2106,7 @@ pub const VERBS: &[&str] = &[
     "freeze", "dup", "replace", "close", "gap", "detach", "fit", "set", "kf", "kf+", "kf-", "expr", "anim", "fx", "afx", "tr", "fade", "mask", "matte", "parent",
     "color", "lut", "marker", "master", "name", "duck", "precomp", "autocut", "captions", "montage", "beats", "reframe", "title", "keep", "null", "camera", "roll",
     "lift", "extract", "swap", "paste", "stagger", "align", "nudge", "distribute", "ease", "workarea", "sound", "sfx", "speedramp", "punchin", "jcut", "lcut", "brand", "undo", "redo",
+    "grade", "still", "match", "bus", "send", "repair", "roomtone", "camtrack", "node",
 ];
 
 /// How a placed clip treats clips already there: `overwrite` / `insert` (or `ripple`) as flags or `mode=`.

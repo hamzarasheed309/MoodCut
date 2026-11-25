@@ -177,13 +177,54 @@ impl Lut3 {
 
     /// Applies the LUT with `amount` blend to a premultiplied pixmap (fixed-point tetrahedral).
     pub fn apply(&self, pm: &mut Pixmap, amount: f32) {
+        self.apply_weighted(pm, None, amount, None);
+    }
+
+    /// A LUT from lattice data (r fastest, then g, then b; inputs 0..1).
+    pub fn from_data(n: usize, data: Vec<[f32; 3]>) -> Lut3 {
+        Lut3::new(n, data, [0.0; 3], [1.0; 3], None)
+    }
+
+    /// Applies the LUT in place, weighted per pixel by `amount * mask` (a
+    /// grayscale buffer the size of `pm`), touching only the rows and columns
+    /// of `region` when given. Output is ordered-dithered back to 8 bits, so
+    /// gentle gradients (skies) don't band; exact values stay exact.
+    pub fn apply_weighted(&self, pm: &mut Pixmap, mask: Option<&[u8]>, amount: f32, region: Option<super::pixel::IRect>) {
+        // 4x4 Bayer thresholds in 1/256 steps, centered on 128 (unbiased)
+        const BAYER: [[i32; 4]; 4] = [[8, 136, 40, 168], [200, 72, 232, 104], [56, 184, 24, 152], [248, 120, 216, 88]];
         let n = self.n;
         let fx = self.fixed.get_or_init(|| self.data.iter().map(|c| [(c[0].clamp(0.0, 1.0) * 65280.0) as i32, (c[1].clamp(0.0, 1.0) * 65280.0) as i32, (c[2].clamp(0.0, 1.0) * 65280.0) as i32]).collect());
-        let amt = (amount.clamp(0.0, 1.0) * 256.0) as i32;
+        let amt = (amount.clamp(0.0, 1.0) * 256.0).round() as i32;
+        if amt == 0 {
+            return;
+        }
         let (n1, n2) = (n, n * n);
         let w = pm.width() as usize;
-        pm.data_mut().par_chunks_mut(w * 4).for_each(|row| {
-            for px in row.chunks_exact_mut(4) {
+        let h = pm.height() as usize;
+        let (x0, x1, y0, y1) = match region {
+            Some(r) => (r.x.max(0) as usize, (r.r().max(0) as usize).min(w), r.y.max(0) as usize, (r.b().max(0) as usize).min(h)),
+            None => (0, w, 0, h),
+        };
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        pm.data_mut().par_chunks_mut(w * 4).enumerate().skip(y0).take(y1 - y0).for_each(|(y, row)| {
+            let brow = &BAYER[y & 3];
+            for x in x0..x1 {
+                let wgt = match mask {
+                    Some(m) => {
+                        let mv = m[y * w + x] as i32;
+                        if mv == 0 {
+                            continue;
+                        }
+                        (amt * mv + 127) / 255
+                    }
+                    None => amt,
+                };
+                if wgt == 0 {
+                    continue;
+                }
+                let px = &mut row[x * 4..x * 4 + 4];
                 let a = px[3] as i32;
                 if a == 0 {
                     continue;
@@ -214,12 +255,13 @@ impl Lut3 {
                 } else {
                     (fx[base + n1], fx[base + 1 + n1], dg, dr, db)
                 };
+                let d = brow[x & 3];
                 for k in 0..3 {
                     // value in 0..65280 (=255*256)
                     let o = c000[k] + ((w1 * (v1[k] - c000[k]) + w2 * (v2[k] - v1[k]) + w3 * (c111[k] - v2[k])) >> 8);
                     let src = [sr, sg, sb][k] as i32 * 256;
-                    let mixed = src + (((o - src) * amt) >> 8);
-                    let v = (mixed.clamp(0, 65280) + 128) >> 8;
+                    let mixed = src + (((o - src) * wgt) >> 8);
+                    let v = ((mixed.clamp(0, 65280) + d) >> 8).min(255);
                     px[k] = if a == 255 { v as u8 } else { ((v * a + 127) / 255) as u8 };
                 }
             }
@@ -249,35 +291,81 @@ impl Lut3 {
     }
 }
 
-fn cache() -> &'static Mutex<HashMap<String, Arc<Lut3>>> {
-    static C: OnceLock<Mutex<HashMap<String, Arc<Lut3>>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(HashMap::new()))
+/// LUT cache with least-recently-used eviction. `.cube` files are never
+/// evicted by generated LUTs; generated entries go oldest-use first.
+struct Cache {
+    map: HashMap<String, (Arc<Lut3>, u64)>,
+    tick: u64,
+}
+
+const MAX_GENERATED: usize = 384;
+
+fn cache() -> &'static Mutex<Cache> {
+    static C: OnceLock<Mutex<Cache>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(Cache { map: HashMap::new(), tick: 0 }))
+}
+
+fn cache_get(key: &str) -> Option<Arc<Lut3>> {
+    let mut c = cache().lock();
+    c.tick += 1;
+    let tick = c.tick;
+    c.map.get_mut(key).map(|(l, used)| {
+        *used = tick;
+        l.clone()
+    })
+}
+
+fn cache_put(key: String, l: Arc<Lut3>) {
+    let mut c = cache().lock();
+    c.tick += 1;
+    let tick = c.tick;
+    let generated = c.map.keys().filter(|k| !k.starts_with("file:")).count();
+    if generated >= MAX_GENERATED && !key.starts_with("file:") {
+        // drop the least recently used quarter of the generated LUTs
+        let mut ages: Vec<(u64, String)> = c.map.iter().filter(|(k, _)| !k.starts_with("file:")).map(|(k, (_, u))| (*u, k.clone())).collect();
+        ages.sort();
+        for (_, k) in ages.into_iter().take(MAX_GENERATED / 4) {
+            c.map.remove(&k);
+        }
+    }
+    c.map.insert(key, (l, tick));
 }
 
 pub fn load_cube(path: &str) -> Result<Arc<Lut3>> {
     let meta = std::fs::metadata(path).map_err(|e| anyhow!("can't read LUT {path}: {e}"))?;
     let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
     let key = format!("file:{path}:{}:{modified}", meta.len());
-    if let Some(l) = cache().lock().get(&key) {
-        return Ok(l.clone());
+    if let Some(l) = cache_get(&key) {
+        return Ok(l);
     }
     let text = std::fs::read_to_string(path).map_err(|e| anyhow!("can't read LUT {path}: {e}"))?;
     let l = Arc::new(Lut3::parse_cube(&text)?);
-    cache().lock().insert(key, l.clone());
+    cache_put(key, l.clone());
     Ok(l)
 }
 
 /// Cached generated LUT for a parameter key.
 pub fn generated(key: &str, f: impl Fn(f32, f32, f32) -> (f32, f32, f32) + Sync) -> Arc<Lut3> {
-    if let Some(l) = cache().lock().get(key) {
-        return l.clone();
+    if let Some(l) = cache_get(key) {
+        return l;
     }
     let l = Arc::new(Lut3::generate(33, f));
-    let mut c = cache().lock();
-    if c.len() > 512 {
-        c.retain(|k, _| k.starts_with("file:"));
+    cache_put(key.to_string(), l.clone());
+    l
+}
+
+/// A LUT built by `make`, cached under `key` unless `cache` is false (inputs
+/// that change every frame would only push useful entries out).
+pub fn get_or_make(key: &str, cache: bool, make: impl FnOnce() -> Lut3) -> Arc<Lut3> {
+    if cache {
+        if let Some(l) = cache_get(key) {
+            return l;
+        }
     }
-    c.insert(key.to_string(), l.clone());
+    let l = Arc::new(make());
+    if cache {
+        cache_put(key.to_string(), l.clone());
+    }
     l
 }
 

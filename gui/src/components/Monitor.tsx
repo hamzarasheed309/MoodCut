@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { placeSource } from "../actions";
 import { attachMeter } from "../meter";
 import { showPanel } from "../dock";
-import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, pausedPlayhead, playhead, playing, project, proxyState, refreshProxies, rev, run, selection, setPlayhead, shapeKind, sourceIn, sourceMedia, sourceOut, sourceT, tool, viewGen } from "../store";
+import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, pausedPlayhead, playhead, playing, project, proxyState, refreshProxies, rev, run, selectedItem, selection, setPlayhead, shapeKind, sourceIn, sourceMedia, sourceOut, sourceT, tool, viewGen } from "../store";
 import type { Comp, Item, LayerGeom } from "../types";
 import { compDuration, fmtNum, fmtTC, isAnimated } from "../util";
 
@@ -374,8 +374,11 @@ function Overlay({ c }: { c: Comp }) {
 // ---------------------------------------------------------------- scopes
 
 function Scopes({ c }: { c: Comp }) {
-  const kinds = (catalog.value?.scopes || ["waveform", "parade", "vectorscope", "histogram"]).filter((k) => k !== "all");
+  const kinds = [...(catalog.value?.scopes || ["waveform", "parade", "vectorscope", "histogram"]).filter((k) => k !== "all"), "spectrum", "loudness", "mix", "matte", "overlay", "points"];
   const [kind, setKind] = useState(kinds[0] || "waveform");
+  // matte / overlay show the selected layer's first mask (or the mask named in the Color panel)
+  const sel = selectedItem.value?.item;
+  const maskId = sel?.masks?.[0] ? `${sel.id}.${sel.masks[0].id}` : "";
   const [data, setData] = useState<{ img?: string; text?: string; error?: string } | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const size = useSize(box);
@@ -387,7 +390,15 @@ function Scopes({ c }: { c: Comp }) {
     let live = true;
     const h = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/scope?kind=${kind}&t=${t.toFixed(4)}&comp=${c.id}&w=${w}`).then((r) => r.json());
+        const view = kind === "matte" || kind === "overlay" || kind === "points";
+        // points: the 3D camera tracker's solved points, for the selected clip or its solved camera
+        const viewId = kind === "points" ? sel?.id || "" : maskId;
+        if (view && !viewId) {
+          if (live) setData({ error: kind === "points" ? "Select a camera-tracked clip (Tracker panel) to see its track points." : "Select a layer with a mask to see its matte." });
+          return;
+        }
+        const extra = view ? `&view=${kind}&id=${encodeURIComponent(viewId)}` : "";
+        const r = await fetch(`/api/scope?kind=${view ? "waveform" : kind}&t=${t.toFixed(4)}&comp=${c.id}&w=${w}${extra}`).then((r) => r.json());
         if (live) setData(r);
       } catch {}
     }, 150);
@@ -395,7 +406,7 @@ function Scopes({ c }: { c: Comp }) {
       live = false;
       clearTimeout(h);
     };
-  }, [kind, t, rev.value, c.id, w]);
+  }, [kind, t, rev.value, c.id, w, maskId, sel?.id]);
   return (
     <div class="scopes" ref={box}>
       <div class="seg">

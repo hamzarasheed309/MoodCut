@@ -47,6 +47,16 @@ pub struct Project {
     /// Cached analysis results keyed by "<media>:<kind>".
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub analysis: BTreeMap<String, serde_json::Value>,
+    /// Shared (linked) grades: name -> color effects rendered after the own
+    /// effects of every clip linked with `grade apply` (Resolve's group grade).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub grades: BTreeMap<String, Vec<Effect>>,
+    /// Reference stills for matching and split views (`still save`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stills: BTreeMap<String, Still>,
+    /// 3D camera solves (`camtrack`), keyed by the camera layer they drive.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub camsolves: BTreeMap<String, CamSolve>,
     /// Brand kit used as the default look of titles, captions, shapes and HTML graphics.
     #[serde(default, skip_serializing_if = "Brand::is_empty")]
     pub brand: Brand,
@@ -129,6 +139,9 @@ pub struct Media {
     /// A short description (what's in the shot), written by a person or the AI.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// Video transfer/primaries from ffprobe ("arib-std-b67/bt2020"), for `input=auto`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub color: String,
 }
 
 impl Marker {
@@ -170,6 +183,9 @@ pub struct Master {
     pub lufs: Option<f64>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub limiter: bool,
+    /// Limit true (inter-sample) peaks, oversampling 4x (-1 dBTP delivery).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truepeak: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub afx: Vec<Effect>,
     /// Last audio effect number used, so ids are never reused.
@@ -205,6 +221,48 @@ pub struct Comp {
     /// Work area / sequence in-out (seconds): default range for lift, extract and `render range=work`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<(f64, f64)>,
+    /// Audio submix buses (B1, B2, ...): tracks route to them with `out=` or sends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buses: Vec<Bus>,
+}
+
+/// A send from a track or bus to a bus (a shared reverb, parallel compression).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AuxSend {
+    pub to: String,
+    /// Send level in dB.
+    pub db: f64,
+    /// Tap before the fader (track volume and pan) instead of after.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pre: bool,
+}
+
+/// An audio submix bus: volume, pan, effects, automation, and its own output.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct Bus {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub vol: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pan: f64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub muted: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub afx: Vec<Effect>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub afx_seq: u32,
+    /// Another bus this one feeds (None: the master).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<AuxSend>,
+    /// Automation over comp time: "vol" (dB) and "pan" (-1..1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub auto: BTreeMap<String, crate::model::anim::Anim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duck: Option<Duck>,
 }
 
 fn default_bg() -> Color {
@@ -268,6 +326,14 @@ pub struct Track {
     /// Last audio effect number used, so ids are never reused.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub afx_seq: u32,
+    /// Audio output: a bus id (None: the master).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<AuxSend>,
+    /// Automation over comp time: "vol" (dB) and "pan" (-1..1).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub auto: BTreeMap<String, crate::model::anim::Anim>,
 }
 
 impl Track {
@@ -286,6 +352,9 @@ impl Track {
             duck: None,
             afx: vec![],
             afx_seq: 0,
+            out: None,
+            sends: vec![],
+            auto: BTreeMap::new(),
         }
     }
 
@@ -448,6 +517,58 @@ pub struct Item {
     /// Per-item sub-object id counter (fx/masks/shapes/anims).
     #[serde(default, skip_serializing_if = "is_zero_u")]
     pub sub: u32,
+    /// Linked shared grade (a key of `Project::grades`), rendered after the
+    /// clip's own effects (Resolve's post-clip group grade).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
+    /// Linked shared grade rendered before the clip's own effects (pre-clip group).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pregrade: Option<String>,
+    /// Saved versions of the clip's color effects (Resolve local versions).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub versions: BTreeMap<String, Vec<Effect>>,
+}
+
+/// A reference frame: the layer and time it was taken from, its grade then,
+/// and its measurements (for `match ... to=still:<name>`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Still {
+    pub item: String,
+    pub t: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<Effect>,
+    #[serde(default)]
+    pub stats: serde_json::Value,
+}
+
+/// A 3D camera solve (`camtrack`): the tracked clip, the analysis options
+/// that reproduce it (cached by them), the ground plane and the layers placed
+/// on its track points (re-placed when the ground changes).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CamSolve {
+    pub clip: String,
+    pub media: String,
+    pub opts: BTreeMap<String, String>,
+    /// Ground plane in solve space: rotation (row-major 3x3) then origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground: Option<Vec<f64>>,
+    /// World units per solve unit (default: the camera's zoom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attached: Vec<Attached>,
+}
+
+/// A layer placed on solved track points.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Attached {
+    pub item: String,
+    /// Point numbers (1-based, as `p12`).
+    pub pts: Vec<usize>,
+    /// plane | camera | ground
+    pub face: String,
+    /// Size multiplier on the layer's natural size.
+    pub size: f64,
 }
 
 fn is_zero_u(v: &u32) -> bool {
@@ -477,6 +598,9 @@ impl Item {
             matte: None,
             off: false,
             sub: 0,
+            grade: None,
+            pregrade: None,
+            versions: BTreeMap::new(),
         }
     }
 
@@ -495,12 +619,17 @@ impl Item {
         }
     }
 
+    /// A new sub-object id. Each kind counts on its own (m1, m2 for masks;
+    /// f1, f2 for effects), as After Effects numbers Mask 1, Mask 2, so a
+    /// script can name the masks it just made without reading replies.
     pub fn next_sub(&mut self, prefix: &str) -> String {
+        let all = || self.fx.iter().chain(&self.afx).chain(&self.masks).chain(&self.shapes).chain(&self.anims);
+        let mut n = all().filter_map(|e| e.id.strip_prefix(prefix).and_then(|d| d.parse::<u32>().ok())).max().unwrap_or(0);
         loop {
-            self.sub += 1;
-            let id = format!("{}{}", prefix, self.sub);
-            let used = self.fx.iter().chain(&self.afx).chain(&self.masks).chain(&self.shapes).chain(&self.anims).any(|e| e.id == id);
-            if !used {
+            n += 1;
+            let id = format!("{prefix}{n}");
+            if !all().any(|e| e.id == id) {
+                self.sub = self.sub.max(n);
                 return id;
             }
         }
@@ -545,6 +674,7 @@ impl Comp {
             master: Master::default(),
             shutter: 180.0,
             work: None,
+            buses: vec![],
         }
     }
 
@@ -632,6 +762,9 @@ impl Project {
             mseq: 0,
             cseq: 0,
             analysis: BTreeMap::new(),
+            grades: BTreeMap::new(),
+            stills: BTreeMap::new(),
+            camsolves: BTreeMap::new(),
             brand: Brand::default(),
         };
         let id = p.next_comp_id();

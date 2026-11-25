@@ -87,6 +87,61 @@ pub fn mix_masked(pm: &mut Pixmap, before: &Pixmap, mask: Option<&[u8]>, amount:
         });
 }
 
+/// Copies the buffer-local rect `r` of `pm` into a new pixmap.
+pub fn crop_pixmap(pm: &Pixmap, r: IRect) -> Pixmap {
+    let mut out = new_pixmap(r.w.max(1) as u32, r.h.max(1) as u32);
+    let (sw, ow) = (pm.width() as usize * 4, out.width() as usize * 4);
+    let src = pm.data();
+    for (y, row) in out.data_mut().chunks_exact_mut(ow).enumerate() {
+        let sy = r.y as usize + y;
+        let s0 = sy * sw + r.x as usize * 4;
+        row.copy_from_slice(&src[s0..s0 + ow]);
+    }
+    out
+}
+
+/// Blends an effect result back into `dst` in place over the buffer-local
+/// rect `r`: `dst = dst + (after - dst) * amount * mask`. `dst` sits at
+/// (dx, dy) in output space, `after` at its own origin and may differ in
+/// size (it reads as transparent outside). `mask` is dst-sized.
+pub fn blend_region(dst: &mut Pixmap, dx: i32, dy: i32, r: IRect, after: &LayerBuf, mask: Option<&[u8]>, amount: f32) {
+    let w = dst.width() as usize;
+    let amt = (amount.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let ap = after.pm.get();
+    let (aw, ah) = (ap.width() as i32, ap.height() as i32);
+    let ad = ap.data();
+    let (ox, oy) = (dx - after.x, dy - after.y);
+    dst.data_mut().par_chunks_mut(w * 4).enumerate().skip(r.y.max(0) as usize).take(r.h.max(0) as usize).for_each(|(y, row)| {
+        let ay = y as i32 + oy;
+        for x in r.x.max(0) as usize..(r.r().max(0) as usize).min(w) {
+            let mw = mask.map(|m| m[y * w + x] as u32).unwrap_or(255);
+            let wgt = (mw * amt + 127) / 255;
+            if wgt == 0 {
+                continue;
+            }
+            let ax = x as i32 + ox;
+            let a: [u8; 4] = if ax < 0 || ay < 0 || ax >= aw || ay >= ah {
+                [0; 4]
+            } else {
+                let i = ((ay * aw + ax) * 4) as usize;
+                [ad[i], ad[i + 1], ad[i + 2], ad[i + 3]]
+            };
+            let px = &mut row[x * 4..x * 4 + 4];
+            if wgt >= 255 {
+                px.copy_from_slice(&a);
+                continue;
+            }
+            for c in 0..4 {
+                let (b, t) = (px[c] as i32, a[c] as i32);
+                px[c] = (b + ((t - b) * wgt as i32 + if t >= b { 127 } else { -127 }) / 255).clamp(0, 255) as u8;
+            }
+            px[0] = px[0].min(px[3]);
+            px[1] = px[1].min(px[3]);
+            px[2] = px[2].min(px[3]);
+        }
+    });
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IRect {
     pub x: i32,

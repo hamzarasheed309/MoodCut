@@ -4,9 +4,9 @@
 #
 # Downloads the latest MoodCut installer and runs it for the current user (no
 # admin rights): Start menu and desktop shortcuts, `moodcut` on PATH, .mcut
-# files, a portable FFmpeg, and every AI app on this PC connected to MoodCut.
+# files, and every AI app on this PC connected to MoodCut. FFmpeg comes with it.
 # Choose the steps with $env:MOODCUT_TASKS before running, e.g.
-#   $env:MOODCUT_TASKS = "addtopath,ffmpeg"
+#   $env:MOODCUT_TASKS = "addtopath,connectai"
 # Everything is undone by Settings > Apps > MoodCut > Uninstall.
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +14,9 @@ $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest is much faster wi
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 $repo = 'hamzarasheed309/MoodCut'
-$tasks = if ($env:MOODCUT_TASKS) { $env:MOODCUT_TASKS } else { 'desktopicon,addtopath,assoc,ffmpeg,connectai' }
+$tasks = if ($env:MOODCUT_TASKS) { $env:MOODCUT_TASKS } else { 'desktopicon,addtopath,assoc,connectai' }
+# FFmpeg is bundled since 1.1.0: 'ffmpeg' is no longer a separate step
+$tasks = (($tasks -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ne 'ffmpeg' }) -join ','
 $setup = Join-Path $env:TEMP 'MoodCut-Setup-x64.exe'
 $sources = @(
   "https://github.com/$repo/releases/latest/download/MoodCut-Setup-x64.exe",

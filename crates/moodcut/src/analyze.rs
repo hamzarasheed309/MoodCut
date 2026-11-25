@@ -18,6 +18,11 @@ pub const KINDS: &[(&str, &str)] = &[
     ("transcript", "speech to text with word timings -> captions / text-based editing"),
     ("black", "black segments"),
     ("stats", "average brightness/saturation/contrast (exposure check)"),
+    ("noise", "noise floor, hum, clipping, DC offset (t0, t1 seconds) -> use with repair"),
+    ("spectrum", "energy in six bands sub..air, stereo correlation -> use with match eq"),
+    ("dynamics", "integrated/short-term/momentary LUFS, loudness range, true peak"),
+    ("camtrack", "3D camera solve: camera path, focal length and 3D track points (run it with the camtrack verb)"),
+    ("planar", "planar (perspective) track of a region (run it with track ... mode=perspective)"),
 ];
 
 fn ffargs(v: &[&str]) -> Vec<String> {
@@ -591,14 +596,301 @@ pub fn run(ff: &Ff, path: &str, dur: f64, kind: &str, opts: &BTreeMap<String, St
         "transcript" | "transcribe" | "speech" | "stt" => transcript(ff, path, opts),
         "black" => black(ff, path),
         "stats" | "color" | "exposure" => stats(ff, path, dur),
+        "track" => track(ff, path, dur, opts),
+        "planar" => planar(ff, path, dur, opts),
+        "camtrack" | "camera" | "3dtrack" => camtrack(ff, path, dur, opts),
+        "trace" => trace(ff, path, opts),
+        "audiostats" | "noise" | "spectrum" | "dynamics" => {
+            let t0 = f("t0", 0.0).max(0.0);
+            let t1 = f("t1", if dur > 0.0 { dur } else { 600.0 });
+            let pcm = crate::render::audio_scope::decode_file(ff, path, t0, (t1 - t0).min(600.0))?;
+            Ok(serde_json::to_value(crate::render::audio_scope::measure(&pcm))?)
+        }
         other => bail!("unknown analysis '{other}' ({})", KINDS.iter().map(|k| k.0).collect::<Vec<_>>().join(" ")),
     }
+}
+
+/// Grayscale frames of `path` from t0 to t1 at `fps`, `w`x`h` px.
+fn gray_frames(ff: &Ff, path: &str, t0: f64, t1: f64, fps: f64, w: usize, h: usize) -> Result<Vec<crate::render::track::Gray>> {
+    let vf = format!("fps={fps},scale={w}:{h}:flags=area,format=gray");
+    let (out, _) = ff.run_capture(&ffargs(&["-ss", &format!("{t0:.4}"), "-i", path, "-t", &format!("{:.4}", (t1 - t0).max(0.04)), "-an", "-sn", "-dn", "-vf", &vf, "-f", "rawvideo", "pipe:1"]))?;
+    Ok(out.chunks_exact(w * h).map(|c| crate::render::track::Gray::new(w, h, c.to_vec())).collect())
+}
+
+/// Streams gray frames of `path` from t0 to t1 at `fps` (w x h px) to `each`,
+/// one at a time, so long shots don't sit in memory. Returns the count.
+fn gray_stream(ff: &Ff, path: &str, t0: f64, t1: f64, fps: f64, w: usize, h: usize, mut each: impl FnMut(&[u8])) -> Result<usize> {
+    ff.need()?;
+    let vf = format!("fps={fps},scale={w}:{h}:flags=area,format=gray");
+    let mut child = command(&ff.ffmpeg_path())
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-ss", &format!("{t0:.4}"), "-i", path, "-t", &format!("{:.4}", (t1 - t0).max(0.04)), "-an", "-sn", "-dn", "-vf", &vf, "-f", "rawvideo", "pipe:1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("couldn't start ffmpeg")?;
+    let mut out = child.stdout.take().ok_or_else(|| anyhow!("ffmpeg gave no output"))?;
+    // drain stderr on a thread so a chatty decoder can't block the pipe
+    let mut err = child.stderr.take();
+    let errt = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(e) = err.as_mut() {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    });
+    let mut buf = vec![0u8; w * h];
+    let mut n = 0usize;
+    while out.read_exact(&mut buf).is_ok() {
+        each(&buf);
+        n += 1;
+    }
+    let status = child.wait()?;
+    let msg = errt.join().unwrap_or_default();
+    if !status.success() && n == 0 {
+        bail!("ffmpeg failed: {}", msg.lines().last().unwrap_or("no frames"));
+    }
+    Ok(n)
+}
+
+fn r6(v: f64) -> f64 {
+    (v * 1e6).round() / 1e6
+}
+
+/// 3D camera tracking (see `render::sfm`): features are tracked through the
+/// range (frames streamed, never all in memory), then the camera is solved.
+/// Options: `t0`/`t1` (source range), `from` (source time of the reference
+/// frame), the media's `mw`, `mh`, `fps`, `fov` (known horizontal field of
+/// view in degrees), `nodal` (1: tripod, rotation only) and `points`
+/// (features kept alive, 100-1500). Frames are `[t, rotation vector (world
+/// to camera), camera center]` in solve space; points are `[x, y, z, error
+/// px, frames seen]`, the longest-lived first.
+fn camtrack(ff: &Ff, path: &str, dur: f64, opts: &BTreeMap<String, String>) -> Result<Value> {
+    use crate::render::{klt::FeatureTracker, linalg::log_rot, sfm};
+    let num = |k: &str, d: f64| opts.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+    let (mw, mh) = (num("mw", 1920.0).max(2.0), num("mh", 1080.0).max(2.0));
+    let fps = num("fps", 30.0).clamp(1.0, 120.0);
+    let t0 = num("t0", 0.0).max(0.0);
+    let t1 = num("t1", dur).min(if dur > 0.0 { dur } else { f64::INFINITY });
+    if t1 <= t0 {
+        bail!("empty tracking range");
+    }
+    if t1 - t0 > 60.0 {
+        bail!("camera-track at most 60 s at a time (range is {:.1} s); split it with range=a-b", t1 - t0);
+    }
+    let w = (mw.min(960.0) as usize / 2 * 2).max(64);
+    let h = ((w as f64 * mh / mw / 2.0).round() as usize * 2).max(32);
+    let target = num("points", 500.0).clamp(100.0, 1500.0) as usize;
+    let mut ft = FeatureTracker::new(w, h, target);
+    let n = gray_stream(ff, path, t0, t1, fps, w, h, |g| ft.push(g, None))?;
+    if n < 3 {
+        bail!("only {n} frames decoded between {t0:.2} and {t1:.2} s; a camera needs at least 3");
+    }
+    let reference = (((num("from", t0) - t0) * fps).round().max(0.0) as usize).min(n - 1);
+    let fov = opts.get("fov").and_then(|v| v.trim_end_matches("deg").parse::<f64>().ok()).filter(|v| *v > 1.0 && *v < 170.0);
+    let settings = sfm::Settings { w: w as f64, h: h as f64, fov, reference, nodal: opts.get("nodal").is_some_and(|v| v == "1" || v == "true") };
+    let sol = sfm::solve(&ft.tracks, n, &settings).map_err(|e| anyhow!(e))?;
+    let mut pts = sol.points.clone();
+    pts.sort_by(|a, b| b.views.cmp(&a.views).then(a.err.total_cmp(&b.err)));
+    let frames: Vec<Value> = (0..n)
+        .map(|i| {
+            let t = r6(t0 + i as f64 / fps);
+            match sol.poses[i] {
+                Some(p) => {
+                    let r = log_rot(&p.r);
+                    let c = p.center();
+                    json!([t, r6(r[0]), r6(r[1]), r6(r[2]), r6(c[0]), r6(c[1]), r6(c[2])])
+                }
+                None => json!([t]),
+            }
+        })
+        .collect();
+    let points: Vec<Value> = pts.iter().map(|p| json!([r6(p.x[0]), r6(p.x[1]), r6(p.x[2]), (p.err * 100.0).round() / 100.0, p.views])).collect();
+    Ok(json!({
+        "kind": "camera", "w": w, "h": h, "fps": fps, "f": r6(sol.f), "rms": (sol.rms * 1000.0).round() / 1000.0,
+        "nodal": sol.nodal, "keyframes": sol.keyframes, "reference": reference, "frames": frames, "points": points,
+    }))
+}
+
+/// Planar tracking (see `render::planar`): the region `poly='x,y x,y ...'`
+/// (fractions of the frame, as drawn at `from`) is followed with the motion
+/// model `mode` (pos, rotation, similarity, affine, perspective). Each sample
+/// is the time, the 3x3 transform from the reference frame (frame
+/// fractions, row-major) and a confidence.
+fn planar(ff: &Ff, path: &str, dur: f64, opts: &BTreeMap<String, String>) -> Result<Value> {
+    use crate::render::planar::{self as pl, Model};
+    let num = |k: &str, d: f64| opts.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+    let (mw, mh) = (num("mw", 1920.0).max(2.0), num("mh", 1080.0).max(2.0));
+    let fps = num("fps", 30.0).clamp(1.0, 120.0);
+    let t0 = num("t0", 0.0).max(0.0);
+    let t1 = num("t1", dur).min(if dur > 0.0 { dur } else { f64::INFINITY });
+    if t1 <= t0 {
+        bail!("empty tracking range");
+    }
+    if t1 - t0 > 60.0 {
+        bail!("track at most 60 s at a time (range is {:.1} s); split it with range=a-b", t1 - t0);
+    }
+    let model = Model::parse(opts.get("mode").map(String::as_str).unwrap_or("perspective")).ok_or_else(|| anyhow!("mode must be pos, rotation, similarity, affine or perspective"))?;
+    // frames stay in memory (the track runs both ways from the drawn frame): keep them under ~400 MB
+    let frames_n = ((t1 - t0) * fps).ceil().max(1.0);
+    let mut w = (mw.min(960.0) as usize / 2 * 2).max(64);
+    while w > 320 && frames_n * (w * w) as f64 * mh / mw > 400e6 {
+        w = w * 3 / 4 / 2 * 2;
+    }
+    let h = ((w as f64 * mh / mw / 2.0).round() as usize * 2).max(32);
+    let poly: Vec<(f64, f64)> = opts
+        .get("poly")
+        .map(|s| s.split_whitespace().filter_map(|p| p.split_once(',').and_then(|(x, y)| Some((x.trim().parse::<f64>().ok()? * w as f64, y.trim().parse::<f64>().ok()? * h as f64)))).collect())
+        .unwrap_or_default();
+    if poly.len() < 3 {
+        bail!("planar tracking needs a region of at least 3 points (poly='x,y x,y x,y x,y', fractions of the frame)");
+    }
+    let frames = gray_frames(ff, path, t0, t1, fps, w, h)?;
+    if frames.is_empty() {
+        bail!("no frames decoded between {t0:.2} and {t1:.2} s");
+    }
+    let start = (((num("from", t0) - t0) * fps).round().max(0.0) as usize).min(frames.len() - 1);
+    let fits = pl::track_region(&frames, start, &poly, model);
+    let s = [w as f64, h as f64, 1.0];
+    let rows: Vec<Value> = fits
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let (m, conf) = f.unwrap_or(([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], 0.0));
+            let mut r = vec![json!(r6(t0 + i as f64 / fps))];
+            for a in 0..3 {
+                for b in 0..3 {
+                    r.push(json!(m[a][b] * s[b] / s[a]));
+                }
+            }
+            r.push(json!((conf * 1000.0).round() / 1000.0));
+            Value::Array(r)
+        })
+        .collect();
+    Ok(json!({"kind": "planar", "mode": model.name(), "fps": fps, "samples": rows}))
+}
+
+/// Auto-trace (see `render::trace`): the outline of one region of the frame
+/// at source time `t` as a mask path. Options: `channel` (luma, alpha, red,
+/// green, blue), `threshold` (0..1), `invert` (1), `pick=x,y` (frame
+/// fractions; the region under it, else the largest), `tol` (px at the
+/// analysis size, at most 960 px wide) and the media's `mw`, `mh`.
+fn trace(ff: &Ff, path: &str, opts: &BTreeMap<String, String>) -> Result<Value> {
+    let num = |k: &str, d: f64| opts.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+    let (mw, mh) = (num("mw", 1920.0).max(2.0), num("mh", 1080.0).max(2.0));
+    let w = (mw.min(960.0) as usize / 2 * 2).max(16);
+    let h = ((w as f64 * mh / mw / 2.0).round() as usize * 2).max(16);
+    let t = num("t", 0.0).max(0.0);
+    let pre = match opts.get("channel").map(String::as_str).unwrap_or("luma") {
+        "alpha" | "a" => "format=rgba,alphaextract,",
+        "red" | "r" => "format=gbrp,extractplanes=r,",
+        "green" | "g" => "format=gbrp,extractplanes=g,",
+        "blue" | "b" => "format=gbrp,extractplanes=b,",
+        _ => "",
+    };
+    let vf = format!("{pre}scale={w}:{h}:flags=area,format=gray");
+    let (out, _) = ff.run_capture(&ffargs(&["-ss", &format!("{t:.4}"), "-i", path, "-frames:v", "1", "-an", "-sn", "-dn", "-vf", &vf, "-f", "rawvideo", "pipe:1"]))?;
+    if out.len() < w * h {
+        bail!("couldn't decode a frame at {t:.2} s to trace");
+    }
+    let thr = (num("threshold", 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let invert = opts.get("invert").is_some_and(|v| v == "1" || v == "true");
+    let pick = opts.get("pick").and_then(|p| {
+        let (x, y) = p.split_once(',')?;
+        let (x, y) = (x.trim().parse::<f64>().ok()?, y.trim().parse::<f64>().ok()?);
+        Some(((x.clamp(0.0, 1.0) * (w - 1) as f64) as usize, (y.clamp(0.0, 1.0) * (h - 1) as f64) as usize))
+    });
+    let Some((poly, area)) = crate::render::trace::trace(&out[..w * h], w, h, thr, invert, pick, num("tol", 1.5)) else {
+        bail!("nothing above the threshold to trace at {t:.2} s (try threshold= or invert)");
+    };
+    if poly.len() < 3 {
+        bail!("the traced region at {t:.2} s is a speck; pick a larger one or change threshold=");
+    }
+    Ok(serde_json::json!({ "d": crate::render::trace::to_path(&poly, w, h), "points": poly.len(), "area": area }))
+}
+
+/// Planar tracking (see `render::track`). Options: `from` (source time the
+/// region is drawn at), `t0`/`t1` (source range), `region=cx,cy,w,h` or
+/// `corners='x,y x,y x,y x,y'` (fractions of the frame), `mode=pos|similarity|affine`,
+/// and the media's `mw`, `mh`, `fps`. Region results are 2x3 matrices in
+/// frame fractions per frame; corner results are the four points per frame.
+fn track(ff: &Ff, path: &str, dur: f64, opts: &BTreeMap<String, String>) -> Result<Value> {
+    use crate::render::track::{self as tr, Mode, Pyr};
+    let num = |k: &str, d: f64| opts.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+    let (mw, mh) = (num("mw", 1920.0).max(2.0), num("mh", 1080.0).max(2.0));
+    let fps = num("fps", 30.0).clamp(1.0, 120.0);
+    let t0 = num("t0", 0.0).max(0.0);
+    let t1 = num("t1", dur).min(if dur > 0.0 { dur } else { f64::INFINITY });
+    if t1 - t0 > 60.0 {
+        bail!("track at most 60 s at a time (range is {:.1} s); split it with range=a-b", t1 - t0);
+    }
+    if t1 <= t0 {
+        bail!("empty tracking range");
+    }
+    let w = (mw.min(640.0) as usize / 2 * 2).max(16);
+    let h = ((w as f64 * mh / mw / 2.0).round() as usize * 2).max(16);
+    let frames: Vec<Pyr> = gray_frames(ff, path, t0, t1, fps, w, h)?.into_iter().map(Pyr::new).collect();
+    if frames.is_empty() {
+        bail!("no frames decoded between {t0:.2} and {t1:.2} s");
+    }
+    let start = (((num("from", t0) - t0) * fps).round().max(0.0) as usize).min(frames.len() - 1);
+    let times: Vec<f64> = (0..frames.len()).map(|i| t0 + i as f64 / fps).collect();
+    let (fw, fh) = (w as f64, h as f64);
+    if let Some(c) = opts.get("corners") {
+        let pts: Vec<(f64, f64)> = c.split_whitespace().filter_map(|p| p.split_once(',').and_then(|(x, y)| Some((x.trim().parse().ok()?, y.trim().parse().ok()?)))).collect();
+        if pts.len() != 4 {
+            bail!("corners needs four points 'x,y x,y x,y x,y' (fractions, clockwise from top-left)");
+        }
+        let size = (fw.min(fh) * 0.08).max(11.0) as usize;
+        let tracks: Vec<Vec<(f32, f32, f32)>> = pts.iter().map(|(x, y)| tr::track_point(&frames, start, (x * fw) as f32, (y * fh) as f32, size, size)).collect();
+        let rows: Vec<Value> = (0..frames.len())
+            .map(|i| {
+                let mut r = vec![json!(times[i])];
+                for t in &tracks {
+                    r.push(json!(t[i].0 as f64 / fw));
+                    r.push(json!(t[i].1 as f64 / fh));
+                }
+                r.push(json!(tracks.iter().map(|t| t[i].2 as f64).fold(1.0, f64::min)));
+                Value::Array(r)
+            })
+            .collect();
+        return Ok(json!({"kind": "corners", "fps": fps, "samples": rows}));
+    }
+    let reg: Vec<f64> = opts.get("region").map(|r| r.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+    if reg.len() != 4 {
+        bail!("track needs region=cx,cy,w,h (fractions of the frame) or corners='x,y x,y x,y x,y'");
+    }
+    let mode = match opts.get("mode").map(|s| s.as_str()).unwrap_or("pos") {
+        "pos" | "position" | "translate" => Mode::Pos,
+        "similarity" | "sim" | "scale" | "rotation" => Mode::Similarity,
+        "affine" | "perspective" => Mode::Affine,
+        o => bail!("mode must be pos, similarity or affine, not {o}"),
+    };
+    let motion = tr::track_region(&frames, start, (reg[0] * fw) as f32, (reg[1] * fh) as f32, (reg[2] * fw) as f32, (reg[3] * fh) as f32, mode);
+    // matrices to frame fractions: M' = S^-1 M S with S = diag(fw, fh)
+    let rows: Vec<Value> = motion
+        .iter()
+        .zip(&times)
+        .map(|(m, t)| {
+            let a = m.m;
+            json!([t, a[0], a[1] * fh / fw, a[2] / fw, a[3] * fw / fh, a[4], a[5] / fh, m.conf])
+        })
+        .collect();
+    Ok(json!({"kind": "region", "fps": fps, "samples": rows}))
 }
 
 /// Compact text rendering of an analysis result for AI clients.
 pub fn summarize(kind: &str, v: &Value, max_items: usize) -> String {
     let f = |x: &Value| crate::model::value::fmt_num(x.as_f64().unwrap_or(0.0));
     match kind {
+        "audiostats" | "noise" | "spectrum" | "dynamics" => {
+            let r = |k: &str| format!("{:.1}", v[k].as_f64().unwrap_or(0.0));
+            let bands: Vec<String> = crate::render::audio_scope::BANDS.iter().enumerate().map(|(i, b)| format!("{} {:.0}", b.0, v["bands"][i].as_f64().unwrap_or(0.0))).collect();
+            let hum = v["hum"].as_array().map(|h| format!(", hum {} Hz +{:.0} dB", f(&h[0]), h[1].as_f64().unwrap_or(0.0))).unwrap_or_default();
+            format!(
+                "I {} LUFS, S max {}, LRA {} LU, TP {} dBTP, floor {} dB, clipped {}, DC {}, corr {}, bands dB [{}]{hum}; quietest second at {}s",
+                r("integrated"), r("short_max"), r("lra"), r("true_peak"), r("floor"), v["clipped"], r("dc"), r("corr"), bands.join(", "), r("quiet_at")
+            )
+        }
         "silence" | "silences" => {
             let arr = v["silences"].as_array().cloned().unwrap_or_default();
             let parts: Vec<String> = arr.iter().take(max_items).map(|r| format!("{}-{}", f(&r[0]), f(&r[1]))).collect();

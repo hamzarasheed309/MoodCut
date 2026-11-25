@@ -8,6 +8,8 @@ use crate::render::encode::PRESETS;
 
 pub const TOPICS: &[(&str, &str)] = &[
     ("workflow", "a complete edit from one request, step by step"),
+    ("direction", "creative director: brief -> concept -> treatment -> build -> review; design and editing direction; rules that keep the work grounded in what was seen and done"),
+    ("features", "every feature: when to use it, the command, how to verify it, when not to"),
     ("style", "pro editing + motion design rules (hook, pacing, sound, type, easing) as commands"),
     ("recipes", "complete scripts for Reels, YouTube, montage, promo, podcast, documentary, tutorial"),
     ("platforms", "Reels/TikTok/Shorts/YouTube/feed/ads specs and UI safe zones"),
@@ -15,6 +17,10 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("brand", "brand kit: font + colors every title, caption and graphic uses"),
     ("edit", "every MoodCut Script command"),
     ("tools", "Premiere Pro / After Effects tools and panels as commands"),
+    ("masks", "After Effects masks, Resolve windows and qualifiers, roto vertices, matte finesse, matte view, keying"),
+    ("tracking", "mask, point, planar (perspective) and 3D camera tracking, stabilizing"),
+    ("grade", "DaVinci Resolve color page: nodes, primaries, wheels, curves, warper, qualifiers, windows, color management, groups, match"),
+    ("mix", "buses, sends, automation, processors, repair, audio scopes, stems"),
     ("time", "time & reference syntax"),
     ("props", "layer/clip/text/solid properties"),
     ("effects", "video effects + params"),
@@ -44,12 +50,12 @@ Scripts are atomic: if any line fails nothing changes and the error names the li
 pub const WORKFLOW: &str = "Turning one request into a finished, professional edit. Do every step yourself; send many script lines per edit call; ask the person only if something essential is missing.
 1 GATHER  media find path=<folder> (what is there) -> media import paths=[<folder>] tag=<shoot>. Large library: media list (filters/paging) + preview media=m1..m48 (poster frames, 48 per sheet). Write down what you see so you never look twice: note m3 'wide drone, sunset' | tag m10..m18 interview.
 2 UNDERSTAND  speech: analyze target=tag:interview kind=transcript, then view what=search q=<words> to find quotes (times are source seconds). Shots: analyze target=all kind=scenes / stats (exposure). Music: analyze <m> kind=beats. Filmstrips (preview media=m7 n=8) to pick in/out points.
-3 PLAN  like a senior editor (help style): platform and length (help platforms; comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 1-2 s -> body -> payoff / call to action or loop), the closest help('recipes') to start from, brand (brand <preset> or the client's font and colors), ONE look, 2-3 reusable motion moves, music and where its drop lands, a sound palette. Build only what was asked, but finish it to a professional standard.
+3 PLAN  like a creative director (help direction: brief, one-line concept, five-line treatment; help features: which tool serves each choice; help style: the craft numbers): platform and length (help platforms; comp new 'Main' 1080x1920 30 or reframe 9:16 later), structure (hook in the first 1-2 s -> body -> payoff / call to action or loop), the closest help('recipes') to start from, brand (brand <preset> or the client's font and colors), ONE look, 2-3 reusable motion moves, music and where its drop lands, a sound palette. Build only what was asked, but finish it to a professional standard.
 4 ASSEMBLE  bottom-up: story on V1: append m4[12.3-18.9] m4[41-47.5] ... (quotes from transcripts) or add + autocut silence V1 + punchin V1 for talking heads; keep m4 12-30,45-61 for rough cuts; jcut/lcut between interview answers; b-roll on V2 over speech starting on the word it shows (add m7[2-5] V2 at=c3.start+1); montage m1,m2,... music=m9 beats=2 for beat-cut sequences; speedramp into action and drops. Shot lengths per platform (help style); vary framing; cut on action and on the beat; no repeated shots. Portrait footage in a landscape edit (or the reverse): set <ids> fit=blur.
 5 POLISH  color <ids|V1> <one look> then fine-tune by scopes; one or two motivated transition types (whip between places, cuts elsewhere); titles and lower thirds in the brand (graphic tool for bespoke designs, else title templates) with the same entrance everywhere; captions V1 last (they go on top) for speech-led videos; anim kenburns amount=0.06 on stills; then sound design: sfx whoosh on=transitions, hit on title slams, riser into reveals (help sfx).
 6 SOUND  music on A2 under speech: duck A2 by=A1 amount=-12 (by=V1 when speech is camera audio); fade music in/out; master lufs=-14 limiter=1 (web) | -16 (podcast) | -23 (broadcast).
 7 VERIFY  check target=<platform> expect={dur, size, captions, music} (fix=true applies the safe fixes) and look at its problem frames; fix its craft notes too (hook, pacing, safe zones, easing, music ending, sound design); preview n=12 and judge it as a viewer (would you stop scrolling at frame 1? does something change every 3-5 s?); fix and check again until clean.
-8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files.";
+8 DELIVER  render preset=youtube | social | prores ... (wait=true); captions as a file: render preset=srt; YouTube chapters from markers: render preset=chapters; to finish in Premiere/Resolve: render preset=xml; vertical version: reframe 9:16 main, check, render preset=social. Report what you made: length, structure, music, files, the concept and key choices, what check and the previews confirmed, and anything you could not do or verify (help direction).";
 
 const GRAPHICS: &str = "graphic tool: html -> rendered video with alpha (or a still, dur=0) in the library. The page is the frame: 100% width/height = comp size (or size=). Transparent unless you paint a background (alpha=false keeps an opaque page).
 Timing runs on a virtual clock, so animate any way you like and every frame is exact:
@@ -107,6 +113,10 @@ LOOK
  color <ids> <preset> (a new look replaces the last one; hand-set values stay) | color <ids> exposure=.3 contrast=15 temp=-10 sat=110 | color <ids> none   lut <ids> file.cube [amount]
  mask <id> <rect|ellipse|path|polygon|star> [x y w h feather expand invert mode]   mask <id.m1> feather=60 | del
  path masks use normalized layer coordinates: d='M0.1,0.1 C0.2,0.05 0.4,0.05 0.5,0.1 L0.8,0.7 Z'; keyframe matching paths with `kf c1.m1 d 0:M0,0C0.2,0.1,0.3,0.1,0.5,0 1:M0,0C0.2,0.2,0.3,0.2,0.5,0` (same segment structure for smooth morphing)
+ mask <id.m1> pt 3 x,y [at=T] | pt 3 smooth|corner|first | topath | track mode=perspective   (help masks)
+ node <clip> add [serial|parallel|layer|outside] | node <clip> N primaries gainR=1.03 | node <clip> N window add circle | node <clip> N qualify hsl hue=25 | node <clip> N mix=.7   (Resolve nodes; help grade)
+ track <clip.m1> mode=pos|rotation|similarity|affine|perspective | track <clip> corners='..' to=cornerpin on=<layer> | track <clip> region=.. to=null|stabilize   (help tracking)
+ camtrack <clip> [fov=] | camtrack <clip> ground=p1,p2,p3 | camtrack <clip> attach text 'Hi' at=p1,p2,p3 | camtrack <clip> points   (3D camera tracker)
  tr <a> <b> <kind> [dur]   tr <id> in|out <kind> [dur]   tr V1 dissolve 0.4 (all cuts)   tr <a> <b> none
  fade <ids> [in=0.5] [out=1] [video|audio]
 AUDIO
@@ -121,6 +131,77 @@ MACROS (see help macros)
  reframe 9:16 [mode=blur|fill|fit]   keep <media> 0-12.5,15-30   title <template> [params]
 REFERENCES  $ last created, $2 second created in this script; names given with as= work anywhere an id does.";
 
+const MASKS: &str = "Masks (After Effects masks, Resolve power windows and qualifiers). Ids count per layer: a layer's first mask is m1, the next m2 (effects f1, f2 on their own).
+ mask <id> rect|ellipse|polygon|star|path|gradient [x= y= w= h= rot= radius= points= feather= ...] [window] [invert]
+   Resolve names work too: circle (ellipse), linear (rect), curve (path), polygon, gradient. x,y = center, w,h = size, all fractions of the layer.
+   path: d='M0.1,0.1 C0.2,0.05 0.4,0.05 0.5,0.1 L0.8,0.7 Z' (normalized layer coords, cubic Beziers); smooth=1 is RotoBezier (tension=-1..1).
+ Cut or window: a plain mask cuts the layer (After Effects); with the word window (cut=0) it only limits effects (a Resolve window). mode=add|subtract|intersect|lighten|darken|difference|none combines cutting masks as in AE.
+ Edge: feather= (px), featherY= (AE's two-value feather), falloff=smooth|linear, featherBias=-1..1 (inside..outside), vfeather='3:40 5:-10' (per-vertex feather points, px; + outward, - inward),
+   expand= (grow/shrink px), opacity=, invert, mblur=1 shutter=180 (mask motion blur), refine=8 refineSoft=.2 (Refine Edge: snaps soft edges to hair and fur).
+ Vertices (AE pen tools; numbers as preview view=overlay shows them): mask c1.m1 pt 3 0.42,0.31 [in=x,y out=x,y] [at=T] moves vertex 3 (with at= it keys the path there) |
+   pt 3 smooth | pt 3 corner (Convert Vertex) | pt 3 first (Set First Vertex, decides how paths morph) | pt add after=2 | pt 4 del. mask c1.m1 topath turns a shape mask into an editable path.
+ Animate: kf c1.m1 d 0:'M..' 2:'M..' (paths with the same vertex count morph), kf c1.m1 feather|x|w|opacity|expand ... Track: track c1.m1 mode=pos|rotation|similarity|affine|perspective (help tracking).
+ On effects: every in-place effect takes mask= and mix=: fx c1 blur radius=40 mask=m1 (blur a face), color c1 sat=80 mask=m2. Expressions: m1+m2 union, m1*m2 intersection, -m1 outside, parentheses: (m1+m2)*-m3.
+ Qualifiers (Resolve keys from the picture, always windows): mask c1 hsl hue=25 hueRange=40 satLo=.15 satHi=.8 lumLo=.2 lumHi=.9 qsoft=.1 window | mask c1 luma lumLo=.7 window |
+   mask c1 rgb rLo=.6 gHi=.4 window | mask c1 3d color=#d8a080 tolerance=.12 window (read the color with preview pick=x,y). This color inside this window: mask=m1*m2.
+   Matte finesse: cleanBlack= cleanWhite= (levels), clean= (despeckle px), morph=shrink|grow|open|close morphR=2, matteBlur=4, expand=.
+ Auto-trace: mask c1 trace [channel=luma|alpha|red|green|blue] [threshold=.5] [pick=x,y] [invert] [range=a-b every=0.5] (AE Auto-trace; with range= the path is keyed).
+ Track mattes: matte <layer> <matteLayer> alpha|alphainv|luma|lumainv.
+ Look at it: preview view=matte id=c1.m1 t=2 (gray matte, coverage, box, soft-edge share) | view=overlay (outline + numbered vertices over the picture); expressions too: id=c1.m1*m2. Colors: preview pick=x,y.
+ Keying: fx c1 chromakey auto=1 similarity=.35 clipBlack=.1 clipWhite=.9 edge=2; fx c1 matteclean size=2; fx c1 lightwrap width=12; fx c1 spill. Garbage/holdout mattes are masks.";
+const TRACKING: &str = "Tracking (After Effects' tracker and mask tracker, a Mocha-style planar tracker and the 3D Camera Tracker). Results are ordinary keyframes; at most 60 s per call (split long shots with range=a-b).
+ Masks (AE mask tracking methods): track c1.m1 [mode=pos|rotation|similarity|affine|perspective] [range=a-b] [at=T] [planar]   (mask c1.m1 track ... is the same)
+   pos, rotation and similarity key the mask's placement (offset, trot, scale), so its own shape keys stay; affine and perspective key the path's vertices (a shape mask becomes a path).
+   at= is the time the mask is drawn right (default: playhead or clip start). planar uses the feature tracker for pos/similarity too (better on detailed surfaces).
+ A point to a null: track c1 region=cx,cy,w,h to=null [mode=pos|rotation|similarity|perspective] -> a null with position (and rotation, scale) keys; parent titles to it: parent t1 <null>.
+ Screen replacement / corner pin: track c1 corners='x,y x,y x,y x,y' to=cornerpin on=c5 -> the plane inside the four corners (clockwise from top-left, fractions) followed in perspective;
+   mode=points tracks the four corners themselves (only when they are crisp marks).
+ Stabilize: track c1 region=cx,cy,w,h to=stabilize [mode=similarity] [smooth=1] [zoom].
+ 3D camera (AE's 3D Camera Tracker): camtrack c1 [range=a-b] [at=T] [fov=54] [nodal] [points=500]   (track c1 to=camera is the same)
+   -> a one-node camera layer keyed from the shot (pos, z, rx, ry, rot, zoom) plus solved 3D points; the reply gives the error (px), field of view and unsolved stretches.
+   The clip must fill the comp centered and level (otherwise precomp it). The focal length is solved unless fov= gives the horizontal angle of view. Tripod pans and tilts solve as a rotating camera (nodal).
+   preview view=points id=c1 t=2 shows the numbered points (green = accurate) and the floor grid; camtrack c1 points [t=] [near=x,y] [n=20] lists them.
+   camtrack c1 ground=p3,p7,p9 [origin=p3]: those points' plane becomes the floor (level, y down) and the origin the comp center at z=0; the camera and attached layers follow.
+   camtrack c1 attach text 'SALE' at=p3,p7,p9 [size=1.5] [face=plane|camera] [as=name] | attach solid #fff | attach null | attach shape rect | attach m4 | attach <layer id>
+     -> a 3D layer on those points: lying on their plane (3+ points) or facing the camera, at its natural size at the reference frame. Re-solving replaces the camera's keys.
+ Replies name lost stretches: `~c1.m1 tracked 0-8.4s, 31 keys; !lost 3.2-3.6 (conf 0.41)` -> check with preview view=overlay t=3.4 and fix: kf c1.m1 offset 3.4:0.12,0.03 or mask c1.m1 pt ... at=3.4
+ Reversed, remapped or frozen clips: track before changing timing.";
+const GRADE: &str = "Grading the DaVinci Resolve way. Every color effect is a node; consecutive effects with the same node label are ONE corrector node: its tools run together, keyed once by the node's
+window/qualifier and blended once by its mix (key output gain). Per-pixel tools in a node fuse into one LUT.
+NODES (node verb; nodes are numbered 1, 2, ... in order; view what=grade or node c1 list shows them)
+ node c1 add [serial|parallel|layer|outside] [after=N] [name=Skin] [composite=softlight]   a new node starts as neutral primaries (Resolve's corrector)
+ node c1 2 primaries liftY=-.02 gammaR=.01 gainB=1.03 contrast=1.1 pivot=.42 sat=55 | node c1 2 curves luma='0,0 .3,.26 .75,.8 1,1' | node c1 2 huecurves hueSat='.33,-.4'
+   (a tool the node lacks is added to it; any color tool below, plus blur, sharpen, glow, smooth)
+ node c1 2 window add circle x=.5 y=.4 w=.3 h=.4 feather=60 | window add linear | polygon | curve d='M..' | gradient rot=0 h=.3 | node c1 2 qualify hsl hue=25 hueRange=30 satLo=.15
+   node key = (window + window ...) * qualifier: windows join, qualifiers narrow. node c1 2 window=m1+m2 sets it whole; window none clears it. Track it: node c1 2 track mode=similarity.
+ node c1 add outside after=2 (the inverse of node 2's key) | node c1 2 mix=.7 | off | on | reset | del | name=Skin | parallel | layer composite=screen | serial | up | down
+ parallel nodes take the input of the node before them and their changes add up (parallel mixer); layer nodes take that input too and composite on top by their key
+ (layer mixer: normal add subtract multiply screen overlay softlight hardlight darken lighten difference color luminosity). Same with fx: fx c1 primaries node=Skin mask=m2 mix=.8 parallel=1.
+TOOLS (fx names; help effects lists every param)
+ primaries: lift/gamma/gain/offset as master (Y) and R G B: liftY -1..1, gammaY -1..1 (+ brighter mids), gainY 1 = unchanged, offsetY -1..1; contrast 1 + pivot .435; sat 50 = unchanged (0 gray, 100 double);
+   hue 50 = unchanged; lumMix 100; temp (Resolve units, + warmer) tint; boost (color boost); shadows, highlights; midDetail (MD, local contrast).
+ logwheels: shadow/midtone/highlight/offset tints (#rrggbbaa, alpha = strength) and levels, low=.333 high=.55 ranges, contrast, pivot. hdrwheels: black/dark/shadow/light/highlight/specular zones (Exp, Sat, Tint each; zone edges in stops).
+ colorwheels: lift/gamma/gain/offset tints and levels with shadowPivot/highlightPivot. curves: master r g b luma (custom curves, YRGB). huecurves: hueHue hueSat hueLuma lumaSat satSat satLuma.
+ colorwarper pins='35,.55>24,.45' luma='215,.5>-.12' (hue-sat warper). colorslice: Hue/Sat/Den for red skin yellow green cyan blue magenta. secondary (HSL key + correction). channelmixer (RGB mixer, mono=1).
+ lut file='look.cube' amount=. cst from=slog3 to=rec709 tonemap=simple|luma|none gamut=compress|clip (color space transform). softclip, filmcurve, halation, legalize (gamut limiter).
+COLOR MANAGEMENT color c1 input=slog3|logc3|logc4|vlog|clog3|dlog|hlg|pq|rec709|auto (decoder input transform at source precision; auto reads HLG/PQ tags) or a cst node.
+BALANCE AND MATCH color c1 wb=auto | wb=pick:.4,.6 (a neutral point) | wb=off. match c2..c9 to=c1|still:hero [what=exposure,balance,sat] -> a colorwheels node tag=match (redone on re-match).
+GROUPS AND VERSIONS grade save day-ext from=c1 (the clip's color effects become a linked post-clip group) | grade apply day-ext c2..c9 [pre] (pre-clip) | grade detach c4 | grade copy c1 c2..c9 [append] |
+ grade version c1 save|load|del <name> | grade version c1 list | grade reset c1 | grade del | grade list. Timeline grade: an adjustment layer over the clips.
+GALLERY still save hero from=c1 [at=T] | still list | still del. preview ref=hero split=0.5 t=.. (wipe, with the measured difference).
+MEASURE preview scope=all|waveform|parade|vectorscope|histogram|falsecolor [region=cx,cy,w,h] t=..; preview view=matte id=c1.m2 (a node's key); view what=grade [id=c1].
+Typical: color c1 input=slog3 -> node c1 add (balance: primaries gainR=..) -> node c1 add (contrast: primaries contrast=1.15 pivot=.4) -> node c1 add parallel, node c1 3 qualify hsl hue=25 (skin),
+ node c1 3 huecurves -> node c1 add, node c1 4 window add circle, node c1 4 track -> node c1 add layer composite=softlight, node c1 5 lut file=.. -> grade save look from=c1 -> match c2..c9 to=c1.";
+const MIX: &str = "Mixing (Audition-style). Signal flow: clip (gain, pan, fades, afx) -> track (vol, pan, automation, afx) -> bus(es) -> master (vol, afx, loudness, limiter).
+  bus add B1 name=Dialogue | bus set B1 vol=-3 pan=0 out=B3|master mute=0 | bus del B1 | bus list
+  track set A1 out=B1          route a track to a bus
+  send A1 B2 -12dB [pre]       a send (shared reverb, parallel compression); send A1 B2 off. Loops are refused.
+  kf A1 vol 0:-6 4:0 / kf B2 pan 0:-1 3:1   track and bus automation (comp seconds); kf c1 pan ... for clips. set c1 fadeCurve=linear|log|exp|scurve|power; audio transitions are equal-power.
+  afx <clip|A1|B1|master> <effect> [mix=0.5]: every audio effect takes mix (wet/dry). Racks: afx A1 rack=podcast-voice|voiceover|phone|music-bed|glue|room-verb|hall-verb|master.
+  Processors: peq bands='120,-3,1,lowshelf 3000,2,1,bell 80,0,0.7,highpass' (8 bands), multiband, limiter truepeak=1, reverb type=room|hall|plate|booth|echo (convolution), denoise amount=12 learn=0.2-1.0 (noise print), declip, dehum, deess, stereo width=1.2 balance=0 invertl=1, compress, gate, ...
+  duck B2 by=B1 (buses or tracks). master lufs=-14 limiter=1 truepeak=1.
+  Measured repair: repair <clips|A1> (adds dehum / declip / highpass / denoise only when measured), roomtone A1 (fills gaps with the quietest second), match c2 to=c1 eq|loudness.
+  Measure: preview scope=spectrum|spectrogram|loudness|phase|mix [target=c3|A1|B1|master] [range=a-b] (image + I/S/M LUFS, LRA, true peak, noise floor, clipping, DC, six bands, correlation, hum); scope=mix gives one line per track and bus. analyze noise|spectrum|dynamics on media. view what=mix lists routing, sends, chains, automation and levels. render preset=stems writes a WAV per bus plus the mix.";
 const TIME: &str = "Times: 12 | 12.5s | 500ms | 90f (frames) | 1:02.5 (m:s) | 1:02:03.5 | 00:00:12:15 (timecode with frames)
  end (comp end) | c3.start c3.end c3.mid | V1.end (where the last clip on V1 ends) | @drop (marker) | sums: c3.end+0.5, end-2. Relative edits: +0.5 / -1.
 Keyframe times are relative to the item start; end = item duration; 50% = half of the item.
@@ -166,7 +247,8 @@ camera [at= dur=] [zoom=px] [pos=x,y] [z=offset] [poi=x,y] [poiZ=] [aim=0] [move
  move presets: pushin, pullout (z, amount=px), truck, truckleft (x), pedestal, pedestaldown (y), orbit, orbitleft (around the poi, amount=degrees), drift, shake. layers=V2,V3 switches those layers to 3D.
 null [at dur] [pos=] [children=<ids>]: an invisible layer to parent others to (parent <ids> <null>) and animate them together.
 Parallax recipe: background at z=800 scale=150%, b-roll at z=0, title at z=-300, all 3d=1, then camera move=pushin amount=400.
-Layers behind the camera aren't drawn. Card flips and tilts: kf <id> ry 0:-90 0.6:0@outBack (no camera needed).";
+Layers behind the camera aren't drawn. Card flips and tilts: kf <id> ry 0:-90 0.6:0@outBack (no camera needed).
+Match a real camera move (3D Camera Tracker): camtrack c1 solves the shot into a camera layer and 3D points; camtrack c1 attach text 'Hi' at=p3,p7,p9 puts a 3D layer on them (help tracking).";
 
 const SCOPES: &str = "preview scope=waveform|parade|vectorscope|histogram|all [t=seconds] [comp=] [width=] returns the Lumetri scope and a measured line:
  luma 1st-99th percentile, median and mean | clipped (any channel >= 99.5%) | crushed (luma <= 1%) | outside broadcast 16-235 | saturation | color cast (warm/cool, green/magenta) | hints.
@@ -199,9 +281,9 @@ precomp <ids> name='Group'              nest items into a new comp
 duck <musicTrack> by=<voiceTrack> amount=-12   sidechain ducking
 title <template> ...                    motion graphics (help templates)";
 
-const COLOR: &str = "color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 contrast=18 pivot=.42 sat=105 mask=m1`. Color effects accept mask=m1 to grade only that layer mask and mix=0.75 to blend the effect. Add a grade window with `mask c1 ellipse feather=24` or a Bézier path, adjust it with `set c1.m1 feather=30`, and select it per effect with mask=m1. Import custom LUTs with `lut c1 file='C:/LUTs/look.cube' amount=.8 mask=m1`; 1D, 3D and combined .cube files are supported. The Color panel also exposes Lift/Gamma/Gain/Offset primaries, curves, HSL secondary and scopes.
+const COLOR: &str = "color <ids> <preset> [then fine-tune] e.g. `color c1 cinematic` then `color c1 exposure=0.2 contrast=18 pivot=.42 sat=105 mask=m1`. Color effects accept mask=m1 to grade only that layer mask and mix=0.75 to blend the effect. Add a grade window with `mask c1 ellipse feather=24` or a Bézier path, adjust it with `set c1.m1 feather=30`, and select it per effect with mask=m1. Import custom LUTs with `lut c1 file='C:/LUTs/look.cube' amount=.8 mask=m1`; 1D, 3D and combined .cube files are supported. The Color panel also exposes Lift/Gamma/Gain/Offset primaries, curves, HSL secondary and scopes. For a Resolve-style grade (nodes, primaries, log/HDR wheels, warper, qualifiers, windows, groups, match) see help grade.
 lumetri params: exposure(stops) contrast highlights shadows whites blacks temp tint (-100..100) sat(%) vibrance fade stint htint (split-tone colors, alpha=strength).
-Other color fx: lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
+Other color fx: primaries (Resolve lift/gamma/gain/offset YRGB, contrast/pivot, sat, hue, lum mix, color boost, MD), logwheels, hdrwheels, colorwarper, colorslice, cst, lut (file.cube), curves (master='0,0 .25,.2 .75,.85 1,1'), colorwheels (lift/gamma/gain), huecurves, secondary (HSL key), channelmixer, leavecolor, changecolor, photofilter, tritone, autolevels, legalize, levels, hue, saturation, vibrance, temperature, tint, duotone, bc, exposure, grayscale, sepia, invert, posterize.
 Measure with preview scope=all (help scopes); copy a grade with paste <from> <to> color.
 Use analyze stats to check exposure first. Presets:";
 
@@ -251,6 +333,14 @@ pub fn help(topic: &str) -> String {
             s
         }
         "edit" | "dsl" | "script" | "commands" => EDIT.to_string(),
+        "masks" | "mask" | "roto" | "matte" | "keying" | "key" | "qualifier" | "qualifiers" | "windows" | "window" => {
+            let mut s = format!("{MASKS}\n");
+            s.push_str(&props_section("Mask props (static ones can't be keyframed)", schema::MASK));
+            s
+        }
+        "tracking" | "track" | "tracker" | "camtrack" | "camera-tracking" | "3dtrack" | "planar" => TRACKING.to_string(),
+        "grade" | "grades" | "grading-nodes" | "node" | "nodes" | "resolve" | "matching" | "match" | "stills" | "colormanagement" => GRADE.to_string(),
+        "mix" | "mixing" | "mixer" | "buses" | "bus" => MIX.to_string(),
         "tools" | "panels" | "premiere" | "aftereffects" | "ae" | "pro" => TOOLS.to_string(),
         "3d" | "camera" | "cameras" | "null" | "nulls" | "parallax" => THREE_D.to_string(),
         "scopes" | "scope" | "lumetri" | "waveform" | "vectorscope" => SCOPES.to_string(),
@@ -311,7 +401,7 @@ pub fn help(topic: &str) -> String {
             s.push_str(&props_section("Animator props", schema::ANIMATOR));
             s
         }
-        "shapes" | "shape" | "masks" | "mask" => {
+        "shapes" | "shape" => {
             let mut s = format!("{SHAPES}\n");
             for k in ["rect", "ellipse", "polygon", "star", "path", "line", "arrow"] {
                 let ps: Vec<String> = schema::shape_props(k).unwrap().iter().map(|p| format!("{}={}", p.name, short_def(p))).collect();
@@ -331,7 +421,7 @@ pub fn help(topic: &str) -> String {
             s
         }
         "macros" | "auto" => MACROS.to_string(),
-        "color" | "grade" | "grading" => {
+        "color" | "grading" => {
             let mut s = format!("{COLOR}\n");
             s.push_str(&presets::COLOR_PRESETS.iter().map(|(n, d)| format!("{n} ({d})")).collect::<Vec<_>>().join(", "));
             s
@@ -353,7 +443,9 @@ pub fn help(topic: &str) -> String {
             s
         }
         "examples" | "example" => EXAMPLES.to_string(),
-        "style" | "craft" | "professional" | "creative" | "rules" => super::craft::STYLE.to_string(),
+        "style" | "craft" | "professional" | "rules" => super::craft::STYLE.to_string(),
+        "direction" | "director" | "creative" | "creative-direction" | "art-direction" | "brief" | "concept" | "treatment" | "review" | "grounding" => super::direction::DIRECTION.to_string(),
+        "features" | "feature" | "feature-map" | "when" | "which" | "usage" | "capabilities" => super::direction::FEATURES.to_string(),
         "recipes" | "formats" | "reels" | "youtube" | "templates-edit" => super::craft::RECIPES.to_string(),
         "platforms" | "platform" | "specs" | "social" | "safezones" => super::craft::PLATFORMS.to_string(),
         "sfx" | "sounddesign" | "sound-design" | "whoosh" => super::craft::sound_help(),
@@ -387,4 +479,115 @@ pub fn reference_markdown() -> String {
         s.push_str(&format!("\n## {topic}: {desc}\n\n```text\n{}\n```\n", help(topic).trim_end()));
     }
     s
+}
+
+/// `view what=mix`: routing, sends, chains, automation and measured levels.
+pub fn mix_view(p: &crate::model::project::Project, comp: &str, levels: Option<Vec<(String, crate::render::audio_scope::Stats)>>) -> String {
+    let Some(c) = p.comp(comp) else { return format!("no comp {comp}") };
+    let fx = |v: &[crate::model::project::Effect]| v.iter().map(|e| if e.on { format!("{}.{}", e.id, e.kind) } else { format!("({}.{})", e.id, e.kind) }).collect::<Vec<_>>().join(" > ");
+    let sends = |v: &[crate::model::project::AuxSend]| v.iter().map(|s| format!(" send {} {}dB{}", s.to, crate::model::value::fmt_num(s.db), if s.pre { " pre" } else { "" })).collect::<String>();
+    let auto = |a: &std::collections::BTreeMap<String, crate::model::anim::Anim>| a.iter().filter(|(_, x)| x.is_animated()).map(|(k, x)| format!(" {k}:{}keys", x.k.len())).collect::<String>();
+    let mut out = vec![];
+    for t in c.tracks.iter().filter(|t| t.kind == crate::model::project::TrackKind::Audio || !t.afx.is_empty()) {
+        out.push(format!(
+            "{} vol {}dB pan {} -> {}{}{}{}{}",
+            t.id,
+            crate::model::value::fmt_num(t.vol),
+            crate::model::value::fmt_num(t.pan),
+            t.out.as_deref().unwrap_or("master"),
+            sends(&t.sends),
+            auto(&t.auto),
+            t.duck.as_ref().map(|d| format!(" ducks under {}", d.by)).unwrap_or_default(),
+            if t.afx.is_empty() { String::new() } else { format!(" fx {}", fx(&t.afx)) }
+        ));
+    }
+    for b in &c.buses {
+        out.push(format!(
+            "{}{} vol {}dB pan {} -> {}{}{}{}{}",
+            b.id,
+            b.name.as_ref().map(|n| format!(" ({n})")).unwrap_or_default(),
+            crate::model::value::fmt_num(b.vol),
+            crate::model::value::fmt_num(b.pan),
+            b.out.as_deref().unwrap_or("master"),
+            sends(&b.sends),
+            auto(&b.auto),
+            if b.muted { " muted" } else { "" },
+            if b.afx.is_empty() { String::new() } else { format!(" fx {}", fx(&b.afx)) }
+        ));
+    }
+    let m = &c.master;
+    out.push(format!("master vol {}dB lufs {} limiter {}{}{}", crate::model::value::fmt_num(m.vol), m.lufs.map(crate::model::value::fmt_num).unwrap_or_else(|| "off".into()), m.limiter, if m.truepeak { " truepeak" } else { "" }, if m.afx.is_empty() { String::new() } else { format!(" fx {}", fx(&m.afx)) }));
+    if let Some(l) = levels {
+        out.push("measured:".into());
+        out.extend(l.iter().map(|(n, s)| crate::render::audio_scope::line(n, s)));
+    }
+    out.join("\n")
+}
+
+/// `view what=grade [id=c1]`: each clip's color node list with windows and mix, and shared grades.
+pub fn grade_view(p: &crate::model::project::Project, id: Option<&str>) -> String {
+    use crate::model::project::ItemKind;
+    let mut out = vec![];
+    let node = |e: &crate::model::project::Effect| {
+        let g = |k: &str| e.props.get(k).map(|a| a.v.str()).filter(|s| !s.is_empty() && s != "1");
+        let mut s = format!("{}.{}", e.id, e.kind);
+        if let Some(m) = g("mask") {
+            s.push_str(&format!("[{m}]"));
+        }
+        if let Some(m) = e.props.get("mix").map(|a| a.v.num()).filter(|m| *m < 0.999) {
+            s.push_str(&format!(" mix {}", crate::model::value::fmt_num(m)));
+        }
+        if let Some(t) = g("tag") {
+            s.push_str(&format!(" ({t})"));
+        }
+        if let Some(n) = g("node") {
+            s = format!("{n}:{s}");
+        }
+        if e.props.get("parallel").is_some_and(|a| a.v.bool()) {
+            s = format!("|| {s}");
+        }
+        if !e.on {
+            s = format!("({s} off)");
+        }
+        s
+    };
+    for c in &p.comps {
+        for t in &c.tracks {
+            for it in t.items.iter().filter(|i| matches!(i.kind, ItemKind::Clip | ItemKind::Adjust) && id.is_none_or(|x| x == i.id)) {
+                // the node graph, numbered as `node <clip> N` addresses it
+                let nodes = crate::ops::nodes::describe(it);
+                let input = it.props.get("input").map(|a| a.v.str()).filter(|s| s != "auto");
+                if nodes.is_empty() && it.grade.is_none() && it.pregrade.is_none() && input.is_none() {
+                    continue;
+                }
+                let masks: Vec<String> = it.masks.iter().map(|m| format!("{} {}{}", m.id, m.kind, if m.props.get("cut").is_some_and(|c| !c.v.bool()) { " window" } else { "" })).collect();
+                let mut head = format!("{}{}", it.id, input.map(|i| format!(" input={i}")).unwrap_or_default());
+                if let Some(g) = &it.pregrade {
+                    head.push_str(&format!(" pre-clip group {g}"));
+                }
+                if let Some(g) = &it.grade {
+                    head.push_str(&format!(" post-clip group {g}"));
+                }
+                if !it.versions.is_empty() {
+                    head.push_str(&format!(" versions {}", it.versions.keys().cloned().collect::<Vec<_>>().join(" ")));
+                }
+                let mut block = vec![format!("{head}:")];
+                if nodes.is_empty() {
+                    block.push("  (no nodes)".into());
+                }
+                block.extend(nodes.iter().map(|n| format!("  {n}")));
+                if !masks.is_empty() {
+                    block.push(format!("  masks {}", masks.join(", ")));
+                }
+                out.push(block.join("\n"));
+            }
+        }
+    }
+    for (n, fx) in &p.grades {
+        out.push(format!("grade {n}: {}", fx.iter().map(node).collect::<Vec<_>>().join(" > ")));
+    }
+    for (n, s) in &p.stills {
+        out.push(format!("still {n}: {} at {}s", s.item, crate::model::time::fmt_t(s.t)));
+    }
+    if out.is_empty() { "no color work yet".into() } else { out.join("\n") }
 }

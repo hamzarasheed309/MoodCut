@@ -279,7 +279,7 @@ impl Engine {
         let scale = PROBE_W as f32 / c.w as f32;
         let k = c.w as f64 / PROBE_W as f64;
         let alone = isolate(p, &c.id, &it.id);
-        let rc = RenderCtx { p: &alone, frames: &self.frames, draft: true };
+        let rc = RenderCtx { p: &alone, frames: &self.frames, draft: true, probe: None };
         let Ok(pm) = render_frame(&rc, &c.id, t, scale) else { return Shot { t, bbox: None, lum: None } };
         let (w, h) = (pm.width() as usize, pm.height() as usize);
         let d = pm.data();
@@ -313,7 +313,7 @@ impl Engine {
         let mut lum = None;
         if want_contrast && tn > 20.0 {
             let rest = without(p, &c.id, &it.id);
-            let rc2 = RenderCtx { p: &rest, frames: &self.frames, draft: true };
+            let rc2 = RenderCtx { p: &rest, frames: &self.frames, draft: true, probe: None };
             if let Ok(bg) = render_frame(&rc2, &c.id, t, scale) {
                 let bd = bg.data();
                 let (mut br, mut bgc, mut bb, mut bn) = (0f64, 0f64, 0f64, 0f64);
@@ -341,7 +341,9 @@ impl Engine {
             return Ok(None);
         }
         let mut args = crate::render::audio::input_args(&ap);
-        args.extend(["-filter_complex".into(), format!("{};[{}]loudnorm=print_format=json[mc_out]", ap.graph, ap.label), "-map".into(), "[mc_out]".into(), "-f".into(), "null".into(), "-".into()]);
+        let (gargs, _graph_file) = self.ff.graph_args(&format!("{};[{}]loudnorm=print_format=json[mc_out]", ap.graph, ap.label))?;
+        args.extend(gargs);
+        args.extend(["-map".into(), "[mc_out]".into(), "-f".into(), "null".into(), "-".into()]);
         let (_, err) = self.ff.run_capture(&args)?;
         let j = err.rfind('{').and_then(|i| err[i..].find('}').map(|k| &err[i..=i + k])).ok_or_else(|| anyhow!("no loudness output"))?;
         let v: serde_json::Value = serde_json::from_str(j)?;
@@ -780,6 +782,8 @@ impl Engine {
             }
         }
 
+        // ---------------- finishing: color, masks, mix
+        self.finish_checks(&p, &c, o.audio, &mut is);
         // ---------------- expectations
         let e = &o.expect;
         let mut exp = vec![];
@@ -952,7 +956,7 @@ impl Engine {
             }
             if !picks.is_empty() {
                 let scale = 320.0 / c.w as f32;
-                let rc = RenderCtx { p: &p, frames: &self.frames, draft: true };
+                let rc = RenderCtx { p: &p, frames: &self.frames, draft: true, probe: None };
                 let tiles: Vec<Tile> = picks
                     .iter()
                     .filter_map(|(code, t)| {
@@ -1193,5 +1197,188 @@ mod tests {
     fn compacts_id_lists() {
         let ids: Vec<String> = ["c5", "c6", "c7", "c9", "t2", "t3", "x"].iter().map(|s| s.to_string()).collect();
         assert_eq!(super::compact_ids(&ids), "c5..c7,c9,t2..t3,x");
+    }
+}
+
+impl Engine {
+    /// Color, mask and mix rules for the finishing tools (plan section 9).
+    /// Share of a keyed layer's subject that is see-through: transparent
+    /// pixels enclosed by the subject (not reachable from the frame edge).
+    fn key_holes(&self, p: &Project, item: &str, t: f64) -> Result<f64> {
+        let mut solo = p.clone();
+        let (ci, _, _) = solo.locate(item).ok_or_else(|| anyhow::anyhow!("no layer {item}"))?;
+        let cid = solo.comps[ci].id.clone();
+        for tr in solo.comps[ci].tracks.iter_mut() {
+            for it in tr.items.iter_mut() {
+                if it.id != item {
+                    it.off = true;
+                }
+            }
+        }
+        let rc = crate::render::comp::RenderCtx { p: &solo, frames: &self.frames, draft: false, probe: None };
+        let w = solo.comps[ci].w.max(1) as f32;
+        let f = crate::render::comp::render_frame(&rc, &cid, t, (320.0 / w).min(1.0))?;
+        let (fw, fh) = (f.width() as usize, f.height() as usize);
+        let clear: Vec<bool> = f.data().chunks_exact(4).map(|px| px[3] < 128).collect();
+        let mut seen = vec![false; fw * fh];
+        let mut stack: Vec<usize> = (0..fw).flat_map(|x| [x, (fh - 1) * fw + x]).chain((0..fh).flat_map(|y| [y * fw, y * fw + fw - 1])).filter(|&i| clear[i]).collect();
+        for &i in &stack {
+            seen[i] = true;
+        }
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i % fw, i / fw);
+            for (ok, j) in [(x > 0, i.wrapping_sub(1)), (x + 1 < fw, i + 1), (y > 0, i.wrapping_sub(fw)), (y + 1 < fh, i + fw)] {
+                if ok && clear[j] && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        let holes = (0..fw * fh).filter(|&i| clear[i] && !seen[i]).count();
+        let subject = clear.iter().filter(|c| !**c).count();
+        Ok(if subject == 0 { 0.0 } else { holes as f64 / (subject + holes) as f64 })
+    }
+
+    fn finish_checks(&self, p: &Project, c: &Comp, audio: bool, is: &mut Issues) {
+        // ---- color: clipped / crushed shots, neighbors that don't match, flat (log?) footage
+        let mut prev: Option<(String, serde_json::Value)> = None;
+        for t in c.vtracks().filter(|t| !t.hidden) {
+            let mut clips: Vec<&Item> = t.items.iter().filter(|i| i.kind == ItemKind::Clip && !i.off && i.src.as_deref().and_then(|s| p.media(s)).is_some_and(|m| m.has_video)).collect();
+            clips.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+            for it in clips.into_iter().take(40) {
+                let mid = it.start + it.dur / 2.0;
+                let Ok(st) = self.measure_item(p, &it.id, &[mid], None, None) else { continue };
+                if st.get("empty").is_some() {
+                    continue;
+                }
+                let g = |k: &str| st[k].as_f64().unwrap_or(0.0);
+                if g("p98") >= 0.995 {
+                    is.add(Sev::Warn, Some(mid), format!("{} clips its highlights (2% of it at white)", it.id), Some(format!("fx {} softclip", it.id)), true);
+                }
+                if g("p2") <= 0.004 {
+                    is.add(Sev::Info, Some(mid), format!("{} crushes its shadows", it.id), Some(format!("color {} blacks=12", it.id)), true);
+                }
+                let input = it.props.get("input").map(|a| a.v.str()).unwrap_or_else(|| "auto".into());
+                if matches!(input.as_str(), "auto" | "rec709") && g("p98") - g("p2") < 0.45 && g("sat") < 0.12 {
+                    is.add(Sev::Craft, Some(mid), format!("{} looks flat and gray: log footage without an input transform?", it.id), Some(format!("color {} input=slog3 (or logc3, vlog, clog3, dlog: the camera's profile)", it.id)), true);
+                }
+                // skin tones off the skin line (the vectorscope's I line, about 24 degrees of HSL hue)
+                let skin_hue = if g("skinHue") > 180.0 { g("skinHue") - 360.0 } else { g("skinHue") };
+                if g("skin") > 0.04 && (skin_hue - 24.0).abs() > 10.0 {
+                    let off = skin_hue - 24.0;
+                    is.add(Sev::Craft, Some(mid), format!("{}'s skin tones sit {:.0} degrees {} of the skin line", it.id, off.abs(), if off < 0.0 { "toward red/magenta" } else { "toward yellow/green" }), Some(format!("fx {} colorslice skinHue={:.0}", it.id, -off)), true);
+                }
+                if let Some((pid, ps)) = &prev {
+                    let d = crate::ops::grading::residual(&st, ps);
+                    if d > 0.07 {
+                        is.add(Sev::Craft, Some(it.start), format!("{} differs from {pid} before it by {:.0}% in exposure or balance", it.id, d * 100.0), Some(format!("match {} to={pid}", it.id)), true);
+                    }
+                }
+                prev = Some((it.id.clone(), st));
+            }
+            prev = None;
+        }
+        // ---- keys: holes in a keyed subject
+        let keyed: Vec<&Item> = c.vtracks().filter(|t| !t.hidden).flat_map(|t| t.items.iter()).filter(|i| !i.off && i.fx.iter().any(|e| e.on && matches!(e.kind.as_str(), "chromakey" | "lumakey"))).take(12).collect();
+        for it in keyed {
+            let mid = it.start + it.dur / 2.0;
+            if let Ok(h) = self.key_holes(p, &it.id, mid) {
+                if h > 0.003 {
+                    is.add(Sev::Warn, Some(mid), format!("{}'s key has holes: {:.1}% of the subject is see-through", it.id, h * 100.0), Some(format!("fx {} matteclean (or raise the key's clipWhite)", it.id)), true);
+                }
+            }
+        }
+        // ---- masks: tracked masks that leave the frame, tracks that lost confidence
+        for t in &c.tracks {
+            for it in &t.items {
+                for m in &it.masks {
+                    if let Some(lost) = m.props.get("trackLost").map(|a| a.v.str()).filter(|s| !s.trim().is_empty()) {
+                        for r in lost.split_whitespace().take(3) {
+                            let Some((a, b)) = r.split_once('-').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) else { continue };
+                            let (ta, tb) = (it.start + a, it.start + b);
+                            is.add(Sev::Warn, Some(ta), format!("{}.{} lost its track at {}-{}s", it.id, m.id, crate::model::time::fmt_t(ta), crate::model::time::fmt_t(tb)), Some(format!("preview view=overlay id={}.{} t={} (fix with mask {}.{} pt N x,y at=..)", it.id, m.id, crate::model::time::fmt_t(ta), it.id, m.id)), false);
+                        }
+                    }
+                    let Some(off) = m.props.get("offset").filter(|a| !a.k.is_empty()) else { continue };
+                    let (x, y) = (m.props.get("x").map(|a| a.v.num()).unwrap_or(0.5), m.props.get("y").map(|a| a.v.num()).unwrap_or(0.5));
+                    if let Some(k) = off.k.iter().find(|k| {
+                        let (dx, dy) = k.v.vec();
+                        !(-0.05..=1.05).contains(&(x + dx)) || !(-0.05..=1.05).contains(&(y + dy))
+                    }) {
+                        is.add(Sev::Warn, Some(it.start + k.t), format!("{}.{} leaves the frame at {}s (tracking drifted or the subject left)", it.id, m.id, crate::model::time::fmt_t(it.start + k.t)), Some(format!("preview view=overlay id={}.{} t={}", it.id, m.id, crate::model::time::fmt_t(it.start + k.t))), false);
+                    }
+                }
+            }
+        }
+        // ---- 3D camera solves: solve error, and layers attached to points the solve is unsure of
+        for (cam, cs) in &p.camsolves {
+            let Some((ci, _, _)) = p.locate(cam) else { continue };
+            if p.comps[ci].id != c.id {
+                continue;
+            }
+            // only a solve already computed: a check never starts a camera solve
+            let Some(v) = p.media(&cs.media).and_then(|m| self.cached_analysis_with(m, "camtrack", &cs.opts)) else { continue };
+            let Ok(s) = crate::ops::camtrack::read_solve(&v) else { continue };
+            let at = p.item(&cs.clip).map(|i| i.start);
+            if s.rms > 1.0 {
+                is.add(
+                    if s.rms > 2.0 { Sev::Warn } else { Sev::Info },
+                    at,
+                    format!("{}'s camera solve is off by {:.2}px on average (under 0.5px sticks; above 1px attached layers slide)", cs.clip, s.rms),
+                    Some(format!("camtrack {} points=1000 (or fov=<the lens's horizontal angle>, or nodal for a tripod shot)", cs.clip)),
+                    false,
+                );
+            }
+            let missing = s.frames.iter().filter(|f| f.1.is_none()).count();
+            if missing * 10 > s.frames.len().max(1) {
+                is.add(Sev::Warn, at, format!("{}'s camera solve has no pose for {missing} of {} frames (motion blur, a whip or a cut?)", cs.clip, s.frames.len()), Some(format!("camtrack {} range=<the steady part>", cs.clip)), false);
+            }
+            for a in &cs.attached {
+                let bad: Vec<String> = a.pts.iter().filter(|&&k| s.points.get(k.wrapping_sub(1)).is_some_and(|pt| pt.1 > 1.5)).map(|k| format!("p{k}")).collect();
+                if !bad.is_empty() && p.locate(&a.item).is_some() {
+                    is.add(Sev::Warn, at, format!("{} sits on {} with a high solve error (it may slide)", a.item, bad.join(",")), Some(format!("preview view=points id={} (pick green points, then camtrack {} attach {} at=...)", cs.clip, cs.clip, a.item)), false);
+                }
+            }
+        }
+        if !audio || !self.ff.available() {
+            return;
+        }
+        // ---- mix: per track and bus
+        let mut nodes: Vec<(String, String)> = c.tracks.iter().filter(|t| !t.muted && t.items.iter().any(|i| i.src.as_deref().and_then(|s| p.media(s)).is_some_and(|m| m.has_audio))).map(|t| (t.id.clone(), t.name.clone().unwrap_or_default())).collect();
+        nodes.extend(c.buses.iter().filter(|b| !b.muted).map(|b| (b.id.clone(), b.name.clone().unwrap_or_default())));
+        let mut dialog: Option<(String, f64)> = None;
+        let mut music: Option<(String, f64)> = None;
+        for (id, name) in nodes.iter().take(16) {
+            let Ok((_, pcm)) = self.node_audio(p, &c.id, Some(id.as_str()), None) else { continue };
+            let s = crate::render::audio_scope::measure(&pcm);
+            if s.integrated <= -69.0 {
+                continue;
+            }
+            if s.clipped > 0 {
+                is.add(Sev::Warn, None, format!("{id} clips ({} samples at full scale)", s.clipped), Some(format!("afx {id} limiter")), false);
+            }
+            if s.corr < 0.0 {
+                is.add(Sev::Warn, None, format!("{id} is out of phase (correlation {:.2}): it thins out or vanishes in mono", s.corr), Some(format!("afx {id} stereo width=0.7")), false);
+            }
+            if let Some((f, d)) = s.hum {
+                is.add(Sev::Warn, None, format!("{id} has {f:.0} Hz hum (+{d:.0} dB)"), Some(format!("repair {id}")), false);
+            } else if s.floor > -50.0 && s.lra > 6.0 {
+                is.add(Sev::Info, None, format!("{id} noise floor {:.0} dB is high", s.floor), Some(format!("repair {id}")), false);
+            }
+            let n = format!("{id} {name}").to_ascii_lowercase();
+            if ["dialog", "voice", "vo", "speech", "interview", "podcast"].iter().any(|k| n.contains(k)) {
+                if !(-27.0..=-12.0).contains(&s.integrated) {
+                    is.add(Sev::Warn, None, format!("dialogue {id} sits at {:.1} LUFS (aim for about -18 before the master)", s.integrated), Some(format!("{} {id} vol={:.1}", if c.track(id).is_some() { "track set" } else { "bus set" }, -18.0 - s.integrated)), false);
+                }
+                dialog = Some((id.clone(), s.integrated));
+            } else if ["music", "bed", "song", "score"].iter().any(|k| n.contains(k)) {
+                music = Some((id.clone(), s.integrated));
+            }
+        }
+        if let (Some((d, dl)), Some((m, ml))) = (dialog, music) {
+            if dl - ml < 8.0 {
+                is.add(Sev::Warn, None, format!("music {m} is only {:.1} LU under dialogue {d} (8-15 LU keeps speech clear)", dl - ml), Some(format!("duck {m} by={d} amount=-12")), false);
+            }
+        }
     }
 }

@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { setFx } from "../actions";
 import { showPanel } from "../dock";
-import { catalog, mediaById, pickFiles, playhead, run, selectedItem } from "../store";
+import { catalog, mediaById, pickFiles, playhead, project, run, selectedItem } from "../store";
 import type { Effect, FxDef, Item } from "../types";
 import { clamp, fmtNum, q, staticVal } from "../util";
 import { Section, Slider } from "./Controls";
+import { NodeEditor } from "./NodeEditor";
 
 const HUES = "linear-gradient(90deg,#f00,#ff0 16.7%,#0f0 33.3%,#0ff 50%,#00f 66.7%,#f0f 83.3%,#f00)";
 
@@ -388,6 +389,9 @@ export function ColorPanel() {
           Reset
         </button>
       </div>
+      <Section title="Nodes (DaVinci Resolve)">
+        <NodeEditor it={it} />
+      </Section>
       <Section title="Grade Window" open={false}>
         <div class="row">
           <label>Mask region</label>
@@ -399,7 +403,50 @@ export function ColorPanel() {
           </div>
           <span />
         </div>
-        <div class="hint">Create a window with Mask Pen (P) or MCP `mask {it.id} ellipse feather=24`. The selected mask drives every color effect; feather, invert and animate it in the mask controls.</div>
+        <div class="row">
+          <label>Window</label>
+          <div class="ctl">
+            <button class="btn sm" title="Add an ellipse window (limits effects, doesn't cut the layer)" onClick={() => run(`mask ${it.id} ellipse w=0.4 h=0.5 feather=40 window`, true)}>+ Ellipse</button>
+            <button class="btn sm" title="Add an HSL qualifier around skin tones" onClick={() => run(`mask ${it.id} hsl hue=25 hueRange=40 window`, true)}>+ Skin</button>
+            {gradeMask && <button class="btn sm" title="Track the window through the clip" onClick={() => run(`track ${it.id}.${gradeMask.split(/[^a-zA-Z0-9_]/)[0]}`)}>Track</button>}
+          </div>
+          <span />
+        </div>
+        <div class="hint">Create a window with Mask Pen (P) or MCP `mask {it.id} ellipse feather=24 window`. The selected mask drives every color effect; feather, invert and animate it in the mask controls.</div>
+      </Section>
+      <Section title="Input · Match · Shared Grades" open={false}>
+        <div class="row">
+          <label title="Camera log or HDR transform to Rec.709, applied while decoding">Input</label>
+          <div class="ctl">
+            <select value={(staticVal(it.props?.input) as string) || "auto"} onChange={(e) => run(`color ${it.id} input=${(e.target as HTMLSelectElement).value}`, true)}>
+              {["auto", "rec709", "slog3", "logc3", "logc4", "vlog", "clog3", "dlog", "hlg", "pq"].map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <button class="btn sm" title="Neutralize the color cast from near-neutral pixels" onClick={() => run(`color ${it.id} wb=auto`)}>Auto WB</button>
+          </div>
+          <span />
+        </div>
+        <div class="row">
+          <label>Stills</label>
+          <div class="ctl">
+            <button class="btn sm" title="Save this frame and grade as a reference still" onClick={() => run(`still save s${Object.keys(project.value?.stills || {}).length + 1} from=${it.id} at=${at()}`)}>Grab still</button>
+            {Object.keys(project.value?.stills || {}).map((n) => (
+              <button key={n} class="btn sm" title={`Match this clip to still ${n}`} onClick={() => run(`match ${it.id} to=still:${n}`)}>Match {n}</button>
+            ))}
+          </div>
+          <span />
+        </div>
+        <div class="row">
+          <label>Shared grade</label>
+          <div class="ctl">
+            <select value={it.grade || ""} onChange={(e) => { const v = (e.target as HTMLSelectElement).value; run(v ? `grade apply ${v} ${it.id}` : `grade detach ${it.id}`, true); }}>
+              <option value="">none</option>
+              {Object.keys(project.value?.grades || {}).map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+            <button class="btn sm" title="Save this clip's color effects as a shared grade other clips can link to" onClick={() => run(`grade save ${it.grade || "grade" + (Object.keys(project.value?.grades || {}).length + 1)} from=${it.id}`)}>Save</button>
+          </div>
+          <span />
+        </div>
+        <div class="hint">Stills and shared grades as MCP: `still save hero from={it.id}`, `match c2..c9 to=still:hero`, `grade apply look c2..c9`.</div>
       </Section>
       <Section title="Basic Correction" {...toggleFx(it, "lumetri")} acts={
         <button class="btn sm ghost" title="Auto tone: stretch levels and remove casts per frame (fx autolevels)" onClick={() => gradeFx("autolevels", { perchannel: "1" })}>

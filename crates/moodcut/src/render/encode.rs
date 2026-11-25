@@ -325,8 +325,12 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
         graph.push(format!("[0:v]fps={gf},scale={gw}:-2:flags=lanczos,split[g1][g2];[g1]palettegen=stats_mode=diff[pal];[g2][pal]paletteuse=dither=bayer:bayer_scale=4[vout]"));
         vmap = "[vout]".into();
     }
+    // kept alive until FFmpeg has exited (it reads the file at start-up)
+    let mut _graph_file = None;
     if !graph.is_empty() {
-        c.args(["-filter_complex", &graph.join(";")]);
+        let (args, gf) = ff.graph_args(&graph.join(";"))?;
+        c.args(args);
+        _graph_file = gf;
     }
     if has_video {
         c.args(["-map", &vmap]);
@@ -370,7 +374,7 @@ pub fn render_file(ff: &Arc<Ff>, p: &Project, o: &RenderOpts, prog: &Progress) -
         });
         // heavy footage decodes on the GPU too, unless the render asked for the CPU only
         let frames = FrameServer::new(ff.clone(), hw_allowed(&o.hw));
-        let rc = RenderCtx { p, frames: &frames, draft: false };
+        let rc = RenderCtx { p, frames: &frames, draft: false, probe: None };
         let mut send_err = None;
         let mut failed: Option<anyhow::Error> = None;
         for i in 0..n {
@@ -455,7 +459,9 @@ pub fn preview_stream(ff: Arc<Ff>, p: Project, frames: Arc<FrameServer>, comp: S
     let mut c = ff.cmd();
     c.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{w}x{h}"), "-r", &format!("{fps}"), "-i", "pipe:0"]);
     c.args(audio::input_args(&ap));
-    c.args(["-filter_complex", &ap.graph, "-map", "0:v", "-map", &format!("[{}]", ap.label)]);
+    let (gargs, graph_file) = ff.graph_args(&ap.graph)?;
+    c.args(gargs);
+    c.args(["-map", "0:v", "-map", &format!("[{}]", ap.label)]);
     let enc = if ff.has_encoder("libx264") { sv(&["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "26"]) } else { sv(&["-c:v", "mpeg4", "-q:v", "5"]) };
     c.args(enc);
     c.args(["-g", &format!("{}", fps.round() as i64), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"]);
@@ -466,6 +472,8 @@ pub fn preview_stream(ff: Arc<Ff>, p: Project, frames: Arc<FrameServer>, comp: S
     let (tx, rx) = sync_channel::<Vec<u8>>(16);
     let cancel_r = cancel.clone();
     std::thread::spawn(move || {
+        // the graph file lives as long as FFmpeg's output does
+        let _graph_file = graph_file;
         let mut buf = vec![0u8; 1 << 16];
         loop {
             match stdout.read(&mut buf) {
@@ -480,7 +488,7 @@ pub fn preview_stream(ff: Arc<Ff>, p: Project, frames: Arc<FrameServer>, comp: S
         }
     });
     std::thread::spawn(move || {
-        let rc = RenderCtx { p: &p, frames: &frames, draft: true };
+        let rc = RenderCtx { p: &p, frames: &frames, draft: true, probe: None };
         let n = ((t1 - t0) * fps).round() as u64;
         let frame_dur = 1.0 / fps;
         // Real-time playback: when frames take longer to make than to show, the
@@ -542,7 +550,7 @@ pub fn encode_png(pm: &Pixmap) -> Result<Vec<u8>> {
 }
 
 /// Draws a small time label onto a pixmap.
-fn label(pm: &mut Pixmap, text_s: &str, x: f32, y: f32, size: f32) {
+pub(crate) fn label(pm: &mut Pixmap, text_s: &str, x: f32, y: f32, size: f32) {
     let st = TextStyle { family: "Inter".into(), weight: 700.0, italic: false, size, align: 0, line_h: 1.1, tracking: 0.0, box_w: 0.0, caps: false };
     let lay = text::layout(text_s, &st);
     let Some(path) = &lay.combined else { return };

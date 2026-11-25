@@ -41,6 +41,8 @@ export interface Item {
   parent?: string;
   matte?: { src: string; mode: string };
   off?: boolean;
+  /** linked shared grade */
+  grade?: string;
 }
 
 export interface Track {
@@ -56,6 +58,27 @@ export interface Track {
   pan?: number;
   duck?: { by: string; amount: number };
   afx?: Effect[];
+  /** bus this track feeds (none: the master) */
+  out?: string;
+  sends?: Send[];
+}
+
+export interface Send {
+  to: string;
+  db: number;
+  pre?: boolean;
+}
+
+export interface Bus {
+  id: string;
+  name?: string;
+  vol?: number;
+  pan?: number;
+  muted?: boolean;
+  afx?: Effect[];
+  out?: string;
+  sends?: Send[];
+  duck?: { by: string; amount: number };
 }
 
 export interface Marker {
@@ -76,7 +99,8 @@ export interface Comp {
   bg: string;
   tracks: Track[];
   markers?: Marker[];
-  master?: { vol?: number; lufs?: number; limiter?: boolean; afx?: Effect[] };
+  master?: { vol?: number; lufs?: number; limiter?: boolean; truepeak?: boolean; afx?: Effect[] };
+  buses?: Bus[];
   /** work area (sequence in/out), seconds */
   work?: [number, number];
 }
@@ -110,6 +134,8 @@ export interface Media {
   };
   tags?: string[];
   note?: string;
+  /** ffprobe transfer/primaries */
+  color?: string;
 }
 
 export interface Project {
@@ -119,6 +145,21 @@ export interface Project {
   media: Media[];
   comps: Comp[];
   brand?: Brand;
+  /** shared grades: name -> color effects */
+  grades?: Record<string, Effect[]>;
+  /** reference stills */
+  stills?: Record<string, { item: string; t: number }>;
+  /** 3D camera solves: camera layer id -> the clip it was solved from and the layers attached to its points */
+  camsolves?: Record<string, CamSolve>;
+}
+
+export interface CamSolve {
+  clip: string;
+  media: string;
+  opts?: Record<string, string>;
+  ground?: number[] | null;
+  scale?: number | null;
+  attached?: { item: string; pts: number[]; face: string; size: number }[];
 }
 
 export interface PDef {
@@ -136,6 +177,8 @@ export interface FxDef {
   cat?: string;
   desc: string;
   ff?: boolean;
+  /** can sit in a color node (takes a window/qualifier key and mix) */
+  node?: boolean;
   params: PDef[];
 }
 

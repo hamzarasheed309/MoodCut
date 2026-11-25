@@ -39,11 +39,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Unit tests
-        run: cargo test --release
-      - name: Script reference is up to date
         run: |
-          cargo run --release -q -- docs > docs/REFERENCE.md
-          git diff --exit-code docs/REFERENCE.md || (echo "::error::docs/REFERENCE.md is stale; run 'moodcut docs > docs/REFERENCE.md'" && exit 1)
+          set -o pipefail
+          # compiler errors and failing tests become annotations (readable without opening the log)
+          cargo test --release 2>&1 | tee test.log || { python3 .github/annotate.py test.log; exit 1; }
+      - name: Regenerate the script reference
+        run: cargo run --release -q -- docs > docs/REFERENCE.md
+      # the regenerated file, to commit when the check at the end of this job fails
+      - uses: actions/upload-artifact@v6
+        with:
+          name: REFERENCE.md
+          path: docs/REFERENCE.md
       - name: Install FFmpeg
         run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
       - name: Render an example end to end
@@ -57,6 +63,12 @@ jobs:
           test "$(ffprobe -v error -show_entries format=duration -of csv=p=0 smoke.mp4 | cut -d. -f1)" -ge 2
       - name: Quality check passes on the example
         run: target/release/moodcut check smoke.mcut --strict
+      - name: Benchmark (synthetic scenes; numbers kept as an artifact)
+        run: target/release/moodcut bench | tee bench-linux.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bench-linux
+          path: bench-linux.txt
       - name: Interchange and caption exports
         run: |
           mc=target/release/moodcut
@@ -91,6 +103,16 @@ jobs:
           ! grep -q '"moodcut"' "$alice/.cursor/mcp.json"
           grep -q '/elsewhere/moodcut' "$bob/.cursor/mcp.json"
           test ! -e "$shared"
+      # on a branch push the reference job commits the regenerated file; tags and pull requests must already have it
+      - name: Script reference is up to date
+        run: |
+          if git diff --quiet docs/REFERENCE.md; then echo "docs/REFERENCE.md is up to date"; exit 0; fi
+          git diff --stat docs/REFERENCE.md
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/heads/* ]]; then
+            echo "::warning::docs/REFERENCE.md was stale; the 'Commit the regenerated script reference' job commits it to ${{ github.ref_name }}"
+          else
+            echo "::error::docs/REFERENCE.md is stale; commit the REFERENCE.md artifact of this run (or run 'moodcut docs > docs/REFERENCE.md')" && exit 1
+          fi
       - name: Package the Linux build
         run: tar -czf moodcut-linux-x64.tar.gz -C target/release moodcut && ls -l moodcut-linux-x64.tar.gz
       - uses: actions/upload-artifact@v6
@@ -115,7 +137,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Unit tests
-        run: cargo test --release
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --release 2>&1 | tee test.log || { python .github/annotate.py test.log; exit 1; }
       - name: Build
         run: cargo build --release
       - name: Make MoodCutApp.exe (the same program as a windowless Windows app)
@@ -193,6 +218,9 @@ jobs:
           $errs = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errs)
           if ($errs) { $errs | Format-List; exit 1 }
+      - name: Bundle FFmpeg (installer and portable zip ship with it)
+        shell: pwsh
+        run: .\installer\get-ffmpeg.ps1 -Out dist\ffmpeg
       - name: Build the installer
         shell: pwsh
         run: |
@@ -207,12 +235,15 @@ jobs:
         run: |
           $dir = Join-Path $env:RUNNER_TEMP "MoodCut Test"
           $log = Join-Path $env:RUNNER_TEMP "setup.log"
-          $p = Start-Process dist\MoodCut-Setup-x64.exe -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"", "/TASKS=addtopath,assoc,ffmpeg,connectai", "/LOG=`"$log`"") -Wait -PassThru
+          $p = Start-Process dist\MoodCut-Setup-x64.exe -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`"", "/TASKS=addtopath,assoc,connectai", "/LOG=`"$log`"") -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content $log -Tail 80; exit 1 }
           if (-not (Test-Path "$dir\moodcut.exe")) { Get-Content $log -Tail 80; Write-Error "moodcut.exe missing"; exit 1 }
           if (-not (Test-Path "$dir\MoodCutApp.exe")) { Get-Content $log -Tail 80; Write-Error "MoodCutApp.exe missing"; exit 1 }
-          if (-not (Test-Path "$dir\ffmpeg\bin\ffmpeg.exe")) { Get-Content $log -Tail 80; Write-Error "FFmpeg was not installed"; exit 1 }
-          & "$dir\moodcut.exe" doctor
+          if (-not (Test-Path "$dir\ffmpeg\bin\ffmpeg.exe")) { Get-Content $log -Tail 80; Write-Error "the bundled FFmpeg was not installed"; exit 1 }
+          if (-not (Test-Path "$dir\ffmpeg\LICENSE.txt")) { Write-Error "the bundled FFmpeg's license was not installed"; exit 1 }
+          $doc = (& "$dir\moodcut.exe" doctor | Out-String)
+          Write-Host $doc
+          if ($doc -notlike "*$dir\ffmpeg\bin*") { Write-Error "moodcut doesn't use the FFmpeg installed with it"; exit 1 }
           $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
           if ($userPath -notlike "*$dir*") { Write-Error "PATH was not updated"; exit 1 }
           $cmd = (Get-ItemProperty "HKCU:\Software\Classes\MoodCut.Project\shell\open\command").'(default)'
@@ -233,9 +264,38 @@ jobs:
             target/release/moodcut.exe
             target/release/MoodCutApp.exe
             dist/MoodCut-Setup-x64.exe
+            dist/ffmpeg
             README.md
             LICENSE
+            NOTICE
           if-no-files-found: error
+
+  reference:
+    name: Commit the regenerated script reference
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: REFERENCE.md
+          path: generated
+      - name: Commit docs/REFERENCE.md if it changed
+        run: |
+          # only when the branch is still at the commit this run tested
+          if [ "$(git rev-parse HEAD)" != "${GITHUB_SHA}" ]; then echo "the branch moved on; its own run regenerates the reference"; exit 0; fi
+          cp generated/REFERENCE.md docs/REFERENCE.md
+          if git diff --quiet docs/REFERENCE.md; then echo "reference unchanged"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/REFERENCE.md
+          git commit -m "Regenerate docs/REFERENCE.md (CI, from ${GITHUB_SHA::7})"
+          git push origin HEAD:${{ github.ref_name }}
 
   commit-exe:
     name: Commit the tested exe to the branch
@@ -293,14 +353,24 @@ jobs:
         with:
           name: moodcut-linux-x64
           path: linux
+      - uses: actions/checkout@v5
+        with:
+          path: src
+          sparse-checkout: release
       - name: Package
         run: |
-          mkdir -p out
+          mkdir -p out portable/MoodCut
           cp dist/dist/MoodCut-Setup-x64.exe out/MoodCut-Setup-x64.exe
-          (cd dist && zip -r ../out/moodcut-${{ github.ref_name }}-windows-x64-portable.zip target/release/moodcut.exe target/release/MoodCutApp.exe README.md LICENSE)
+          # portable: the two exes with FFmpeg next to them (MoodCut looks in .\ffmpeg\bin first)
+          cp dist/target/release/moodcut.exe dist/target/release/MoodCutApp.exe dist/README.md dist/LICENSE dist/NOTICE portable/MoodCut/
+          cp -r dist/dist/ffmpeg portable/MoodCut/ffmpeg
+          (cd portable && zip -r ../out/MoodCut-${{ github.ref_name }}-windows-x64-portable.zip MoodCut)
           cp linux/moodcut-linux-x64.tar.gz out/moodcut-linux-x64.tar.gz
           (cd out && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          notes="src/release/NOTES-${{ github.ref_name }}.md"
+          if [ -f "$notes" ]; then cp "$notes" notes.md; else echo "MoodCut ${{ github.ref_name }}" > notes.md; fi
       - uses: softprops/action-gh-release@v2
         with:
           files: out/*
+          body_path: notes.md
           generate_release_notes: true
