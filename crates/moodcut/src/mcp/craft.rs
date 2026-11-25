@@ -215,7 +215,7 @@ camtrack c1
 camtrack c1 points n=12
 camtrack c1 ground=p1,p2,p3
 camtrack c1 attach text 'OPEN DAILY' at=p1,p2,p3 size=1.2
-add m2 V2 at=0 dur=8 as=screen
+add m2 at=0 dur=8 as=screen
 track c1 corners='.3,.3 .6,.32 .6,.6 .3,.58' to=cornerpin on=screen
 node c1 add name=Contrast
 node c1 1 primaries contrast=1.1 pivot=.42

@@ -374,3 +374,17 @@ jobs:
           files: out/*
           body_path: notes.md
           generate_release_notes: true
+      # a fresh start: when this release's notes carry the marker, every other release and its tag
+      # is deleted, only after this one is published
+      - name: Remove older releases (when the release notes ask for it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! grep -q '<!-- replaces-older-releases -->' notes.md; then echo "older releases kept"; exit 0; fi
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' | while read -r t; do
+            if [ -n "$t" ] && [ "$t" != "${{ github.ref_name }}" ]; then
+              echo "deleting release $t and its tag"
+              gh release delete "$t" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            fi
+          done
+          gh release list -R "$GITHUB_REPOSITORY"

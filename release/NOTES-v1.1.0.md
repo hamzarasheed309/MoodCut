@@ -1,3 +1,4 @@
+<!-- replaces-older-releases -->
 MoodCut 1.1.0 adds After Effects-style masking and tracking, DaVinci Resolve-style color grading and audio mixing,
 all of it controllable from AI apps over MCP. FFmpeg is now included, and AI apps get creative-direction guidance.
 
