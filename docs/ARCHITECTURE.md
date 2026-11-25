@@ -117,6 +117,34 @@ WebSocket notice cost one fetch.
   titles, inconsistent type, missing brand or captions, length. Their suggestions are printed as `try:` and are
   never applied by `fix=true`.
 
+## AI voice (`src/voice.rs`, `assets/omnivoice_worker.py`, `components/VoicePanel.tsx`)
+
+The AI Voice panel clones a voice from a few seconds of speech and speaks scripts with it, using OmniVoice
+(`k2-fsa/OmniVoice`, a 0.6B zero-shot TTS model) on the person's own computer. MoodCut stays one Rust binary:
+OmniVoice is Python (PyTorch), so it runs in an environment of its own.
+
+- **Finding the model.** The saved location (`settings.json` → `omnivoice`), `MOODCUT_OMNIVOICE_MODEL`,
+  `<drive>\MoodCut\OmniVoice` on every fixed drive, usual model folders and the Hugging Face caches. A model folder
+  counts when it has `config.json`, `tokenizer.json`, `model.safetensors` and `audio_tokenizer/model.safetensors`.
+  When nothing is found the panel offers **Locate** (a model folder, an install folder or an HF cache) or **Download**.
+- **Installing.** The person picks a drive (the panel lists fixed and removable drives with their free space) or a
+  folder; everything goes into `<drive>\MoodCut\OmniVoice`: `model/` (about 3.3 GB, downloaded file by file from
+  Hugging Face with curl, resumable), `tools/uv`, a uv-managed Python 3.12 and `env/` with PyTorch 2.8 (CUDA 12.8 or
+  12.6 wheels picked from the NVIDIA driver, CPU otherwise) and `omnivoice`, plus `hf/` as `HF_HOME` for the Whisper
+  model OmniVoice downloads the first time a voice is cloned without a transcript. uv's cache is kept on that drive
+  and removed afterwards. A free-space check runs first, and a cancelled install continues where it stopped.
+- **Running.** `omnivoice_worker.py` (embedded in the binary, written next to the environment) loads the model once
+  and answers JSON lines on stdin/stdout (`clone`, `generate`); its stdout is redirected to stderr so library prints
+  can't be taken for replies. It is stopped after ten idle minutes, which frees the GPU memory. Clone and generate
+  requests are queued tasks run one at a time; the editor polls `/api/voice` and hears `voice` events.
+- **Voices** live in the install folder (`voices/<id>/`: the 24 kHz reference cut by FFmpeg from a clip's In/Out or a
+  file, the encoded `prompt.pt` and `voice.json`), so they work in every project. Cloning asks for the speaker's consent.
+- **Speech** is written next to the project's graphics (`<project> assets/voice/`), one WAV per paragraph, and
+  imported in one undoable edit: `import … tag=voice as=…`, `note $ '<script>'` and, when asked, `add … at=<playhead>`.
+
+The model weights are CC BY-NC 4.0 (non-commercial) and the audio tokenizer is under the Boson Higgs Audio 2 Community
+License; the panel says so before downloading.
+
 ## Data model (`src/model`)
 
 ```
@@ -386,6 +414,7 @@ crates/moodcut/src/
   gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture, page building
   gfx/fields.rs    editable fields: HTML scanner, placeholders, context escaping, manifest, make-editable
   sfx.rs           procedural sound effects (synthesis, WAV writer)
+  voice.rs         AI voice: OmniVoice discovery, drive picker, installer (uv, PyTorch), worker process, clone/speak tasks
   check.rs         measured quality check, expectations, fixes
   export.rs        SRT / WebVTT / YouTube chapters / FCP7 XML / CMX3600 EDL
   tunnel.rs        remote token, cloudflared quick tunnel, connector instructions

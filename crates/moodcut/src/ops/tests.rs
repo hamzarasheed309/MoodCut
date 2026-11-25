@@ -360,6 +360,10 @@ fn media_tags_notes_selectors_and_unimport() {
     ok(&mut p, "relink m2 /v/other.mp4");
     let m2 = p.media("m2").unwrap();
     assert_eq!((m2.path.as_str(), m2.note.as_str()), ("/v/other.mp4", "drone over the beach"));
+    // generated media (AI voice) is imported, noted and placed in one script
+    ok(&mut p, "import /a/voice.wav tag=voice as='Narrator: hello'\nnote $ 'AI voice: hello there'\nadd /a/voice.wav at=2");
+    let v = p.media.iter().find(|m| m.path == "/a/voice.wav").unwrap();
+    assert_eq!((v.name.as_str(), v.note.as_str(), v.tags.clone()), ("Narrator: hello", "AI voice: hello there", vec!["voice".to_string()]));
 }
 
 #[test]

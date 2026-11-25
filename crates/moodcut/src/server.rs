@@ -142,6 +142,7 @@ pub async fn serve(eng: Arc<Engine>, o: ServeOpts) -> Result<()> {
         .route("/api/proxy", get(api_proxy).post(api_proxy))
         .route("/api/ai/clients", get(api_ai_clients))
         .route("/api/ai/install", post(api_ai_install))
+        .route("/api/voice", get(api_voice).post(api_voice))
         .route("/mcp", post(mcp_post).get(mcp_get).delete(mcp_delete))
         .route("/mcp/{token}", post(mcp_post_tok).get(mcp_get).delete(mcp_delete))
         .fallback(static_file)
@@ -412,6 +413,20 @@ async fn api_ai_install(headers: HeaderMap, Json(a): Json<Value>) -> Response {
     .await;
     match r {
         Ok((msg, status)) => Json(json!({"ok": true, "text": msg, "client": status})).into_response(),
+        Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
+    }
+}
+
+/// AI voice (OmniVoice): find, locate or install the model; clone voices and speak scripts.
+/// It runs programs and writes gigabytes to a drive, so only from this computer.
+async fn api_voice(State(st): State<St>, headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+    if is_remote(&headers) {
+        return err(StatusCode::FORBIDDEN, "AI voice can only be used from this computer");
+    }
+    let a = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let eng = st.eng.clone();
+    match blocking(move || crate::voice::api(&eng, &a)).await {
+        Ok(v) => Json(v).into_response(),
         Err(e) => Json(json!({"ok": false, "error": format!("{e:#}")})).into_response(),
     }
 }

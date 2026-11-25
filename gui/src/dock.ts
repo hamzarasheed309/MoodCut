@@ -21,7 +21,8 @@ export type PanelId =
   | "align"
   | "character"
   | "brand"
-  | "tracker";
+  | "tracker"
+  | "voice";
 
 export const PANEL_TITLES: Record<PanelId, string> = {
   project: "Project",
@@ -42,6 +43,7 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   character: "Character",
   brand: "Brand Kit",
   tracker: "Tracker",
+  voice: "AI Voice",
 };
 
 export const ALL_PANELS = Object.keys(PANEL_TITLES) as PanelId[];
@@ -99,7 +101,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     name: "Editing",
     desc: "Premiere Pro's default: Source and Program monitors over the timeline",
     build: () => ({
-      root: col([row([g(["source", "controls", "lumetri", "essential", "mixer"], "controls"), g(["program"])], [0.5, 0.5]), editBottom(["project", "effects", "markers", "history", "ai"])], [0.56, 0.44]),
+      root: col([row([g(["source", "controls", "lumetri", "essential", "mixer", "voice"], "controls"), g(["program"])], [0.5, 0.5]), editBottom(["project", "effects", "markers", "history", "ai"])], [0.56, 0.44]),
       floats: [],
     }),
   },
@@ -126,7 +128,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     name: "Audio",
     desc: "Audio Track Mixer and Essential Sound",
     build: () => ({
-      root: col([row([g(["mixer", "source"]), g(["program"]), g(["essential", "controls"])], [0.38, 0.37, 0.25]), editBottom(["project", "effects", "markers"])], [0.56, 0.44]),
+      root: col([row([g(["mixer", "source"]), g(["program"]), g(["essential", "voice", "controls"])], [0.38, 0.37, 0.25]), editBottom(["project", "effects", "markers"])], [0.56, 0.44]),
       floats: [],
     }),
   },
@@ -159,7 +161,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     name: "AI",
     desc: "The AI console beside the Program monitor, with History to review its edits",
     build: () => ({
-      root: col([row([g(["ai", "project"]), g(["program"]), g(["controls", "history", "markers"])], [0.3, 0.45, 0.25]), editBottom(null)], [0.62, 0.38]),
+      root: col([row([g(["ai", "voice", "project"]), g(["program"]), g(["controls", "history", "markers"])], [0.3, 0.45, 0.25]), editBottom(null)], [0.62, 0.38]),
       floats: [],
     }),
   },
@@ -168,7 +170,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
 /** Narrow windows (phones, split screens): one column of tabs. */
 function compactLayout(): Layout {
   return {
-    root: col([g(["program", "source", "scopes"]), g(["timeline"]), g(["controls", "project", "effects", "lumetri", "essential", "mixer", "ai", "markers", "history", "character", "brand", "align", "tracker", "tools"])], [0.42, 0.33, 0.25]),
+    root: col([g(["program", "source", "scopes"]), g(["timeline"]), g(["controls", "project", "effects", "lumetri", "essential", "mixer", "ai", "markers", "history", "character", "brand", "align", "tracker", "voice", "tools"])], [0.42, 0.33, 0.25]),
     floats: [],
   };
 }

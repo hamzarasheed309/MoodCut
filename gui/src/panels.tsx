@@ -12,6 +12,7 @@ import { ProgramMonitor, ScopesPanel, SourceMonitor } from "./components/Monitor
 import { TimelinePanel } from "./components/TimelinePanel";
 import { ToolsPanel } from "./components/Tools";
 import { TrackerPanel } from "./components/TrackerPanel";
+import { VoicePanel } from "./components/VoicePanel";
 import type { PanelId } from "./dock";
 
 export const PANELS: Record<PanelId, FunctionComponent> = {
@@ -33,4 +34,5 @@ export const PANELS: Record<PanelId, FunctionComponent> = {
   character: CharacterPanel,
   brand: BrandPanel,
   tracker: TrackerPanel,
+  voice: VoicePanel,
 };

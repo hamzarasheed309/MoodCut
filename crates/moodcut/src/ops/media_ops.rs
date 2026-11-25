@@ -35,6 +35,8 @@ impl<'a> Exec<'a> {
     /// note <media> 'what is in the shot'  (empty text clears)
     pub fn c_media_note(&mut self, a: &mut A) -> Result<()> {
         let spec = a.shift().ok_or_else(|| anyhow!("note <media> 'description'"))?;
+        // `import x.wav` then `note $ '...'` in one script
+        let spec = if spec.starts_with('$') { self.resolve_ref(&spec)? } else { spec };
         let text = a.pos.drain(..).collect::<Vec<_>>().join(" ");
         let ids = select_media(self.p, &spec)?;
         for id in &ids {

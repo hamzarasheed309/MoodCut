@@ -2711,3 +2711,238 @@ input[type="checkbox"] {
   max-height: 50vh;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
 }
+
+/* ---------- AI Voice (OmniVoice) ---------- */
+.voice-panel textarea {
+  width: 100%;
+  resize: vertical;
+  margin: 4px 0;
+  font-family: var(--font);
+  line-height: 1.45;
+}
+.vc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.vc-head-r {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.vc-faint {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+.vc-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.vc-chip.ok {
+  color: var(--ok);
+  background: rgba(52, 211, 153, 0.12);
+}
+.vc-chip.warn {
+  color: var(--warn);
+  background: rgba(251, 191, 36, 0.12);
+}
+.vc-msg {
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 8px 0 4px;
+}
+.vc-msg code,
+.vc-status code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.vc-error {
+  color: var(--danger);
+  background: rgba(255, 90, 95, 0.1);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.vc-step {
+  font-weight: 600;
+  margin-top: 8px;
+}
+.vc-status {
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vc-log summary {
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 11.5px;
+  margin-top: 6px;
+}
+.vc-log pre {
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  background: var(--panel-2);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.vc-drives {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0;
+}
+.vc-drive {
+  display: grid;
+  grid-template-columns: auto 1fr 70px auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+.vc-drive.on {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-soft);
+}
+.vc-drive.full {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.vc-drive-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vc-drive-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+.vc-drive-bar i {
+  display: block;
+  height: 100%;
+  background: var(--muted);
+}
+.vc-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0;
+  cursor: pointer;
+}
+.vc-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.vc-count {
+  text-align: right;
+  min-height: 14px;
+}
+.vc-voices,
+.vc-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 10px 8px;
+}
+.vc-voice {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.vc-voice-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.vc-voice-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vc-tasks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.vc-task {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.vc-task-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vc-task-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vc-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: 0 0 auto;
+}
+.vc-task.running .vc-dot {
+  background: var(--accent);
+  animation: vc-pulse 1s ease-in-out infinite alternate;
+}
+.vc-task.done .vc-dot {
+  background: var(--ok);
+}
+.vc-task.error .vc-dot {
+  background: var(--danger);
+}
+@keyframes vc-pulse {
+  to {
+    opacity: 0.3;
+  }
+}
+.vc-task-status {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin: 2px 0 0 13px;
+  word-break: break-word;
+}
+.vc-err-text {
+  color: var(--danger);
+}
+.vc-task-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 5px 0 0 13px;
+}

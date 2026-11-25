@@ -281,7 +281,7 @@ impl<'a> Exec<'a> {
         self.log.push(format!("! {}", s.into()));
     }
 
-    fn resolve_ref<'k>(&'k self, key: &'k str) -> Result<String> {
+    pub(crate) fn resolve_ref<'k>(&'k self, key: &'k str) -> Result<String> {
         if key == "$" || key == "$last" {
             return self.created.last().cloned().ok_or_else(|| anyhow!("'$' used before anything was created in this script"));
         }

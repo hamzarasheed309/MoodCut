@@ -45,6 +45,8 @@ export const graphicEditor = signal<null | { id?: string; item?: string }>(null)
 /** Preview proxies (Premiere's Toggle Proxies): status per media and the on/off switch. */
 export type ProxyState = { enabled: boolean; mode: string; summary: string; media: Record<string, string>; busy: boolean };
 export const proxyState = signal<ProxyState | null>(null);
+/** Bumped by the engine's "voice" events (AI voice setup and tasks): the AI Voice panel reloads. */
+export const voiceTick = signal(0);
 /** Bumped when previews of the same revision may look different (a proxy finished, proxies toggled). */
 export const viewGen = signal(0);
 export const fileBrowser = signal<null | { kind: "open" | "save" | "import" | "folder"; filter: string; resolve: (p: string[]) => void }>(null);
@@ -324,6 +326,8 @@ export function connectWS() {
       } else if (e.kind === "notice") {
         noticeShown = e.text;
         toast(e.text, true, 20000);
+      } else if (e.kind === "voice") {
+        voiceTick.value++;
       } else if (e.kind === "proxy") {
         viewGen.value++;
         refreshProxies();

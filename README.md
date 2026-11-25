@@ -269,6 +269,7 @@ up in History, and is something the AI can do too.
 | Effects & Presets | effects, transitions, animations, titles, looks, audio effects and sound FX, applied to the selection or at the playhead | `fx`, `tr`, `anim`, `title`, `sfx whoosh at=…` |
 | Brand Kit, Character, Align | the brand's font and colors with presets; type settings of the selected text; After Effects' Align panel | `brand bold`, `set t3 tracking=-2`, `align t3 left to=safe` |
 | Audio Track Mixer effect chains | click an effect to bypass it, ⚙ for its settings, ✕ to remove it | `afx A1.a2 off`, `afx A1.a2 ratio=4`, `afx master.a1 del` |
+| AI Voice | clone a voice from 3-10 s of speech (a clip's In/Out or a file) and speak scripts with it, using [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) on your own computer; finds the model by itself, or locates it or downloads it to the drive you pick; one clip per paragraph, imported into the Project panel and optionally placed at the playhead | `import 'narrator-hello.wav' tag=voice`, `note $ '…'`, `add … at=…` |
 
 Shortcuts follow Premiere Pro and After Effects: Space, I / O (work area, or In / Out in the Source monitor),
 `;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+←/→ nudge clips a frame, Ctrl+arrows

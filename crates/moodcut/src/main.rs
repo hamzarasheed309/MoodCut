@@ -29,6 +29,7 @@ pub mod setup;
 pub mod sfx;
 pub mod shell;
 pub mod tunnel;
+pub mod voice;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
