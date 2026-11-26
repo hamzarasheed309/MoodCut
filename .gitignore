@@ -6,3 +6,7 @@
 /out/
 *.log
 /dist/
+
+# Python bytecode (testing the OmniVoice worker locally)
+__pycache__/
+*.pyc
