@@ -3005,3 +3005,16 @@ input[type="checkbox"] {
 .vc-fix {
   margin-top: 4px;
 }
+.vc-current {
+  margin: 8px 10px 4px;
+}
+.vc-current .vc-task {
+  background: var(--panel-3);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+.vc-current .vc-task.running {
+  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.45);
+}
+.vc-queued {
+  margin: 3px 0 0 4px;
+}

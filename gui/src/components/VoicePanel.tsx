@@ -9,7 +9,18 @@ import { api } from "../gfx";
 import { mediaById, monitorTab, pickFiles, playhead, project, sourceIn, sourceMedia, sourceOut, sourceT, toast, voiceTick } from "../store";
 import { fmtNum } from "../util";
 
-type Install = { running: boolean; root: string; step: string; status: string; pct: number | null; log: string[]; error: string | null; hint: string | null; detail: string | null; done: boolean };
+type Install = {
+  running: boolean;
+  root: string;
+  step: string;
+  status: string;
+  pct: number | null;
+  log: string[];
+  error: string | null;
+  hint: string | null;
+  detail: string | null;
+  done: boolean;
+};
 type Task = {
   id: number;
   kind: "clone" | "generate" | "retranscribe";
@@ -21,18 +32,45 @@ type Task = {
   hint: string | null;
   fix: "retry" | "repair" | null;
   detail: string | null;
-  result: { media?: string[]; voice?: string; text?: string; ref_text?: string } | null;
+  result: {
+    media?: string[];
+    voice?: string;
+    text?: string;
+    ref_text?: string;
+  } | null;
   secs: number;
 };
-type Voice = { id: string; name: string; ref_text: string; source: string; dur: number; start?: number; auto?: boolean; typed?: boolean; denoise?: boolean; created: number };
+type Voice = {
+  id: string;
+  name: string;
+  ref_text: string;
+  source: string;
+  dur: number;
+  start?: number;
+  auto?: boolean;
+  typed?: boolean;
+  denoise?: boolean;
+  created: number;
+};
 type Status = {
   state: "missing" | "runtime" | "model" | "ready";
   root: string | null;
   model: string | null;
   python: string | null;
-  runtime: { torch?: string; device?: string; gpu?: string | null; omnivoice?: string; vram_gb?: number } | null;
+  runtime: {
+    torch?: string;
+    device?: string;
+    gpu?: string | null;
+    omnivoice?: string;
+    vram_gb?: number;
+  } | null;
   gpu: string | null;
-  worker: { loaded: boolean; device?: string; busy?: boolean; vram?: { used_gb?: number; total_gb?: number; peak_gb?: number } };
+  worker: {
+    loaded: boolean;
+    device?: string;
+    busy?: boolean;
+    vram?: { used_gb?: number; total_gb?: number; peak_gb?: number };
+  };
   install: Install;
   tasks: Task[];
   voices: Voice[];
@@ -40,14 +78,41 @@ type Status = {
   subdir: string;
   sizes: { model: number; runtime: number; whisper: number };
 };
-type Drive = { root: string; label: string; free: number | null; total: number | null; removable: boolean };
+type Drive = {
+  root: string;
+  label: string;
+  free: number | null;
+  total: number | null;
+  removable: boolean;
+};
 type Reload = (b?: Record<string, unknown>) => Promise<boolean>;
 
 const GB = 1e9;
 const gb = (b: number) => `${(b / GB).toFixed(b >= 10 * GB ? 0 : 1)} GB`;
 const clock = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : `${Math.round(s)} s`);
 
-const LANGUAGES = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Polish", "Russian", "Turkish", "Arabic", "Hindi", "Urdu", "Bengali", "Chinese", "Japanese", "Korean", "Vietnamese", "Indonesian", "Thai"];
+const LANGUAGES = [
+  "English",
+  "Spanish",
+  "French",
+  "German",
+  "Italian",
+  "Portuguese",
+  "Dutch",
+  "Polish",
+  "Russian",
+  "Turkish",
+  "Arabic",
+  "Hindi",
+  "Urdu",
+  "Bengali",
+  "Chinese",
+  "Japanese",
+  "Korean",
+  "Vietnamese",
+  "Indonesian",
+  "Thai",
+];
 const QUALITY: [string, string][] = [
   ["fast", "Fast (16 steps)"],
   ["standard", "Standard (32 steps)"],
@@ -84,6 +149,7 @@ export function VoicePanel() {
   const [st, setSt] = useState<Status | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
+  const [dismissed, setDismissed] = useState<number | null>(null);
 
   const load: Reload = async (body) => {
     const r = await voiceApi(body);
@@ -119,16 +185,23 @@ export function VoicePanel() {
     );
 
   const showSetup = st.install.running || setup || (st.install.error && st.state !== "ready");
+  // the task to show at the top: the one running, else the latest result until it is dismissed
+  const running = st.tasks.find((t) => t.state === "running");
+  const last = st.tasks[st.tasks.length - 1];
+  const current = running || (last && last.state !== "queued" && last.id !== dismissed ? last : undefined);
   return (
     <div class="scroll voice-panel">
       <Header st={st} onUnload={() => load({ action: "unload" })} />
       {st.state === "ready" && !st.install.running ? (
         <>
           <SetupNote st={st} reload={load} />
+          {current && (
+            <Current t={current} queued={st.tasks.filter((t) => t.state === "queued").length} reload={load} onDismiss={current.state === "running" ? undefined : () => setDismissed(current.id)} />
+          )}
           <CloneForm st={st} onSent={() => load()} />
           <Voices st={st} reload={load} />
           <GenerateForm st={st} onSent={() => load()} />
-          <Tasks st={st} reload={load} />
+          <Tasks st={st} reload={load} skip={current?.id} />
         </>
       ) : showSetup ? (
         <SetupForm st={st} reload={load} onClose={() => setSetup(false)} />
@@ -145,7 +218,10 @@ function Header({ st, onUnload }: { st: Status; onUnload: () => void }) {
   const vram = st.worker.vram;
   const chip =
     st.state === "ready" ? (
-      <span class={"vc-chip " + (onGpu ? "ok" : "warn")} title={[st.runtime?.gpu || dev || "", vram?.used_gb != null ? `GPU memory in use: ${vram.used_gb} of ${vram.total_gb} GB` : ""].filter(Boolean).join("\n")}>
+      <span
+        class={"vc-chip " + (onGpu ? "ok" : "warn")}
+        title={[st.runtime?.gpu || dev || "", vram?.used_gb != null ? `GPU memory in use: ${vram.used_gb} of ${vram.total_gb} GB` : ""].filter(Boolean).join("\n")}
+      >
         {onGpu ? `GPU${st.runtime?.gpu ? ` · ${st.runtime.gpu.replace(/^NVIDIA (GeForce )?/, "")}` : ""}` : "CPU (slower)"}
         {st.worker.loaded && !st.worker.busy ? " · loaded" : ""}
       </span>
@@ -269,7 +345,11 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: Reload; onClos
   useEffect(() => {
     if (inst.running) return;
     (async () => {
-      const r = await api<{ drives: Drive[]; need: number; suggested: string | null }>("/api/voice", { action: "drives" });
+      const r = await api<{
+        drives: Drive[];
+        need: number;
+        suggested: string | null;
+      }>("/api/voice", { action: "drives" });
       if (!r.ok) return toast(r.error, true);
       setDrives(r.drives);
       setNeed(r.need);
@@ -318,7 +398,8 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: Reload; onClos
       {inst.error && <Problem message={inst.error} hint={inst.hint} detail={inst.detail} />}
       <div class="vc-msg">
         <b>Where should OmniVoice go?</b> It needs about {gb(need || st.sizes.model + st.sizes.runtime)}
-        {st.state === "missing" ? ` (model ${gb(st.sizes.model)}, Python with PyTorch ${gb(st.sizes.runtime)})` : " (Python with PyTorch)"}, plus {gb(st.sizes.whisper)} later if you clone voices without typing their transcript.
+        {st.state === "missing" ? ` (model ${gb(st.sizes.model)}, Python with PyTorch ${gb(st.sizes.runtime)})` : " (Python with PyTorch)"}, plus {gb(st.sizes.whisper)} later if you clone voices
+        without typing their transcript.
       </div>
       <div class="vc-drives">
         {drives == null && <div class="hint">Reading drives…</div>}
@@ -366,8 +447,8 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: Reload; onClos
         </button>
       </div>
       <div class="hint">
-        MoodCut downloads the model from huggingface.co/{st.repo}, and Python with PyTorch{st.gpu ? ` (CUDA, for ${st.gpu})` : " (CPU)"} through uv, all into this folder: nothing is installed system-wide and the system drive stays free. The model weights are licensed
-        CC BY-NC 4.0 (non-commercial use) and its audio tokenizer under the Boson Higgs Audio 2 Community License.
+        MoodCut downloads the model from huggingface.co/{st.repo}, and Python with PyTorch{st.gpu ? ` (CUDA, for ${st.gpu})` : " (CPU)"} through uv, all into this folder: nothing is installed
+        system-wide and the system drive stays free. The model weights are licensed CC BY-NC 4.0 (non-commercial use) and its audio tokenizer under the Boson Higgs Audio 2 Community License.
       </div>
     </div>
   );
@@ -377,7 +458,11 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: Reload; onClos
 function Bar({ pct }: { pct: number | null }) {
   return (
     <div class={"progress vc-bar" + (pct == null ? " indet" : "")}>
-      <div style={{ width: pct == null ? "30%" : `${Math.max(2, Math.round(pct * 100))}%` }} />
+      <div
+        style={{
+          width: pct == null ? "30%" : `${Math.max(2, Math.round(pct * 100))}%`,
+        }}
+      />
     </div>
   );
 }
@@ -512,7 +597,12 @@ function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
                 : "Without an end, MoodCut picks the best 3-12 s of speech in the first 30 s, cut at pauses. "}
             One person speaking clearly without music works best; mark In and Out in the Source monitor to choose the part.
           </div>
-          <textarea rows={2} value={text} placeholder="What is said (optional: left empty, Whisper writes it and you can correct it later)" onInput={(ev) => setText((ev.target as HTMLTextAreaElement).value)} />
+          <textarea
+            rows={2}
+            value={text}
+            placeholder="What is said (optional: left empty, Whisper writes it and you can correct it later)"
+            onInput={(ev) => setText((ev.target as HTMLTextAreaElement).value)}
+          />
           <label class="vc-check" title="Lowers steady background noise (fans, hiss, street). Leave it off for clean studio audio: it can dull the voice.">
             <input type="checkbox" checked={denoise} onChange={(ev) => setDenoise((ev.target as HTMLInputElement).checked)} />
             Reduce background noise (phone and room recordings)
@@ -538,7 +628,11 @@ function Voices({ st, reload }: { st: Status; reload: Reload }) {
   if (!st.voices.length) return null;
   const fix = async (v: Voice) => {
     if (!draft.trim()) return toast("Type the words said in the reference", true);
-    const r = await api("/api/voice", { action: "retranscribe", voice: v.id, transcript: draft.trim() });
+    const r = await api("/api/voice", {
+      action: "retranscribe",
+      voice: v.id,
+      transcript: draft.trim(),
+    });
     if (!r.ok) return toast(r.error, true);
     setEditing(null);
     reload();
@@ -562,12 +656,21 @@ function Voices({ st, reload }: { st: Status; reload: Reload }) {
                 title="Rename"
                 onClick={() => {
                   const n = prompt("Voice name", v.name);
-                  if (n && n.trim() && n.trim() !== v.name) reload({ action: "rename_voice", id: v.id, name: n.trim() });
+                  if (n && n.trim() && n.trim() !== v.name)
+                    reload({
+                      action: "rename_voice",
+                      id: v.id,
+                      name: n.trim(),
+                    });
                 }}
               >
                 ✎
               </button>
-              <button class="btn sm ghost" title="Delete this voice (clips already generated stay)" onClick={() => confirm(`Delete the voice "${v.name}"?`) && reload({ action: "delete_voice", id: v.id })}>
+              <button
+                class="btn sm ghost"
+                title="Delete this voice (clips already generated stay)"
+                onClick={() => confirm(`Delete the voice "${v.name}"?`) && reload({ action: "delete_voice", id: v.id })}
+              >
                 ✕
               </button>
             </div>
@@ -628,7 +731,19 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
     store("mc.voice.last", vid);
     store("mc.voice.lang", language);
     store("mc.voice.quality", quality);
-    const r = await api("/api/voice", { action: "generate", voice: vid, text, language, speed, quality, takes, split, numbers, loudness: even, at: place ? playhead.value : undefined });
+    const r = await api("/api/voice", {
+      action: "generate",
+      voice: vid,
+      text,
+      language,
+      speed,
+      quality,
+      takes,
+      split,
+      numbers,
+      loudness: even,
+      at: place ? playhead.value : undefined,
+    });
     if (!r.ok) return toast(r.error, true);
     toast("Generating speech…");
     onSent();
@@ -661,9 +776,7 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
             if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) send();
           }}
         />
-        <div class="vc-faint vc-count">
-          {text.trim() ? `${text.trim().split(/\s+/).length} words · ${clips} clip${clips === 1 ? "" : "s"}` : ""}
-        </div>
+        <div class="vc-faint vc-count">{text.trim() ? `${text.trim().split(/\s+/).length} words · ${clips} clip${clips === 1 ? "" : "s"}` : ""}</div>
         <div class="row">
           <label>Language</label>
           <div class="ctl">
@@ -723,7 +836,8 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
         </label>
         <label class="vc-check">
           <input type="checkbox" checked={place} onChange={(ev) => setPlace((ev.target as HTMLInputElement).checked)} />
-          Also add to the timeline at the playhead{takes > 1 ? " (first take)" : ""}
+          Also add to the timeline at the playhead
+          {takes > 1 ? " (first take)" : ""}
         </label>
         <div class="btn-row">
           <button class="btn sm primary" disabled={!text.trim()} onClick={send} title="Ctrl+Enter">
@@ -736,9 +850,21 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
   );
 }
 
-function Tasks({ st, reload }: { st: Status; reload: Reload }) {
-  if (!st.tasks.length) return null;
-  const finished = st.tasks.some((t) => t.state === "done" || t.state === "error");
+/** The task running now (or the latest result), pinned under the header so progress and results
+ * are in view without scrolling to the Activity list. */
+function Current({ t, queued, reload, onDismiss }: { t: Task; queued: number; reload: Reload; onDismiss?: () => void }) {
+  return (
+    <div class="vc-current">
+      <TaskView t={t} reload={reload} onDismiss={onDismiss} />
+      {queued > 0 && <div class="vc-faint vc-queued">{queued} more waiting</div>}
+    </div>
+  );
+}
+
+function Tasks({ st, reload, skip }: { st: Status; reload: Reload; skip?: number }) {
+  const list = st.tasks.filter((t) => t.id !== skip);
+  if (!list.length) return null;
+  const finished = list.some((t) => t.state === "done" || t.state === "error");
   return (
     <>
       <div class="section-title vc-tasks-head">
@@ -750,68 +876,80 @@ function Tasks({ st, reload }: { st: Status; reload: Reload }) {
         )}
       </div>
       <div class="vc-tasks">
-        {[...st.tasks].reverse().map((t) => (
-          <div key={t.id} class={"vc-task " + t.state}>
-            <div class="vc-task-top">
-              <span class="vc-dot" />
-              <span class="vc-task-label" title={t.label}>
-                {t.label}
-              </span>
-              {(t.state === "queued" || t.state === "running") && (
-                <button class="btn sm ghost" title="Cancel" onClick={() => reload({ action: "cancel", id: t.id })}>
-                  ✕
-                </button>
-              )}
-            </div>
-            {t.state === "running" && (
-              <div class="vc-task-body">
-                <Bar pct={t.pct} />
-                <div class="vc-task-status">
-                  <span>{t.status}…</span>
-                  <span class="vc-faint">
-                    {t.pct != null ? `${Math.round(t.pct * 100)}% · ` : ""}
-                    {clock(t.secs)}
-                  </span>
-                </div>
-              </div>
-            )}
-            {t.state === "queued" && <div class="vc-task-status">{t.status}</div>}
-            {t.state === "done" && (
-              <div class="vc-task-status">
-                {t.status}
-                {t.secs > 0 ? <span class="vc-faint"> · {clock(t.secs)}</span> : null}
-              </div>
-            )}
-            {t.state === "error" && (
-              <div class="vc-task-body">
-                {t.error === "Cancelled." ? (
-                  <div class="vc-task-status">Cancelled.</div>
-                ) : (
-                  <Problem message={t.error || "Failed."} hint={t.hint} detail={t.detail}>
-                    {t.fix === "repair" && (
-                      <button class="btn sm primary" onClick={() => reload({ action: "repair" })}>
-                        Repair
-                      </button>
-                    )}
-                    <button class={"btn sm" + (t.fix === "retry" ? " primary" : "")} onClick={() => reload({ action: "retry", id: t.id })}>
-                      Retry
-                    </button>
-                  </Problem>
-                )}
-              </div>
-            )}
-            {t.result?.media?.length ? (
-              <div class="vc-task-media">
-                {t.result.media.map((id) => (
-                  <button key={id} class="btn sm" title="Open in the Source monitor to listen" onClick={() => openInSource(id)}>
-                    ▶ {mediaById.value.get(id)?.name || id}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+        {[...list].reverse().map((t) => (
+          <TaskView key={t.id} t={t} reload={reload} />
         ))}
       </div>
     </>
+  );
+}
+
+/** One clone or speech task: its progress while it runs, then its result or its explained error. */
+function TaskView({ t, reload, onDismiss }: { t: Task; reload: Reload; onDismiss?: () => void }) {
+  return (
+    <div class={"vc-task " + t.state}>
+      <div class="vc-task-top">
+        <span class="vc-dot" />
+        <span class="vc-task-label" title={t.label}>
+          {t.label}
+        </span>
+        {(t.state === "queued" || t.state === "running") && (
+          <button class="btn sm ghost" title="Cancel" onClick={() => reload({ action: "cancel", id: t.id })}>
+            ✕
+          </button>
+        )}
+        {onDismiss && (
+          <button class="btn sm ghost" title="Hide (it stays in Activity)" onClick={onDismiss}>
+            ✕
+          </button>
+        )}
+      </div>
+      {t.state === "running" && (
+        <div class="vc-task-body">
+          <Bar pct={t.pct} />
+          <div class="vc-task-status">
+            <span>{t.status}…</span>
+            <span class="vc-faint">
+              {t.pct != null ? `${Math.round(t.pct * 100)}% · ` : ""}
+              {clock(t.secs)}
+            </span>
+          </div>
+        </div>
+      )}
+      {t.state === "queued" && <div class="vc-task-status">{t.status}</div>}
+      {t.state === "done" && (
+        <div class="vc-task-status">
+          {t.status}
+          {t.secs > 0 ? <span class="vc-faint"> · {clock(t.secs)}</span> : null}
+        </div>
+      )}
+      {t.state === "error" && (
+        <div class="vc-task-body">
+          {t.error === "Cancelled." ? (
+            <div class="vc-task-status">Cancelled.</div>
+          ) : (
+            <Problem message={t.error || "Failed."} hint={t.hint} detail={t.detail}>
+              {t.fix === "repair" && (
+                <button class="btn sm primary" onClick={() => reload({ action: "repair" })}>
+                  Repair
+                </button>
+              )}
+              <button class={"btn sm" + (t.fix === "retry" ? " primary" : "")} onClick={() => reload({ action: "retry", id: t.id })}>
+                Retry
+              </button>
+            </Problem>
+          )}
+        </div>
+      )}
+      {t.result?.media?.length ? (
+        <div class="vc-task-media">
+          {t.result.media.map((id) => (
+            <button key={id} class="btn sm" title="Open in the Source monitor to listen" onClick={() => openInSource(id)}>
+              ▶ {mediaById.value.get(id)?.name || id}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
