@@ -306,12 +306,12 @@ fn run_tasks(eng: Arc<Engine>) {
         CANCEL_TASK.store(false, Ordering::Relaxed);
         notify(&eng, "voice task started");
         let t0 = Instant::now();
+        // no fraction (loading the model, a one-time update, a repair): the editor shows a
+        // moving bar with the stage and the seconds, not a number that seems stuck
         let report = move |pct: Option<f64>, m: String| {
             if let Some(t) = shared().lock().tasks.iter_mut().find(|t| t.id == id) {
                 t.status = m;
-                if let Some(p) = pct {
-                    t.pct = Some((p.clamp(0.0, 1.0) * 1000.0).round() / 1000.0);
-                }
+                t.pct = pct.map(|p| (p.clamp(0.0, 1.0) * 1000.0).round() / 1000.0);
             }
         };
         let f = found();
@@ -519,7 +519,7 @@ fn generate(eng: &Engine, f: &Found, req: &Value, report: Report) -> Result<Valu
                 (false, true) => format!("take {} of {takes}: ", k + 1),
                 _ => String::new(),
             };
-            let step = |pp: Option<f64>, m: String| report(Some((n + pp.unwrap_or(0.0)) / total * 0.97), format!("{what}{m}"));
+            let step = |pp: Option<f64>, m: String| report(pp.map(|pp| (n + pp) / total * 0.97), format!("{what}{m}"));
             let seed = base_seed + k as u64;
             let stem = format!("{}-{}{}", slug(&vname, 20), slug(&first_words(p, 5), 32), if takes > 1 { format!("-take{}", k + 1) } else { String::new() });
             let out = unique_path(&dir, &stem, "wav");
