@@ -411,12 +411,12 @@ function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
             <label>From / to (s)</label>
             <div class="ctl">
               <input type="number" min="0" step="0.1" value={start} placeholder="0" onInput={(ev) => setStart((ev.target as HTMLInputElement).value)} />
-              <input type="number" min="0" step="0.1" value={end} placeholder="+15" onInput={(ev) => setEnd((ev.target as HTMLInputElement).value)} />
+              <input type="number" min="0" step="0.1" value={end} placeholder="+10" onInput={(ev) => setEnd((ev.target as HTMLInputElement).value)} />
             </div>
             <span />
           </div>
           <div class="hint">
-            {len != null ? `${fmtNum(len, 1)} s of reference. ` : "Without an end, the first 15 s are used. "}
+            {len != null ? `${fmtNum(len, 1)} s of reference. ` : "Without an end, the first 10 s are used. "}
             3 to 10 seconds of one person speaking clearly, without music, works best. Mark In and Out in the Source monitor to pick them.
           </div>
           <textarea rows={2} value={text} placeholder="What is said in the reference (optional: left empty, it is transcribed with Whisper, a one-time 1.6 GB download)" onInput={(ev) => setText((ev.target as HTMLTextAreaElement).value)} />

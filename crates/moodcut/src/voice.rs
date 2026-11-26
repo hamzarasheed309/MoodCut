@@ -57,6 +57,8 @@ const WHISPER_BYTES: u64 = 1_620_000_000;
 const IDLE_UNLOAD: Duration = Duration::from_secs(600);
 /// Reference audio longer than this is cut (3-10 s works best).
 const MAX_REF_SECS: f64 = 20.0;
+/// Used when no end is given: longer references cost GPU memory and add little.
+const DEFAULT_REF_SECS: f64 = 10.0;
 
 /// The files of the model repo: (path, approximate size, required).
 const MODEL_FILES: &[(&str, u64, bool)] = &[
@@ -958,13 +960,16 @@ fn write_worker(root: &Path) -> Result<()> {
 // ---------------------------------------------------------------- the worker process
 
 fn worker_command(py: &Path, root: &Path) -> Command {
-    let mut c = command(py);
+    // below-normal priority: the editor and Windows stay responsive while it speaks
+    let mut c = crate::render::ffmpeg::background_command(py);
     c.env("HF_HOME", root.join("hf"))
         .env("HF_HUB_DISABLE_TELEMETRY", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .env("PYTHONUNBUFFERED", "1")
         .env("TOKENIZERS_PARALLELISM", "false")
+        // less fragmentation on small GPUs (6 GB laptop cards)
+        .env("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         .env_remove("PYTHONHOME")
         .env_remove("PYTHONPATH")
         .current_dir(root);
@@ -1325,7 +1330,7 @@ fn clone_voice(eng: &Engine, f: &Found, req: &Value, status: &dyn Fn(String)) ->
     }
     let start = req["start"].as_f64().unwrap_or(0.0).max(0.0);
     let end = req["end"].as_f64().filter(|e| *e > start);
-    let len = end.map(|e| e - start).unwrap_or(MAX_REF_SECS).min(MAX_REF_SECS);
+    let len = end.map(|e| e - start).unwrap_or(DEFAULT_REF_SECS).min(MAX_REF_SECS);
     if len < 1.0 {
         bail!("the reference is too short: use 3 to 10 seconds of clear speech");
     }

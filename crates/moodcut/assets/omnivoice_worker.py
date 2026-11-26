@@ -78,8 +78,51 @@ def serve(model_dir, device):
     # half precision on GPUs; the CPU needs float32
     dtype = torch.float32 if device == "cpu" else torch.float16
     t0 = time.time()
-    model = OmniVoice.from_pretrained(model_dir, device_map=device, dtype=dtype)
+    on_gpu = device != "cpu"
+    # Be gentle with the computer: leave two CPU cores for the editor and Windows, and keep
+    # PyTorch inside the card's own memory. Past that cap it stops with "out of memory" right
+    # away instead of spilling into shared system memory, which thrashes RAM and disk for minutes.
+    try:
+        torch.set_num_threads(max(1, (os.cpu_count() or 4) - 2))
+    except Exception:
+        pass
+    if device.startswith("cuda") and torch.cuda.is_available():
+        try:
+            torch.cuda.set_per_process_memory_fraction(0.92, torch.device(device).index or 0)
+        except Exception:
+            pass
+    try:
+        # Whisper (only used to transcribe a reference) stays on the CPU: on a 6 GB card it would
+        # otherwise sit next to OmniVoice and push the GPU out of memory
+        model = OmniVoice.from_pretrained(model_dir, device_map=device, dtype=dtype, asr_device="cpu")
+    except TypeError:
+        model = OmniVoice.from_pretrained(model_dir, device_map=device, dtype=dtype)
+    # inference only: no gradients, so no activations are kept for a backward pass
+    model.eval()
+    try:
+        model.requires_grad_(False)
+    except Exception:
+        pass
+    torch.set_grad_enabled(False)
     sr = int(getattr(model, "sampling_rate", 24000) or 24000)
+
+    def free():
+        if on_gpu and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def run(fn):
+        """Runs fn without autograd; after running out of GPU memory, frees the cache and tries once more."""
+        try:
+            with torch.inference_mode():
+                return fn()
+        except Exception as e:
+            if "out of memory" not in str(e).lower():
+                raise
+            free()
+            with torch.inference_mode():
+                return fn()
+        finally:
+            free()
     reply(ready=True, device=device, sr=sr, load_s=round(time.time() - t0, 1))
 
     prompts = {}  # path -> (mtime, VoiceClonePrompt)
@@ -109,8 +152,15 @@ def serve(model_dir, device):
             if op == "ping":
                 reply(id=rid, ok=True)
             elif op == "clone":
-                prompt = model.create_voice_clone_prompt(ref_audio=req["ref_audio"], ref_text=req.get("ref_text") or None)
+                prompt = run(lambda: model.create_voice_clone_prompt(ref_audio=req["ref_audio"], ref_text=req.get("ref_text") or None))
                 prompt.save(req["out"])
+                # Whisper isn't needed again until the next clone: give its memory back
+                if getattr(model, "_asr_pipe", None) is not None:
+                    model._asr_pipe = None
+                    import gc
+
+                    gc.collect()
+                    free()
                 reply(id=rid, ok=True, ref_text=getattr(prompt, "ref_text", None) or "", secs=round(time.time() - t0, 1))
             elif op == "generate":
                 kw = {}
@@ -124,7 +174,7 @@ def serve(model_dir, device):
                     kw["speed"] = float(req["speed"])
                 if req.get("num_step"):
                     kw["num_step"] = int(req["num_step"])
-                audio = model.generate(text=req["text"], **kw)
+                audio = run(lambda: model.generate(text=req["text"], **kw))
                 wav = audio[0]
                 sf.write(req["out"], wav, sr)
                 reply(id=rid, ok=True, dur=round(len(wav) / float(sr), 3), secs=round(time.time() - t0, 1))
@@ -134,10 +184,9 @@ def serve(model_dir, device):
             traceback.print_exc()
             msg = str(e) or e.__class__.__name__
             if "out of memory" in msg.lower():
-                msg += " (the GPU ran out of memory: close other GPU apps, or generate shorter paragraphs)"
+                msg += " (the GPU ran out of memory: close other GPU apps, use a shorter reference (5-10 s) or shorter paragraphs)"
             reply(id=rid, ok=False, error=msg)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            free()
 
 
 def main():
