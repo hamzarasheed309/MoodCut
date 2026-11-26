@@ -1,10 +1,10 @@
 <!-- replaces-older-releases -->
-MoodCut 1.3.0 makes AI Voice clearer, more reliable and better sounding, and lets AI apps use it too.
+MoodCut 1.3.1 makes AI Voice clearer, more reliable and better sounding, and lets AI apps use it too.
 
 ## Download
 
 - **`MoodCut-Setup-x64.exe`**: the installer (recommended). No admin rights needed. FFmpeg is included.
-- **`MoodCut-v1.3.0-windows-x64-portable.zip`**: unzip anywhere and run `MoodCutApp.exe`. FFmpeg is in the zip's
+- **`MoodCut-v1.3.1-windows-x64-portable.zip`**: unzip anywhere and run `MoodCutApp.exe`. FFmpeg is in the zip's
   `ffmpeg` folder.
 - `moodcut-linux-x64.tar.gz`: the Linux command line and MCP server (FFmpeg from your package manager).
 - `SHA256SUMS.txt`: checksums of every file.
