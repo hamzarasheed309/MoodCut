@@ -49,6 +49,11 @@ pub const DEFAULT_SUBDIR: &str = if cfg!(windows) { "MoodCut\\OmniVoice" } else 
 const PYTHON_VERSION: &str = "3.12";
 /// The PyTorch OmniVoice is tested with (its own uv constraint).
 const TORCH: [&str; 2] = ["torch==2.8.0", "torchaudio==2.8.0"];
+/// Packages beside omnivoice: soundfile writes the WAVs, num2words reads numbers as words.
+const EXTRAS: &[&str] = &["soundfile", "num2words"];
+/// Bumped when a MoodCut version needs more in the environment; older setups are updated once
+/// when the worker starts (`worker::ensure_current`).
+const RUNTIME_REV: u64 = 2;
 /// Approximate download sizes, for the editor and the free-space check.
 const MODEL_BYTES: u64 = 3_270_000_000;
 const RUNTIME_BYTES: u64 = 6_500_000_000;
@@ -57,8 +62,10 @@ const WHISPER_BYTES: u64 = 1_620_000_000;
 const IDLE_UNLOAD: Duration = Duration::from_secs(600);
 /// Reference audio longer than this is cut (3-10 s works best).
 const MAX_REF_SECS: f64 = 20.0;
-/// Used when no end is given: longer references cost GPU memory and add little.
-const DEFAULT_REF_SECS: f64 = 10.0;
+
+mod tasks;
+mod worker;
+pub use tasks::mcp_tool;
 
 /// The files of the model repo: (path, approximate size, required).
 const MODEL_FILES: &[(&str, u64, bool)] = &[
@@ -232,6 +239,16 @@ pub fn drives() -> Vec<Drive> {
     home_dir().map(|h| Drive { root: h.to_string_lossy().to_string(), label: "Home".into(), free: free_space(&h), total: None, removable: false }).into_iter().collect()
 }
 
+/// A drive as people write it (`D`, `D:`, `D:\`) as its root folder; other text is a path.
+fn drive_root(d: &str) -> PathBuf {
+    let d = d.trim();
+    let letter = d.trim_end_matches(|c: char| c == '\\' || c == '/').trim_end_matches(':');
+    if cfg!(windows) && letter.len() == 1 && letter.chars().all(|c| c.is_ascii_alphabetic()) {
+        return PathBuf::from(format!("{}:\\", letter.to_ascii_uppercase()));
+    }
+    PathBuf::from(d)
+}
+
 /// Free bytes on the drive holding `p` (or the nearest existing folder above it).
 #[cfg(windows)]
 pub fn free_space(p: &Path) -> Option<u64> {
@@ -359,7 +376,10 @@ struct Install {
     /// 0-100 for downloads with a known size.
     pct: Option<f64>,
     log: VecDeque<String>,
+    /// What went wrong, in plain words, and what to do about it; `detail` is the technical text.
     error: Option<String>,
+    hint: Option<String>,
+    detail: Option<String>,
     done: bool,
 }
 
@@ -368,13 +388,24 @@ struct Task {
     id: u64,
     kind: &'static str,
     label: String,
+    /// queued, running, done or error
     state: &'static str,
+    /// What is happening now (or the result once done).
     status: String,
+    /// 0..1 while running, when it is known.
+    pct: Option<f64>,
+    /// A failure explained: what happened, what to do, which button helps ("retry", "repair").
     error: Option<String>,
+    hint: Option<String>,
+    fix: Option<&'static str>,
+    detail: Option<String>,
     result: Option<Value>,
+    /// Seconds it took (counting while it runs).
     secs: f64,
     #[serde(skip)]
     req: Value,
+    #[serde(skip)]
+    started: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -465,24 +496,29 @@ pub fn api(eng: &Arc<Engine>, a: &Value) -> Result<Value> {
         "install" => {
             let root = match (a["folder"].as_str().filter(|s| !s.trim().is_empty()), a["drive"].as_str().filter(|s| !s.trim().is_empty())) {
                 (Some(f), _) => PathBuf::from(f.trim()),
-                (None, Some(d)) => PathBuf::from(d.trim()).join(DEFAULT_SUBDIR),
+                (None, Some(d)) => drive_root(d).join(DEFAULT_SUBDIR),
                 (None, None) => found().root.ok_or_else(|| anyhow!("pick a drive to install OmniVoice on"))?,
             };
-            start_install(eng.clone(), root)?;
+            start_install(eng.clone(), root, false)?;
+        }
+        "repair" => {
+            // runs the setup steps again over what is there: fixes a moved folder and missing
+            // packages; the model isn't downloaded again
+            let root = found().root.ok_or_else(|| anyhow!("OmniVoice has no install folder yet: choose Download"))?;
+            start_install(eng.clone(), root, true)?;
         }
         "cancel_install" => CANCEL_INSTALL.store(true, Ordering::Relaxed),
-        "clone" | "generate" => {
-            let f = found();
-            if !f.ready() {
-                bail!("OmniVoice isn't set up yet");
-            }
-            let label = if action == "clone" {
-                format!("Clone voice \"{}\"", a["name"].as_str().unwrap_or("voice").trim())
-            } else {
-                let text = a["text"].as_str().unwrap_or("").trim();
-                format!("Speak \"{}\"", first_words(text, 8))
-            };
-            enqueue(eng.clone(), if action == "clone" { "clone" } else { "generate" }, label, a.clone());
+        "clone" => {
+            tasks::submit(eng, "clone", a)?;
+        }
+        "generate" | "speak" => {
+            tasks::submit(eng, "generate", a)?;
+        }
+        "retranscribe" => {
+            tasks::submit(eng, "retranscribe", a)?;
+        }
+        "retry" => {
+            tasks::retry(eng, a["id"].as_u64().ok_or_else(|| anyhow!("which task?"))?)?;
         }
         "cancel" => {
             let id = a["id"].as_u64();
@@ -492,7 +528,8 @@ pub fn api(eng: &Arc<Engine>, a: &Value) -> Result<Value> {
                     match t.state {
                         "queued" => {
                             t.state = "error";
-                            t.error = Some("cancelled".into());
+                            t.status = "cancelled".into();
+                            t.error = Some("Cancelled.".into());
                         }
                         "running" => CANCEL_TASK.store(true, Ordering::Relaxed),
                         _ => {}
@@ -504,7 +541,7 @@ pub fn api(eng: &Arc<Engine>, a: &Value) -> Result<Value> {
         "delete_voice" => {
             let id = a["id"].as_str().unwrap_or("");
             let root = found().root.ok_or_else(|| anyhow!("no OmniVoice folder"))?;
-            if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            if !tasks::valid_id(id) {
                 bail!("bad voice id");
             }
             let dir = voices_dir(&root).join(id);
@@ -516,14 +553,17 @@ pub fn api(eng: &Arc<Engine>, a: &Value) -> Result<Value> {
             let root = found().root.ok_or_else(|| anyhow!("no OmniVoice folder"))?;
             let id = a["id"].as_str().unwrap_or("");
             let name = a["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| anyhow!("name required"))?;
-            let mut v = load_voice(&root, id)?;
+            let (id, mut v) = tasks::resolve_voice(&root, id)?;
             v["name"] = json!(name);
-            std::fs::write(voices_dir(&root).join(id).join("voice.json"), serde_json::to_string_pretty(&v)?)?;
+            if let Some(o) = v.as_object_mut() {
+                o.remove("id");
+            }
+            std::fs::write(voices_dir(&root).join(&id).join("voice.json"), serde_json::to_string_pretty(&v)?)?;
         }
         "unload" => {
             // not while it is speaking (that is what Cancel is for)
-            if let Some(mut w) = worker_slot().0.try_lock() {
-                *w = None;
+            if !worker::unload() {
+                bail!("OmniVoice is busy: cancel the task first");
             }
         }
         other => bail!("unknown action '{other}'"),
@@ -533,12 +573,17 @@ pub fn api(eng: &Arc<Engine>, a: &Value) -> Result<Value> {
 
 fn status() -> Value {
     let f = found();
-    let (install, tasks) = {
+    let (install, mut task_list) = {
         let s = shared().lock();
         (s.install.clone(), s.tasks.clone())
     };
-    let voices = f.root.as_deref().map(list_voices).unwrap_or_default();
-    let worker = worker_slot().summary();
+    for t in task_list.iter_mut() {
+        if let Some(st) = t.started {
+            t.secs = (st.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        }
+    }
+    let voices = f.root.as_deref().map(tasks::list_voices).unwrap_or_default();
+    let worker = worker::summary();
     json!({
         "ok": true,
         "state": f.state(),
@@ -549,7 +594,7 @@ fn status() -> Value {
         "gpu": gpu().map(|g| g.0.clone()),
         "worker": worker,
         "install": install,
-        "tasks": tasks,
+        "tasks": task_list,
         "voices": voices,
         "repo": REPO,
         "subdir": DEFAULT_SUBDIR,
@@ -593,7 +638,7 @@ fn need_bytes(f: &Found, root: Option<&Path>) -> u64 {
     need
 }
 
-fn start_install(eng: Arc<Engine>, root: PathBuf) -> Result<()> {
+fn start_install(eng: Arc<Engine>, root: PathBuf, repair: bool) -> Result<()> {
     if !root.is_absolute() {
         bail!("pick a full folder path, like D:\\{DEFAULT_SUBDIR}");
     }
@@ -602,11 +647,11 @@ fn start_install(eng: Arc<Engine>, root: PathBuf) -> Result<()> {
         if s.install.running {
             bail!("OmniVoice is already being set up in {}", s.install.root);
         }
-        s.install = Install { running: true, root: root.to_string_lossy().to_string(), step: "starting".into(), status: "starting".into(), ..Default::default() };
+        s.install = Install { running: true, root: root.to_string_lossy().to_string(), step: if repair { "Repairing".into() } else { "starting".into() }, status: "starting".into(), ..Default::default() };
     }
     CANCEL_INSTALL.store(false, Ordering::Relaxed);
     std::thread::spawn(move || {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&eng, &root))).unwrap_or_else(|p| Err(anyhow!("internal error: {}", crate::engine::panic_message(&*p))));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| install(&eng, &root, repair))).unwrap_or_else(|p| Err(anyhow!("internal error: {}", crate::engine::panic_message(&*p))));
         rescan();
         let msg = {
             let mut s = shared().lock();
@@ -618,9 +663,18 @@ fn start_install(eng: Arc<Engine>, root: PathBuf) -> Result<()> {
                     s.install.step = "ready".into();
                     s.install.status = "OmniVoice is ready".into();
                 }
+                Err(_) if CANCEL_INSTALL.load(Ordering::Relaxed) => {
+                    s.install.error = Some("Cancelled.".into());
+                    s.install.hint = Some("Start it again to continue where it stopped.".into());
+                }
                 Err(e) => {
-                    let e = if CANCEL_INSTALL.load(Ordering::Relaxed) { "cancelled: press Install to continue where it stopped".to_string() } else { format!("{e:#}") };
-                    s.install.error = Some(e);
+                    let x = tasks::explain(e);
+                    // a recognized problem gets its plain explanation; otherwise setup's own
+                    // message (free space, which download failed) says more than a generic one
+                    let generic = x.hint.as_deref().is_some_and(|h| h.starts_with("Press Retry. If it keeps"));
+                    s.install.error = Some(if generic { format!("{e:#}") } else { x.message });
+                    s.install.hint = x.hint.filter(|_| !generic).map(|h| h.replace("Press Retry", "Try again").replace("press Retry", "try again").replace("Press Repair", "Try again"));
+                    s.install.detail = Some(x.detail);
                 }
             }
             s.install.status.clone()
@@ -630,7 +684,9 @@ fn start_install(eng: Arc<Engine>, root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn install(eng: &Engine, root: &Path) -> Result<()> {
+/// Sets up (or, with `repair`, checks and fixes) OmniVoice in `root`. What is already there is
+/// kept, so a cancelled setup continues and a repair downloads only what is missing.
+fn install(eng: &Engine, root: &Path, repair: bool) -> Result<()> {
     std::fs::create_dir_all(root).with_context(|| format!("creating {}", root.display()))?;
     let before = rescan();
     // a model found elsewhere is used where it is; otherwise it goes into the install folder
@@ -654,12 +710,12 @@ fn install(eng: &Engine, root: &Path) -> Result<()> {
         download_model(&model_dir)?;
         save(Some(root), Some(&model_dir));
     }
-    if runtime_of(root).is_none() {
+    // the environment changes under a running worker: start a new one next time
+    worker::stop();
+    if repair || runtime_of(root).is_none() {
         setup_runtime(root)?;
     }
     write_worker(root)?;
-    // the environment changed under a running worker: start a new one next time
-    stop_worker();
     // the uv cache: archives already linked into the environment
     let _ = std::fs::remove_dir_all(root.join("cache"));
     save(Some(root), Some(&model_dir));
@@ -851,7 +907,8 @@ fn setup_runtime(root: &Path) -> Result<()> {
     let uv = ensure_uv(root)?;
     let py = env_python(root);
     set_step(&format!("Installing Python {PYTHON_VERSION}"), None);
-    run_logged(uv_command(root, &uv).args(["python", "install", PYTHON_VERSION]), "installing Python", None)?;
+    // only into the install folder: no copy in ~/.local/bin, no Windows registry entry
+    run_logged(uv_command(root, &uv).args(["python", "install", PYTHON_VERSION, "--no-bin", "--no-registry"]), "installing Python", None)?;
     run_logged(uv_command(root, &uv).arg("venv").arg(root.join("env")).args(["--python", PYTHON_VERSION, "--allow-existing"]), "creating the environment", None)?;
     let mut torch = uv_command(root, &uv);
     torch.args(["pip", "install", "--python"]).arg(&py).args(TORCH);
@@ -864,19 +921,28 @@ fn setup_runtime(root: &Path) -> Result<()> {
     }
     run_logged(&mut torch, "installing PyTorch", Some(&root.join("cache")))?;
     set_step("Installing OmniVoice", None);
-    run_logged(uv_command(root, &uv).args(["pip", "install", "--python"]).arg(&py).args(["omnivoice", "soundfile"]), "installing omnivoice", Some(&root.join("cache")))?;
+    run_logged(uv_command(root, &uv).args(["pip", "install", "--python"]).arg(&py).arg("omnivoice").args(EXTRAS), "installing omnivoice", Some(&root.join("cache")))?;
     set_step("Checking the installation", None);
     write_worker(root)?;
-    let out = worker_command(&py, root).arg(root.join(WORKER_FILE)).arg("--check").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().context("starting Python")?;
-    let reply = String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix("@@MC ").and_then(|j| serde_json::from_str::<Value>(j).ok()));
+    let run = |flag: &str| -> Result<(Option<Value>, String)> {
+        let out = worker::worker_command(&py, root).arg(root.join(WORKER_FILE)).arg(flag).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).output().context("starting Python")?;
+        let reply = String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix("@@MC ").and_then(|j| serde_json::from_str::<Value>(j).ok()));
+        Ok((reply, String::from_utf8_lossy(&out.stderr).to_string()))
+    };
+    let (reply, err) = run("--check")?;
     match reply {
-        Some(v) if v["ok"] == true => {
+        Some(mut v) if v["ok"] == true => {
             log_line(&format!("PyTorch {} on {}{}", v["torch"].as_str().unwrap_or("?"), v["device"].as_str().unwrap_or("?"), v["gpu"].as_str().map(|g| format!(" ({g})")).unwrap_or_default()));
+            // the worker's own audio and text helpers, without the model
+            match run("--selftest")? {
+                (Some(t), _) if t["ok"] == true => log_line("self-test passed"),
+                (t, e) => bail!("OmniVoice's self-test failed: {}", t.and_then(|t| t["error"].as_str().map(str::to_string)).unwrap_or_else(|| e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no reply").to_string())),
+            }
+            v["moodcut_rev"] = json!(RUNTIME_REV);
             std::fs::write(ready_marker(root), serde_json::to_string_pretty(&v)?)?;
             Ok(())
         }
         other => {
-            let err = String::from_utf8_lossy(&out.stderr).to_string();
             let why = other.and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_else(|| err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no reply").to_string());
             bail!("OmniVoice was installed but doesn't start: {why}")
         }
@@ -957,489 +1023,9 @@ fn write_worker(root: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------- the worker process
-
-fn worker_command(py: &Path, root: &Path) -> Command {
-    // below-normal priority: the editor and Windows stay responsive while it speaks
-    let mut c = crate::render::ffmpeg::background_command(py);
-    c.env("HF_HOME", root.join("hf"))
-        .env("HF_HUB_DISABLE_TELEMETRY", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        .env("PYTHONUTF8", "1")
-        .env("PYTHONUNBUFFERED", "1")
-        .env("TOKENIZERS_PARALLELISM", "false")
-        // less fragmentation on small GPUs (6 GB laptop cards)
-        .env("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-        .env_remove("PYTHONHOME")
-        .env_remove("PYTHONPATH")
-        .current_dir(root);
-    c
-}
-
-struct Worker {
-    child: Child,
-    stdin: ChildStdin,
-    rx: mpsc::Receiver<Value>,
-    err: Arc<Mutex<VecDeque<String>>>,
-    key: String,
-    device: String,
-    last: Instant,
-    next_id: u64,
-}
-
-impl Worker {
-    fn alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
-    }
-    fn stderr_tail(&self) -> String {
-        let e = self.err.lock();
-        let lines: Vec<&str> = e.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-        // the exception line of a traceback says the most
-        lines.iter().rev().find(|l| l.contains("Error") || l.contains("error")).or(lines.last()).map(|s| s.to_string()).unwrap_or_default()
-    }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-struct WorkerSlot(Mutex<Option<Worker>>);
-
-impl WorkerSlot {
-    /// What the editor shows: whether a model is loaded and on which device.
-    fn summary(&self) -> Value {
-        match self.0.try_lock() {
-            Some(mut g) => {
-                let alive = g.as_mut().is_some_and(|w| w.alive());
-                match g.as_ref() {
-                    Some(w) if alive => json!({"loaded": true, "device": w.device, "idle_s": w.last.elapsed().as_secs()}),
-                    _ => json!({"loaded": false}),
-                }
-            }
-            // busy with a request
-            None => json!({"loaded": true, "busy": true}),
-        }
-    }
-}
-
-fn worker_slot() -> &'static WorkerSlot {
-    static W: OnceLock<WorkerSlot> = OnceLock::new();
-    W.get_or_init(|| {
-        // unload after a while without work, so the GPU memory comes back
-        std::thread::spawn(|| loop {
-            std::thread::sleep(Duration::from_secs(30));
-            if let Some(mut g) = worker_slot().0.try_lock() {
-                if g.as_ref().is_some_and(|w| w.last.elapsed() > IDLE_UNLOAD) {
-                    *g = None;
-                }
-            }
-        });
-        WorkerSlot(Mutex::new(None))
-    })
-}
-
-pub fn stop_worker() {
-    *worker_slot().0.lock() = None;
-}
-
-fn start_worker(f: &Found, status: &dyn Fn(String)) -> Result<Worker> {
-    let py = f.python.clone().ok_or_else(|| anyhow!("OmniVoice's Python environment isn't set up"))?;
-    let model = f.model.clone().ok_or_else(|| anyhow!("the OmniVoice model wasn't found"))?;
-    let root = f.root.clone().unwrap_or_else(|| crate::config::ensure_data_dir().join("omnivoice"));
-    std::fs::create_dir_all(&root)?;
-    write_worker(&root)?;
-    status("loading the OmniVoice model (takes a moment the first time)".into());
-    let mut cmd = worker_command(&py, &root);
-    cmd.arg(root.join(WORKER_FILE)).arg("--model").arg(&model);
-    if let Ok(d) = std::env::var("MOODCUT_OMNIVOICE_DEVICE") {
-        cmd.args(["--device", &d]);
-    }
-    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().with_context(|| format!("starting {}", py.display()))?;
-    let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
-    let stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
-    let (tx, rx) = mpsc::channel::<Value>();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-            if let Some(v) = line.strip_prefix("@@MC ").and_then(|j| serde_json::from_str::<Value>(j).ok()) {
-                if tx.send(v).is_err() {
-                    break;
-                }
-            }
-        }
-    });
-    let err = Arc::new(Mutex::new(VecDeque::<String>::new()));
-    let err2 = err.clone();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(|l| l.ok()) {
-            let mut e = err2.lock();
-            e.push_back(line);
-            if e.len() > 60 {
-                e.pop_front();
-            }
-        }
-    });
-    let mut w = Worker { child, stdin, rx, err, key: format!("{}|{}", py.display(), model.display()), device: String::new(), last: Instant::now(), next_id: 1 };
-    // loading 3 GB from a hard disk and starting CUDA can take minutes
-    let deadline = Instant::now() + Duration::from_secs(900);
-    loop {
-        if CANCEL_TASK.load(Ordering::Relaxed) {
-            bail!("cancelled");
-        }
-        match w.rx.recv_timeout(Duration::from_millis(400)) {
-            Ok(v) if v["ready"] == true => {
-                w.device = v["device"].as_str().unwrap_or("").to_string();
-                return Ok(w);
-            }
-            Ok(v) if v["ready"] == false => bail!("OmniVoice didn't load: {}", v["error"].as_str().unwrap_or("unknown error")),
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => bail!("OmniVoice took too long to load"),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(Duration::from_millis(300));
-                bail!("OmniVoice stopped while loading: {}", w.stderr_tail());
-            }
-        }
-    }
-}
-
-/// Sends one request to the worker (starting it when needed) and waits for its reply.
-fn request(f: &Found, mut req: Value, status: &dyn Fn(String)) -> Result<Value> {
-    let mut slot = worker_slot().0.lock();
-    let key = format!("{}|{}", f.python.as_ref().map(|p| p.display().to_string()).unwrap_or_default(), f.model.as_ref().map(|p| p.display().to_string()).unwrap_or_default());
-    if !slot.as_mut().is_some_and(|w| w.key == key && w.alive()) {
-        *slot = None;
-        *slot = Some(start_worker(f, status)?);
-    }
-    let w = slot.as_mut().expect("started");
-    let id = w.next_id;
-    w.next_id += 1;
-    req["id"] = json!(id);
-    let line = format!("{req}\n");
-    if w.stdin.write_all(line.as_bytes()).and_then(|_| w.stdin.flush()).is_err() {
-        let why = w.stderr_tail();
-        *slot = None;
-        bail!("OmniVoice stopped: {why}");
-    }
-    loop {
-        if CANCEL_TASK.load(Ordering::Relaxed) {
-            // the only way to stop a generation midway
-            *slot = None;
-            bail!("cancelled");
-        }
-        match w.rx.recv_timeout(Duration::from_millis(400)) {
-            Ok(v) if v["id"] == json!(id) => {
-                w.last = Instant::now();
-                if v["ok"] == true {
-                    return Ok(v);
-                }
-                bail!("{}", v["error"].as_str().unwrap_or("OmniVoice failed"));
-            }
-            Ok(_) => {}
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(Duration::from_millis(300));
-                let why = w.stderr_tail();
-                *slot = None;
-                bail!("OmniVoice stopped: {why}");
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------- tasks: clone and generate
-
-fn enqueue(eng: Arc<Engine>, kind: &'static str, label: String, req: Value) {
-    let start = {
-        let mut s = shared().lock();
-        s.next_task += 1;
-        let id = s.next_task;
-        s.tasks.push(Task { id, kind, label, state: "queued", status: "waiting".into(), error: None, result: None, secs: 0.0, req });
-        // keep the list short: drop the oldest finished ones
-        while s.tasks.len() > 30 {
-            match s.tasks.iter().position(|t| t.state == "done" || t.state == "error") {
-                Some(i) => {
-                    s.tasks.remove(i);
-                }
-                None => break,
-            }
-        }
-        !std::mem::replace(&mut s.runner, true)
-    };
-    if start {
-        std::thread::spawn(move || run_tasks(eng));
-    }
-}
-
-fn run_tasks(eng: Arc<Engine>) {
-    loop {
-        let next = {
-            let mut s = shared().lock();
-            match s.tasks.iter_mut().find(|t| t.state == "queued") {
-                Some(t) => {
-                    t.state = "running";
-                    t.status = "starting".into();
-                    Some((t.id, t.kind, t.req.clone()))
-                }
-                None => {
-                    s.runner = false;
-                    None
-                }
-            }
-        };
-        let Some((id, kind, req)) = next else { return };
-        CANCEL_TASK.store(false, Ordering::Relaxed);
-        notify(&eng, "voice task started");
-        let t0 = Instant::now();
-        let status = move |m: String| {
-            if let Some(t) = shared().lock().tasks.iter_mut().find(|t| t.id == id) {
-                t.status = m;
-            }
-        };
-        let f = found();
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| if kind == "clone" { clone_voice(&eng, &f, &req, &status) } else { generate(&eng, &f, &req, &status) }))
-            .unwrap_or_else(|p| Err(anyhow!("internal error: {}", crate::engine::panic_message(&*p))));
-        let text = {
-            let mut s = shared().lock();
-            let Some(t) = s.tasks.iter_mut().find(|t| t.id == id) else { continue };
-            t.secs = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
-            match r {
-                Ok(v) => {
-                    t.state = "done";
-                    t.status = v["text"].as_str().unwrap_or("done").to_string();
-                    t.result = Some(v);
-                }
-                Err(e) => {
-                    t.state = "error";
-                    t.error = Some(format!("{e:#}"));
-                    t.status = "failed".into();
-                }
-            }
-            format!("{}: {}", t.label, t.error.clone().unwrap_or_else(|| t.status.clone()))
-        };
-        notify(&eng, text);
-    }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
-fn slug(s: &str, max: usize) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        if c.is_alphanumeric() {
-            out.extend(c.to_lowercase());
-        } else if !out.ends_with('-') && !out.is_empty() {
-            out.push('-');
-        }
-        if out.chars().count() >= max {
-            break;
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        "voice".into()
-    } else {
-        out
-    }
-}
-
-/// Only ASCII in ids: they are folder names and travel in URLs.
-fn id_slug(s: &str) -> String {
-    let s: String = slug(s, 24).chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-    let s = s.trim_matches('-').to_string();
-    if s.is_empty() {
-        "voice".into()
-    } else {
-        s
-    }
-}
-
-fn first_words(text: &str, n: usize) -> String {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut s = words.iter().take(n).cloned().collect::<Vec<_>>().join(" ");
-    if words.len() > n {
-        s.push('…');
-    }
-    s
-}
-
-fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
-    let mut p = dir.join(format!("{stem}.{ext}"));
-    let mut n = 2;
-    while p.exists() {
-        p = dir.join(format!("{stem}-{n}.{ext}"));
-        n += 1;
-    }
-    p
-}
-
-fn load_voice(root: &Path, id: &str) -> Result<Value> {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        bail!("pick a voice");
-    }
-    let dir = voices_dir(root).join(id);
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("voice.json")).with_context(|| format!("voice '{id}' not found"))?)?;
-    if !dir.join("prompt.pt").is_file() {
-        bail!("voice '{id}' is incomplete: clone it again");
-    }
-    Ok(v)
-}
-
-fn list_voices(root: &Path) -> Vec<Value> {
-    let Ok(rd) = std::fs::read_dir(voices_dir(root)) else { return vec![] };
-    let mut out: Vec<Value> = rd
-        .flatten()
-        .filter(|e| e.path().join("prompt.pt").is_file())
-        .filter_map(|e| {
-            let mut v: Value = serde_json::from_str(&std::fs::read_to_string(e.path().join("voice.json")).ok()?).ok()?;
-            v["id"] = json!(e.file_name().to_string_lossy());
-            Some(v)
-        })
-        .collect();
-    out.sort_by(|a, b| b["created"].as_u64().cmp(&a["created"].as_u64()));
-    out
-}
-
-/// Clones a voice: cuts the reference audio (a library clip's in/out, or a file), encodes it
-/// with OmniVoice once and keeps it as `voices/<id>/prompt.pt` for every later generation.
-fn clone_voice(eng: &Engine, f: &Found, req: &Value, status: &dyn Fn(String)) -> Result<Value> {
-    let root = f.root.clone().ok_or_else(|| anyhow!("no OmniVoice folder to keep voices in: run Install once"))?;
-    if req["consent"] != true {
-        bail!("confirm that you have the speaker's permission to clone this voice");
-    }
-    let name = req["name"].as_str().map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| anyhow!("give the voice a name"))?.to_string();
-    let (src, src_label) = match (req["media"].as_str().filter(|m| !m.is_empty()), req["path"].as_str().filter(|p| !p.trim().is_empty())) {
-        (Some(id), _) => {
-            let m = eng.media(id).ok_or_else(|| anyhow!("unknown media {id}"))?;
-            if !m.has_audio {
-                bail!("{id} ({}) has no audio", m.name);
-            }
-            (m.path.clone(), format!("{} {}", m.id, m.name))
-        }
-        (None, Some(p)) => (p.trim().to_string(), p.trim().to_string()),
-        _ => bail!("pick the reference audio: a clip from the project or a file"),
-    };
-    eng.check_path(&src)?;
-    if !Path::new(&src).is_file() {
-        bail!("{src} not found");
-    }
-    let start = req["start"].as_f64().unwrap_or(0.0).max(0.0);
-    let end = req["end"].as_f64().filter(|e| *e > start);
-    let len = end.map(|e| e - start).unwrap_or(DEFAULT_REF_SECS).min(MAX_REF_SECS);
-    if len < 1.0 {
-        bail!("the reference is too short: use 3 to 10 seconds of clear speech");
-    }
-    let id = format!("{}-{}", id_slug(&name), format!("{:x}", now_secs()).chars().rev().take(5).collect::<String>());
-    let dir = voices_dir(&root).join(&id);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let result = (|| -> Result<Value> {
-        status("preparing the reference audio".into());
-        let wav = dir.join("ref.wav");
-        let (ss, t) = (format!("{start:.3}"), format!("{len:.3}"));
-        let mut args: Vec<String> = ["-y", "-ss", ss.as_str(), "-t", t.as_str(), "-i", src.as_str(), "-vn", "-sn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le"].iter().map(|s| s.to_string()).collect();
-        args.push(wav.to_string_lossy().to_string());
-        eng.ff.run_capture(&args).context("cutting the reference audio")?;
-        // 24 kHz 16-bit mono: 48 KB a second
-        let secs = file_len(&wav).saturating_sub(44) as f64 / 48_000.0;
-        if secs < 1.0 {
-            bail!("the reference has no usable audio at {start:.1}s");
-        }
-        let given = req["ref_text"].as_str().map(str::trim).filter(|t| !t.is_empty());
-        status(if given.is_some() { "encoding the voice".into() } else { "transcribing and encoding the voice (Whisper is downloaded the first time, about 1.6 GB)".into() });
-        let r = request(f, json!({"op": "clone", "ref_audio": wav, "ref_text": given, "out": dir.join("prompt.pt")}), status)?;
-        let v = json!({
-            "name": name, "ref_text": r["ref_text"].as_str().unwrap_or(given.unwrap_or("")), "source": src_label,
-            "start": start, "dur": (secs * 100.0).round() / 100.0, "created": now_secs(), "model": REPO,
-        });
-        std::fs::write(dir.join("voice.json"), serde_json::to_string_pretty(&v)?)?;
-        Ok(json!({"voice": id, "text": format!("voice \"{name}\" cloned from {:.1}s of {src_label}", secs)}))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    result
-}
-
-/// Speaks a script with a cloned voice: one WAV per paragraph (or one for all), written next to
-/// the project's graphics, then imported (tag `voice`) and optionally placed, as one edit.
-fn generate(eng: &Engine, f: &Found, req: &Value, status: &dyn Fn(String)) -> Result<Value> {
-    let root = f.root.clone().ok_or_else(|| anyhow!("no OmniVoice folder: run Install once"))?;
-    let vid = req["voice"].as_str().unwrap_or("");
-    let voice = load_voice(&root, vid)?;
-    let vname = voice["name"].as_str().unwrap_or(vid).to_string();
-    let text = req["text"].as_str().unwrap_or("").replace("\r\n", "\n");
-    let parts: Vec<String> = if req["split"] == true {
-        text.split("\n\n").map(|p| p.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|p| !p.is_empty()).collect()
-    } else {
-        let all = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if all.is_empty() {
-            vec![]
-        } else {
-            vec![all]
-        }
-    };
-    if parts.is_empty() {
-        bail!("write the script to speak");
-    }
-    // next to the project's graphics and sound effects (the data folder until it is saved)
-    let gdir = crate::gfx::graphics_dir(eng.st.read().path.as_deref());
-    let dir = gdir.parent().map(|d| d.join("voice")).unwrap_or_else(|| gdir.join("voice"));
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let prompt = voices_dir(&root).join(vid).join("prompt.pt");
-    let language = req["language"].as_str().filter(|l| !l.is_empty() && *l != "auto");
-    let speed = req["speed"].as_f64().filter(|s| (0.5..=2.0).contains(s) && (*s - 1.0).abs() > 1e-3);
-    let steps = req["steps"].as_u64().filter(|s| (4..=64).contains(s));
-    let mut outs: Vec<(PathBuf, f64, String)> = vec![];
-    for (i, p) in parts.iter().enumerate() {
-        status(if parts.len() > 1 { format!("speaking part {} of {}", i + 1, parts.len()) } else { "speaking".into() });
-        let out = unique_path(&dir, &format!("{}-{}", slug(&vname, 20), slug(&first_words(p, 5), 32)), "wav");
-        let r = request(f, json!({"op": "generate", "voice": prompt, "text": p, "language": language, "speed": speed, "num_step": steps, "out": out}), status)?;
-        outs.push((out, r["dur"].as_f64().unwrap_or(0.0), p.clone()));
-    }
-    status("importing".into());
-    let q = crate::ops::lex::quote;
-    let mut at = req["at"].as_f64().filter(|t| *t >= 0.0);
-    let mut lines = vec![];
-    for (path, dur, p) in &outs {
-        let file = path.to_string_lossy().to_string();
-        lines.push(format!("import {} tag=voice as={}", q(&file), q(&format!("{vname}: {}", first_words(p, 6)))));
-        let note: String = format!("AI voice ({vname}, OmniVoice): {p}").chars().take(600).collect();
-        lines.push(format!("note $ {}", q(&note)));
-        if let Some(t) = at {
-            lines.push(format!("add {} at={:.3}", q(&file), t));
-            at = Some(t + dur + 0.25);
-        }
-    }
-    eng.edit(&lines.join("\n"), "gui")?;
-    let p = eng.st.read().p.clone();
-    let ids: Vec<String> = outs.iter().filter_map(|(path, _, _)| p.media.iter().find(|m| crate::ops::exec::same_path(&m.path, &path.to_string_lossy())).map(|m| m.id.clone())).collect();
-    let total: f64 = outs.iter().map(|o| o.1).sum();
-    Ok(json!({
-        "media": ids,
-        "files": outs.iter().map(|o| o.0.to_string_lossy().to_string()).collect::<Vec<_>>(),
-        "dur": (total * 100.0).round() / 100.0,
-        "text": format!("{} clip{} ({:.1}s) in the project{}", outs.len(), if outs.len() == 1 { "" } else { "s" }, total, if ids.is_empty() { String::new() } else { format!(": {}", ids.join(", ")) }),
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn slugs_and_ids() {
-        assert_eq!(slug("Hello, World!", 40), "hello-world");
-        assert_eq!(slug("  ", 40), "voice");
-        assert_eq!(id_slug("Narrator (warm)"), "narrator-warm");
-        assert!(id_slug("Ünïcödé").chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-        assert_eq!(first_words("one two three four", 2), "one two…");
-        assert_eq!(first_words("one two", 5), "one two");
-    }
 
     #[test]
     fn a_model_folder_needs_its_weights_and_audio_tokenizer() {
@@ -1457,7 +1043,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn drives_as_people_write_them() {
+        for d in ["D", "d:", "D:\\", " D:/ "] {
+            assert_eq!(drive_root(d), PathBuf::from("D:\\"), "{d}");
+        }
+        assert_eq!(drive_root("E:\\Tools"), PathBuf::from("E:\\Tools"));
+    }
+
+    #[test]
     fn worker_script_is_embedded() {
-        assert!(WORKER_PY.contains("create_voice_clone_prompt") && WORKER_PY.contains("@@MC "));
+        for needle in ["create_voice_clone_prompt", "@@MC ", "def selftest", "progress=", "inference_mode", "set_per_process_memory_fraction"] {
+            assert!(WORKER_PY.contains(needle), "worker script lacks {needle}");
+        }
     }
 }

@@ -1,7 +1,7 @@
 ; MoodCut for Windows: installer (Inno Setup 6.3 or later).
 ;
 ; Build:   pwsh installer\get-ffmpeg.ps1                          -> dist\ffmpeg (bundled FFmpeg)
-;          iscc /DAppVersion=1.2.1 installer\moodcut.iss      -> dist\MoodCut-Setup-x64.exe
+;          iscc /DAppVersion=1.3.0 installer\moodcut.iss      -> dist\MoodCut-Setup-x64.exe
 ; Silent:  MoodCut-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /TASKS="desktopicon,addtopath,assoc,connectai"
 ;          (add /ALLUSERS to install for every user, which asks for admin rights)
 ;
@@ -17,7 +17,7 @@
 
 #define AppName "MoodCut"
 #ifndef AppVersion
-  #define AppVersion "1.2.1"
+  #define AppVersion "1.3.0"
 #endif
 #define AppPublisher "MoodCut"
 #define AppURL "https://github.com/hamzarasheed309/MoodCut"

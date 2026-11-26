@@ -1,24 +1,38 @@
 // AI Voice: clone a voice from a few seconds of audio and speak scripts with it, using
 // OmniVoice (k2-fsa/OmniVoice) on this computer. The engine finds the model by itself; when it
 // can't, this panel offers to locate it or to download it to a drive the person picks. Speech
-// is imported into the Project panel (tag "voice") and can be placed at the playhead.
+// is imported into the Project panel (tag "voice") and can be placed at the playhead. AI apps
+// drive the same setup, voices and tasks through the `voice` MCP tool.
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { showPanel } from "../dock";
 import { api } from "../gfx";
 import { mediaById, monitorTab, pickFiles, playhead, project, sourceIn, sourceMedia, sourceOut, sourceT, toast, voiceTick } from "../store";
 import { fmtNum } from "../util";
 
-type Install = { running: boolean; root: string; step: string; status: string; pct: number | null; log: string[]; error: string | null; done: boolean };
-type Task = { id: number; kind: "clone" | "generate"; label: string; state: "queued" | "running" | "done" | "error"; status: string; error: string | null; result: { media?: string[]; voice?: string; text?: string } | null; secs: number };
-type Voice = { id: string; name: string; ref_text: string; source: string; dur: number; created: number };
+type Install = { running: boolean; root: string; step: string; status: string; pct: number | null; log: string[]; error: string | null; hint: string | null; detail: string | null; done: boolean };
+type Task = {
+  id: number;
+  kind: "clone" | "generate" | "retranscribe";
+  label: string;
+  state: "queued" | "running" | "done" | "error";
+  status: string;
+  pct: number | null;
+  error: string | null;
+  hint: string | null;
+  fix: "retry" | "repair" | null;
+  detail: string | null;
+  result: { media?: string[]; voice?: string; text?: string; ref_text?: string } | null;
+  secs: number;
+};
+type Voice = { id: string; name: string; ref_text: string; source: string; dur: number; start?: number; auto?: boolean; typed?: boolean; denoise?: boolean; created: number };
 type Status = {
   state: "missing" | "runtime" | "model" | "ready";
   root: string | null;
   model: string | null;
   python: string | null;
-  runtime: { torch?: string; device?: string; gpu?: string | null; omnivoice?: string } | null;
+  runtime: { torch?: string; device?: string; gpu?: string | null; omnivoice?: string; vram_gb?: number } | null;
   gpu: string | null;
-  worker: { loaded: boolean; device?: string; busy?: boolean };
+  worker: { loaded: boolean; device?: string; busy?: boolean; vram?: { used_gb?: number; total_gb?: number; peak_gb?: number } };
   install: Install;
   tasks: Task[];
   voices: Voice[];
@@ -27,16 +41,31 @@ type Status = {
   sizes: { model: number; runtime: number; whisper: number };
 };
 type Drive = { root: string; label: string; free: number | null; total: number | null; removable: boolean };
+type Reload = (b?: Record<string, unknown>) => Promise<boolean>;
 
 const GB = 1e9;
 const gb = (b: number) => `${(b / GB).toFixed(b >= 10 * GB ? 0 : 1)} GB`;
+const clock = (s: number) => (s >= 60 ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : `${Math.round(s)} s`);
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Polish", "Russian", "Turkish", "Arabic", "Hindi", "Urdu", "Bengali", "Chinese", "Japanese", "Korean", "Vietnamese", "Indonesian", "Thai"];
-const QUALITY: [number, string][] = [
-  [16, "Fast (16 steps)"],
-  [32, "Standard (32 steps)"],
-  [48, "Best (48 steps, slower)"],
+const QUALITY: [string, string][] = [
+  ["fast", "Fast (16 steps)"],
+  ["standard", "Standard (32 steps)"],
+  ["best", "Best (48 steps, slower)"],
 ];
+
+function store(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+function recall(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 async function voiceApi(body?: Record<string, unknown>) {
   return api<Status>("/api/voice", body ?? { action: "status" });
@@ -56,7 +85,7 @@ export function VoicePanel() {
   const [err, setErr] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
 
-  const load = async (body?: Record<string, unknown>) => {
+  const load: Reload = async (body) => {
     const r = await voiceApi(body);
     if (!r.ok) {
       if (body) toast(r.error, true);
@@ -72,15 +101,22 @@ export function VoicePanel() {
     load();
   }, [voiceTick.value]);
 
-  // follow progress while something runs (events also arrive, this keeps the text moving)
+  // follow progress while something runs (events also arrive; this keeps the bars moving)
   const busy = !!st && (st.install.running || st.tasks.some((t) => t.state === "queued" || t.state === "running"));
   useEffect(() => {
     if (!busy) return;
-    const h = setInterval(() => load(), 1000);
+    const h = setInterval(() => load(), 700);
     return () => clearInterval(h);
   }, [busy]);
 
-  if (!st) return <div class="scroll voice-panel"><div class="hint" style={{ padding: "10px" }}>{err || "Looking for OmniVoice…"}</div></div>;
+  if (!st)
+    return (
+      <div class="scroll voice-panel">
+        <div class="hint" style={{ padding: "10px" }}>
+          {err || "Looking for OmniVoice…"}
+        </div>
+      </div>
+    );
 
   const showSetup = st.install.running || setup || (st.install.error && st.state !== "ready");
   return (
@@ -88,6 +124,7 @@ export function VoicePanel() {
       <Header st={st} onUnload={() => load({ action: "unload" })} />
       {st.state === "ready" && !st.install.running ? (
         <>
+          <SetupNote st={st} reload={load} />
           <CloneForm st={st} onSent={() => load()} />
           <Voices st={st} reload={load} />
           <GenerateForm st={st} onSent={() => load()} />
@@ -105,10 +142,12 @@ export function VoicePanel() {
 function Header({ st, onUnload }: { st: Status; onUnload: () => void }) {
   const dev = st.worker.loaded ? st.worker.device || st.runtime?.device : st.runtime?.device;
   const onGpu = !!dev && dev !== "cpu";
+  const vram = st.worker.vram;
   const chip =
     st.state === "ready" ? (
-      <span class={"vc-chip " + (onGpu ? "ok" : "warn")} title={st.runtime?.gpu || dev || ""}>
+      <span class={"vc-chip " + (onGpu ? "ok" : "warn")} title={[st.runtime?.gpu || dev || "", vram?.used_gb != null ? `GPU memory in use: ${vram.used_gb} of ${vram.total_gb} GB` : ""].filter(Boolean).join("\n")}>
         {onGpu ? `GPU${st.runtime?.gpu ? ` · ${st.runtime.gpu.replace(/^NVIDIA (GeForce )?/, "")}` : ""}` : "CPU (slower)"}
+        {st.worker.loaded && !st.worker.busy ? " · loaded" : ""}
       </span>
     ) : (
       <span class="vc-chip">not set up</span>
@@ -135,8 +174,40 @@ function Header({ st, onUnload }: { st: Status; onUnload: () => void }) {
   );
 }
 
+/** A problem with the setup while voices are usable (a repair that failed). */
+function SetupNote({ st, reload }: { st: Status; reload: Reload }) {
+  const inst = st.install;
+  if (!inst.error || inst.running) return null;
+  return (
+    <div class="group-b">
+      <Problem message={inst.error} hint={inst.hint} detail={inst.detail}>
+        <button class="btn sm" onClick={() => reload({ action: "repair" })}>
+          Repair again
+        </button>
+      </Problem>
+    </div>
+  );
+}
+
+/** An error people can act on: what happened, what to do, buttons, and the technical details. */
+function Problem({ message, hint, detail, children }: { message: string; hint?: string | null; detail?: string | null; children?: preact.ComponentChildren }) {
+  return (
+    <div class="vc-problem">
+      <div class="vc-err-text">{message}</div>
+      {hint && <div class="vc-hint">{hint}</div>}
+      {children && <div class="btn-row">{children}</div>}
+      {detail && detail !== message && (
+        <details class="vc-log">
+          <summary>Details</summary>
+          <pre>{detail}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 /** Not found: say where it looked, offer Locate / Download. */
-function Missing({ st, reload, onSetup }: { st: Status; reload: (b?: Record<string, unknown>) => Promise<boolean>; onSetup: () => void }) {
+function Missing({ st, reload, onSetup }: { st: Status; reload: Reload; onSetup: () => void }) {
   const locate = async () => {
     const [dir] = await pickFiles("folder");
     if (!dir) return;
@@ -188,7 +259,7 @@ function Missing({ st, reload, onSetup }: { st: Status; reload: (b?: Record<stri
 }
 
 /** Pick a drive (or a folder), then download and set up; shows progress while it runs. */
-function SetupForm({ st, reload, onClose }: { st: Status; reload: (b?: Record<string, unknown>) => Promise<boolean>; onClose: () => void }) {
+function SetupForm({ st, reload, onClose }: { st: Status; reload: Reload; onClose: () => void }) {
   const [drives, setDrives] = useState<Drive[] | null>(null);
   const [need, setNeed] = useState(0);
   const [drive, setDrive] = useState<string>("");
@@ -214,12 +285,10 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: (b?: Record<st
     return (
       <div class="group-b">
         <div class="vc-msg">
-          <b>Setting up OmniVoice</b> in <code>{inst.root}</code>
+          <b>{inst.step === "Repairing" ? "Repairing" : "Setting up"} OmniVoice</b> in <code>{inst.root}</code>
         </div>
         <div class="vc-step">{inst.step}</div>
-        <div class="progress" style={{ margin: "6px 0" }}>
-          <div style={{ width: `${inst.pct ?? 100}%`, opacity: inst.pct == null ? 0.35 : 1 }} />
-        </div>
+        <Bar pct={inst.pct == null ? null : inst.pct / 100} />
         <div class="vc-status" title={inst.status}>
           {inst.status}
         </div>
@@ -246,7 +315,7 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: (b?: Record<st
   };
   return (
     <div class="group-b">
-      {inst.error && <div class="vc-error">{inst.error}</div>}
+      {inst.error && <Problem message={inst.error} hint={inst.hint} detail={inst.detail} />}
       <div class="vc-msg">
         <b>Where should OmniVoice go?</b> It needs about {gb(need || st.sizes.model + st.sizes.runtime)}
         {st.state === "missing" ? ` (model ${gb(st.sizes.model)}, Python with PyTorch ${gb(st.sizes.runtime)})` : " (Python with PyTorch)"}, plus {gb(st.sizes.whisper)} later if you clone voices without typing their transcript.
@@ -304,6 +373,15 @@ function SetupForm({ st, reload, onClose }: { st: Status; reload: (b?: Record<st
   );
 }
 
+/** A progress bar: a fraction, or a moving stripe while the amount is unknown. */
+function Bar({ pct }: { pct: number | null }) {
+  return (
+    <div class={"progress vc-bar" + (pct == null ? " indet" : "")}>
+      <div style={{ width: pct == null ? "30%" : `${Math.max(2, Math.round(pct * 100))}%` }} />
+    </div>
+  );
+}
+
 /** Clone: a project clip (Source monitor In/Out) or a file, an optional transcript, consent. */
 function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
   const audible = (project.value?.media || []).filter((m) => m.has_audio);
@@ -314,6 +392,7 @@ function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [text, setText] = useState("");
+  const [denoise, setDenoise] = useState(false);
   const [consent, setConsent] = useState(false);
   const [open, setOpen] = useState(st.voices.length === 0);
 
@@ -340,7 +419,17 @@ function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
     if (from === "clip" && !media) return toast("Pick the clip to clone from", true);
     if (from === "file" && !file) return toast("Pick an audio or video file", true);
     if (!consent) return toast("Confirm you have the speaker's permission", true);
-    const r = await api("/api/voice", { action: "clone", name: name.trim(), media: from === "clip" ? media : undefined, path: from === "file" ? file : undefined, start: s, end: isFinite(e) ? e : undefined, ref_text: text.trim() || undefined, consent });
+    const r = await api("/api/voice", {
+      action: "clone",
+      name: name.trim(),
+      media: from === "clip" ? media : undefined,
+      path: from === "file" ? file : undefined,
+      start: s,
+      end: isFinite(e) ? e : undefined,
+      transcript: text.trim() || undefined,
+      denoise,
+      consent,
+    });
     if (!r.ok) return toast(r.error, true);
     toast(`Cloning "${name.trim()}"…`);
     setName("");
@@ -411,15 +500,23 @@ function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
             <label>From / to (s)</label>
             <div class="ctl">
               <input type="number" min="0" step="0.1" value={start} placeholder="0" onInput={(ev) => setStart((ev.target as HTMLInputElement).value)} />
-              <input type="number" min="0" step="0.1" value={end} placeholder="+10" onInput={(ev) => setEnd((ev.target as HTMLInputElement).value)} />
+              <input type="number" min="0" step="0.1" value={end} placeholder="auto" onInput={(ev) => setEnd((ev.target as HTMLInputElement).value)} />
             </div>
             <span />
           </div>
           <div class="hint">
-            {len != null ? `${fmtNum(len, 1)} s of reference. ` : "Without an end, the first 10 s are used. "}
-            3 to 10 seconds of one person speaking clearly, without music, works best. Mark In and Out in the Source monitor to pick them.
+            {len != null
+              ? `${fmtNum(len, 1)} s of reference. `
+              : text.trim()
+                ? "Set From and To to exactly the words you typed. "
+                : "Without an end, MoodCut picks the best 3-12 s of speech in the first 30 s, cut at pauses. "}
+            One person speaking clearly without music works best; mark In and Out in the Source monitor to choose the part.
           </div>
-          <textarea rows={2} value={text} placeholder="What is said in the reference (optional: left empty, it is transcribed with Whisper, a one-time 1.6 GB download)" onInput={(ev) => setText((ev.target as HTMLTextAreaElement).value)} />
+          <textarea rows={2} value={text} placeholder="What is said (optional: left empty, Whisper writes it and you can correct it later)" onInput={(ev) => setText((ev.target as HTMLTextAreaElement).value)} />
+          <label class="vc-check" title="Lowers steady background noise (fans, hiss, street). Leave it off for clean studio audio: it can dull the voice.">
+            <input type="checkbox" checked={denoise} onChange={(ev) => setDenoise((ev.target as HTMLInputElement).checked)} />
+            Reduce background noise (phone and room recordings)
+          </label>
           <label class="vc-check">
             <input type="checkbox" checked={consent} onChange={(ev) => setConsent((ev.target as HTMLInputElement).checked)} />
             This is my voice, or I have the speaker's permission to clone it.
@@ -435,33 +532,66 @@ function CloneForm({ st, onSent }: { st: Status; onSent: () => void }) {
   );
 }
 
-function Voices({ st, reload }: { st: Status; reload: (b?: Record<string, unknown>) => Promise<boolean> }) {
+function Voices({ st, reload }: { st: Status; reload: Reload }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
   if (!st.voices.length) return null;
+  const fix = async (v: Voice) => {
+    if (!draft.trim()) return toast("Type the words said in the reference", true);
+    const r = await api("/api/voice", { action: "retranscribe", voice: v.id, transcript: draft.trim() });
+    if (!r.ok) return toast(r.error, true);
+    setEditing(null);
+    reload();
+  };
   return (
     <>
       <div class="section-title">Voices</div>
       <div class="vc-voices">
         {st.voices.map((v) => (
-          <div class="vc-voice" key={v.id} title={`${v.source}\n${fmtNum(v.dur, 1)} s reference\n“${v.ref_text}”`}>
-            <div class="vc-voice-main">
-              <b>{v.name}</b>
-              <span class="vc-faint">
-                {fmtNum(v.dur, 1)} s from {v.source}
-              </span>
+          <div class="vc-voice" key={v.id}>
+            <div class="vc-voice-top">
+              <div class="vc-voice-main" title={`${v.source}${v.start != null ? ` from ${fmtNum(v.start, 1)} s` : ""}\n${fmtNum(v.dur, 1)} s reference${v.denoise ? ", noise reduced" : ""}`}>
+                <b>{v.name}</b>
+                <span class="vc-faint">
+                  {fmtNum(v.dur, 1)} s from {v.source}
+                  {v.auto ? " (best part picked)" : ""}
+                </span>
+              </div>
+              <button
+                class="btn sm ghost"
+                title="Rename"
+                onClick={() => {
+                  const n = prompt("Voice name", v.name);
+                  if (n && n.trim() && n.trim() !== v.name) reload({ action: "rename_voice", id: v.id, name: n.trim() });
+                }}
+              >
+                ✎
+              </button>
+              <button class="btn sm ghost" title="Delete this voice (clips already generated stay)" onClick={() => confirm(`Delete the voice "${v.name}"?`) && reload({ action: "delete_voice", id: v.id })}>
+                ✕
+              </button>
             </div>
-            <button
-              class="btn sm ghost"
-              title="Rename"
-              onClick={() => {
-                const n = prompt("Voice name", v.name);
-                if (n && n.trim() && n.trim() !== v.name) reload({ action: "rename_voice", id: v.id, name: n.trim() });
-              }}
-            >
-              ✎
-            </button>
-            <button class="btn sm ghost" title="Delete this voice (clips already generated stay)" onClick={() => confirm(`Delete the voice "${v.name}"?`) && reload({ action: "delete_voice", id: v.id })}>
-              ✕
-            </button>
+            {editing === v.id ? (
+              <div class="vc-fix">
+                <textarea rows={2} value={draft} onInput={(ev) => setDraft((ev.target as HTMLTextAreaElement).value)} onKeyDown={(ev) => ev.stopPropagation()} />
+                <div class="btn-row">
+                  <button class="btn sm primary" onClick={() => fix(v)}>
+                    Encode again
+                  </button>
+                  <button class="btn sm ghost" onClick={() => setEditing(null)}>
+                    Cancel
+                  </button>
+                </div>
+                <div class="hint">The words must match the reference exactly; a correct transcript gives a more faithful voice.</div>
+              </div>
+            ) : (
+              <div class="vc-transcript" title="What the reference says. A wrong word here makes the clone less faithful.">
+                “{v.ref_text || "…"}”{" "}
+                <button class="btn sm ghost vc-link" onClick={() => (setEditing(v.id), setDraft(v.ref_text || ""))}>
+                  Fix transcript
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -470,13 +600,16 @@ function Voices({ st, reload }: { st: Status; reload: (b?: Record<string, unknow
 }
 
 function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
-  const [voice, setVoice] = useState(() => localStorage.getItem("mc.voice.last") || "");
+  const [voice, setVoice] = useState(() => recall("mc.voice.last", ""));
   const [text, setText] = useState("");
-  const [language, setLanguage] = useState(() => localStorage.getItem("mc.voice.lang") || "auto");
+  const [language, setLanguage] = useState(() => recall("mc.voice.lang", "auto"));
   const [speed, setSpeed] = useState(1);
-  const [steps, setSteps] = useState(32);
+  const [quality, setQuality] = useState(() => recall("mc.voice.quality", "standard"));
+  const [takes, setTakes] = useState(1);
   const [split, setSplit] = useState(true);
   const [place, setPlace] = useState(false);
+  const [numbers, setNumbers] = useState(true);
+  const [even, setEven] = useState(true);
   const paragraphs = useMemo(() => text.split(/\n\s*\n/).filter((p) => p.trim()).length, [text]);
 
   // a voice that was deleted (or none chosen yet): the newest one
@@ -489,11 +622,13 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
       </>
     );
   }
+  const clips = (split ? Math.max(1, paragraphs) : 1) * takes;
   const send = async () => {
     if (!text.trim()) return toast("Write the script to speak", true);
-    localStorage.setItem("mc.voice.last", vid);
-    localStorage.setItem("mc.voice.lang", language);
-    const r = await api("/api/voice", { action: "generate", voice: vid, text, language, speed, steps, split, at: place ? playhead.value : undefined });
+    store("mc.voice.last", vid);
+    store("mc.voice.lang", language);
+    store("mc.voice.quality", quality);
+    const r = await api("/api/voice", { action: "generate", voice: vid, text, language, speed, quality, takes, split, numbers, loudness: even, at: place ? playhead.value : undefined });
     if (!r.ok) return toast(r.error, true);
     toast("Generating speech…");
     onSent();
@@ -518,7 +653,7 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
         <textarea
           rows={6}
           value={text}
-          placeholder={"Type the script.\n\nA blank line starts a new clip."}
+          placeholder={"Type the script.\n\nA blank line starts a new clip. Punctuation shapes the reading: commas pause, question marks rise."}
           onInput={(ev) => setText((ev.target as HTMLTextAreaElement).value)}
           onKeyDown={(ev) => {
             // Ctrl+Enter generates; keep the editor's shortcuts out of the text box
@@ -527,8 +662,7 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
           }}
         />
         <div class="vc-faint vc-count">
-          {text.trim() ? `${text.trim().split(/\s+/).length} words` : ""}
-          {split && paragraphs > 1 ? ` · ${paragraphs} clips` : ""}
+          {text.trim() ? `${text.trim().split(/\s+/).length} words · ${clips} clip${clips === 1 ? "" : "s"}` : ""}
         </div>
         <div class="row">
           <label>Language</label>
@@ -554,12 +688,23 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
         <div class="row">
           <label>Quality</label>
           <div class="ctl">
-            <select value={steps} onChange={(ev) => setSteps(parseInt((ev.target as HTMLSelectElement).value))}>
-              {QUALITY.map(([n, l]) => (
-                <option key={n} value={n}>
+            <select value={quality} onChange={(ev) => setQuality((ev.target as HTMLSelectElement).value)}>
+              {QUALITY.map(([k, l]) => (
+                <option key={k} value={k}>
                   {l}
                 </option>
               ))}
+            </select>
+          </div>
+          <span />
+        </div>
+        <div class="row">
+          <label title="Each take is a different reading; pick the best one in the Project panel">Takes</label>
+          <div class="ctl">
+            <select value={takes} onChange={(ev) => setTakes(parseInt((ev.target as HTMLSelectElement).value))}>
+              <option value={1}>1</option>
+              <option value={2}>2 to choose from</option>
+              <option value={3}>3 to choose from</option>
             </select>
           </div>
           <span />
@@ -568,9 +713,17 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
           <input type="checkbox" checked={split} onChange={(ev) => setSplit((ev.target as HTMLInputElement).checked)} />
           One clip per paragraph
         </label>
+        <label class="vc-check" title="2026 is read 'twenty twenty-six', 40% 'forty percent'">
+          <input type="checkbox" checked={numbers} onChange={(ev) => setNumbers((ev.target as HTMLInputElement).checked)} />
+          Read numbers as words
+        </label>
+        <label class="vc-check" title="Every clip at the same level (about -16 LUFS), whatever the reference's volume">
+          <input type="checkbox" checked={even} onChange={(ev) => setEven((ev.target as HTMLInputElement).checked)} />
+          Even loudness
+        </label>
         <label class="vc-check">
           <input type="checkbox" checked={place} onChange={(ev) => setPlace((ev.target as HTMLInputElement).checked)} />
-          Also add to the timeline at the playhead
+          Also add to the timeline at the playhead{takes > 1 ? " (first take)" : ""}
         </label>
         <div class="btn-row">
           <button class="btn sm primary" disabled={!text.trim()} onClick={send} title="Ctrl+Enter">
@@ -583,7 +736,7 @@ function GenerateForm({ st, onSent }: { st: Status; onSent: () => void }) {
   );
 }
 
-function Tasks({ st, reload }: { st: Status; reload: (b?: Record<string, unknown>) => Promise<boolean> }) {
+function Tasks({ st, reload }: { st: Status; reload: Reload }) {
   if (!st.tasks.length) return null;
   const finished = st.tasks.some((t) => t.state === "done" || t.state === "error");
   return (
@@ -610,14 +763,47 @@ function Tasks({ st, reload }: { st: Status; reload: (b?: Record<string, unknown
                 </button>
               )}
             </div>
-            <div class="vc-task-status">
-              {t.state === "error" ? <span class="vc-err-text">{t.error}</span> : t.state === "running" || t.state === "queued" ? `${t.status}…` : t.status}
-              {t.secs > 0 && t.state !== "running" ? <span class="vc-faint"> · {fmtNum(t.secs, 1)} s</span> : null}
-            </div>
+            {t.state === "running" && (
+              <div class="vc-task-body">
+                <Bar pct={t.pct} />
+                <div class="vc-task-status">
+                  <span>{t.status}…</span>
+                  <span class="vc-faint">
+                    {t.pct != null ? `${Math.round(t.pct * 100)}% · ` : ""}
+                    {clock(t.secs)}
+                  </span>
+                </div>
+              </div>
+            )}
+            {t.state === "queued" && <div class="vc-task-status">{t.status}</div>}
+            {t.state === "done" && (
+              <div class="vc-task-status">
+                {t.status}
+                {t.secs > 0 ? <span class="vc-faint"> · {clock(t.secs)}</span> : null}
+              </div>
+            )}
+            {t.state === "error" && (
+              <div class="vc-task-body">
+                {t.error === "Cancelled." ? (
+                  <div class="vc-task-status">Cancelled.</div>
+                ) : (
+                  <Problem message={t.error || "Failed."} hint={t.hint} detail={t.detail}>
+                    {t.fix === "repair" && (
+                      <button class="btn sm primary" onClick={() => reload({ action: "repair" })}>
+                        Repair
+                      </button>
+                    )}
+                    <button class={"btn sm" + (t.fix === "retry" ? " primary" : "")} onClick={() => reload({ action: "retry", id: t.id })}>
+                      Retry
+                    </button>
+                  </Problem>
+                )}
+              </div>
+            )}
             {t.result?.media?.length ? (
               <div class="vc-task-media">
                 {t.result.media.map((id) => (
-                  <button key={id} class="btn sm" title="Open in the Source monitor" onClick={() => openInSource(id)}>
+                  <button key={id} class="btn sm" title="Open in the Source monitor to listen" onClick={() => openInSource(id)}>
                     ▶ {mediaById.value.get(id)?.name || id}
                   </button>
                 ))}

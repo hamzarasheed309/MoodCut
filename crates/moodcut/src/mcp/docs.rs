@@ -21,6 +21,7 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("tracking", "mask, point, planar (perspective) and 3D camera tracking, stabilizing"),
     ("grade", "DaVinci Resolve color page: nodes, primaries, wheels, curves, warper, qualifiers, windows, color management, groups, match"),
     ("mix", "buses, sends, automation, processors, repair, audio scopes, stems"),
+    ("voice", "AI voice-over in a cloned voice (OmniVoice, on this computer): setup, clone, speak, takes, fixing transcripts"),
     ("time", "time & reference syntax"),
     ("props", "layer/clip/text/solid properties"),
     ("effects", "video effects + params"),
@@ -192,6 +193,15 @@ GALLERY still save hero from=c1 [at=T] | still list | still del. preview ref=her
 MEASURE preview scope=all|waveform|parade|vectorscope|histogram|falsecolor [region=cx,cy,w,h] t=..; preview view=matte id=c1.m2 (a node's key); view what=grade [id=c1].
 Typical: color c1 input=slog3 -> node c1 add (balance: primaries gainR=..) -> node c1 add (contrast: primaries contrast=1.15 pivot=.4) -> node c1 add parallel, node c1 3 qualify hsl hue=25 (skin),
  node c1 3 huecurves -> node c1 add, node c1 4 window add circle, node c1 4 track -> node c1 add layer composite=softlight, node c1 5 lut file=.. -> grade save look from=c1 -> match c2..c9 to=c1.";
+const VOICE: &str = "AI voice-over in a cloned voice: OmniVoice (k2-fsa/OmniVoice) runs on this computer, on the GPU when there is one. The AI Voice panel shows the same setup, voices and tasks.
+PERMISSION: clone a voice only when the person says it is their own voice or the speaker agreed (consent=true states that). Never clone a public figure or someone who isn't part of the project.
+STATUS: voice action=status -> setup state, voices (id, name, seconds, transcript) and recent tasks with progress. Not set up: ask the person, then voice action=setup drive=D (model 3.3 GB + Python with PyTorch 6.5 GB on that drive; status shows the progress), or they Locate a model they have in the panel. voice action=repair fixes a setup whose folder was moved or whose packages broke (no model download).
+CLONE: voice action=clone name='Host' media=m1 consent=true -> without end=, the best 3-12 s of one person speaking in the first 30 s is picked (cut at pauses), Whisper writes the transcript (a one-time 1.6 GB download) and the reply shows it. Better clones: 5-10 s of clear speech without music (start= end= pick it: read the transcript or a preview first); denoise=true for noisy phone recordings; if the transcript has a wrong word: voice action=retranscribe voice=<id> transcript='the exact words' (the words must match the audio). A typed transcript= on clone skips Whisper: then set start= and end= to exactly those words.
+SPEAK: voice action=speak voice=<id or name> text='Welcome back. Today we test three cameras.' [language=English] [speed=1.1] [quality=fast|standard|best] [takes=2] [at=4 | at=playhead] -> one clip per paragraph (a blank line in text starts the next; split=false keeps one clip), imported with tag voice and the script as the note; at= places the first take of each part on an audio track one after another. Numbers are read as words (numbers=false keeps them); loudness is evened out to about -16 LUFS (loudness=false keeps the model's level). Each take has a seed: seed=<n> repeats a reading, another seed gives a new one.
+PROSODY: punctuation shapes the reading (commas pause, full stops fall, question marks rise); write numbers, dates and abbreviations the way they are said when it matters ('twenty twenty-six', 'A I'); inline tags like [laughter] and [breath] are kept. Speed 0.9-1.1 sounds natural; for an exact length trim or speed the clip after.
+CHECK: listen before using it (the editor's Source monitor; preview media=<id> shows its waveform); analyze target=<id> kind=transcript confirms the words. Mix it like dialogue: sound <clip> dialogue, duck music under it.
+ERRORS come with what to do (out of GPU memory: close other GPU apps or use shorter paragraphs; setup broken: repair; no speech in the reference: pick another part).";
+
 const MIX: &str = "Mixing (Audition-style). Signal flow: clip (gain, pan, fades, afx) -> track (vol, pan, automation, afx) -> bus(es) -> master (vol, afx, loudness, limiter).
   bus add B1 name=Dialogue | bus set B1 vol=-3 pan=0 out=B3|master mute=0 | bus del B1 | bus list
   track set A1 out=B1          route a track to a bus
@@ -341,6 +351,7 @@ pub fn help(topic: &str) -> String {
         "tracking" | "track" | "tracker" | "camtrack" | "camera-tracking" | "3dtrack" | "planar" => TRACKING.to_string(),
         "grade" | "grades" | "grading-nodes" | "node" | "nodes" | "resolve" | "matching" | "match" | "stills" | "colormanagement" => GRADE.to_string(),
         "mix" | "mixing" | "mixer" | "buses" | "bus" => MIX.to_string(),
+        "voice" | "voices" | "tts" | "voiceover" | "voice-over" | "clone" | "cloning" | "omnivoice" | "narration" => VOICE.to_string(),
         "tools" | "panels" | "premiere" | "aftereffects" | "ae" | "pro" => TOOLS.to_string(),
         "3d" | "camera" | "cameras" | "null" | "nulls" | "parallax" => THREE_D.to_string(),
         "scopes" | "scope" | "lumetri" | "waveform" | "vectorscope" => SCOPES.to_string(),

@@ -117,7 +117,7 @@ WebSocket notice cost one fetch.
   titles, inconsistent type, missing brand or captions, length. Their suggestions are printed as `try:` and are
   never applied by `fix=true`.
 
-## AI voice (`src/voice.rs`, `assets/omnivoice_worker.py`, `components/VoicePanel.tsx`)
+## AI voice (`src/voice.rs`, `src/voice/`, `assets/omnivoice_worker.py`, `components/VoicePanel.tsx`)
 
 The AI Voice panel clones a voice from a few seconds of speech and speaks scripts with it, using OmniVoice
 (`k2-fsa/OmniVoice`, a 0.6B zero-shot TTS model) on the person's own computer. MoodCut stays one Rust binary:
@@ -132,15 +132,36 @@ OmniVoice is Python (PyTorch), so it runs in an environment of its own.
   Hugging Face with curl, resumable), `tools/uv`, a uv-managed Python 3.12 and `env/` with PyTorch 2.8 (CUDA 12.8 or
   12.6 wheels picked from the NVIDIA driver, CPU otherwise) and `omnivoice`, plus `hf/` as `HF_HOME` for the Whisper
   model OmniVoice downloads the first time a voice is cloned without a transcript. uv's cache is kept on that drive
-  and removed afterwards. A free-space check runs first, and a cancelled install continues where it stopped.
-- **Running.** `omnivoice_worker.py` (embedded in the binary, written next to the environment) loads the model once
-  and answers JSON lines on stdin/stdout (`clone`, `generate`); its stdout is redirected to stderr so library prints
-  can't be taken for replies. It is stopped after ten idle minutes, which frees the GPU memory. Clone and generate
-  requests are queued tasks run one at a time; the editor polls `/api/voice` and hears `voice` events.
-- **Voices** live in the install folder (`voices/<id>/`: the 24 kHz reference cut by FFmpeg from a clip's In/Out or a
-  file, the encoded `prompt.pt` and `voice.json`), so they work in every project. Cloning asks for the speaker's consent.
-- **Speech** is written next to the project's graphics (`<project> assets/voice/`), one WAV per paragraph, and
-  imported in one undoable edit: `import … tag=voice as=…`, `note $ '<script>'` and, when asked, `add … at=<playhead>`.
+  and removed afterwards; Python is installed with `--no-bin --no-registry`, so nothing lands outside that folder. A
+  free-space check runs first, a cancelled install continues where it stopped, and the setup ends with the worker's
+  `--check` (imports, device) and `--selftest` (its audio and text helpers). **Repair** runs the same steps over what is
+  there (no model download).
+- **Running** (`voice/worker.rs`). `omnivoice_worker.py` (embedded in the binary, written next to the environment)
+  loads the model once at below-normal priority and answers JSON lines on stdin/stdout (`clone`, `generate`, `info`),
+  sending progress lines while a request runs: a forward hook counts the diffusion steps and a wrapper around OmniVoice's
+  text chunker gives the part count, so long scripts report "part 2 of 3"; Whisper's first download is measured from
+  its cache folder. Its stdout is redirected to stderr so library prints can't be taken for replies. It runs without
+  autograd (`inference_mode`, parameters frozen), caps PyTorch at 92% of the GPU's memory so it fails fast instead of
+  spilling into shared system memory, leaves two CPU cores free, and retries once after an out-of-memory error. It is
+  stopped after ten idle minutes. Starting it also repairs an environment whose folder was moved (uv's launchers keep
+  absolute paths) and installs packages newer versions need (`RUNTIME_REV`).
+- **Tasks and errors** (`voice/tasks.rs`). Clone, transcript fixes and speech are queued tasks run one at a time, with a
+  fraction, a stage and elapsed time; the editor polls `/api/voice` while one runs and hears `voice` events. A failure is
+  explained in plain words with what to do and the button that helps (Retry or Repair), and keeps the technical text
+  (the worker's traceback) for Details.
+- **Voices** live in the install folder (`voices/<id>/`: `ref.wav`, the encoded `prompt.pt` and `voice.json`), so they
+  work in every project. Without an end time, the reference is the best 3-12 s of speech in the first 30 s, found by a
+  frame-energy speech detector (noise floor from the live frames, speech within 30 dB of the loud parts) and cut at
+  pauses. FFmpeg removes rumble (and, when asked, steady noise). Whisper runs on the GPU when there is room next to
+  OmniVoice, otherwise on the CPU, and is released after each clone; a wrong transcript can be corrected, which encodes
+  the voice again. Cloning asks for the speaker's consent.
+- **Speech** is written next to the project's graphics (`<project> assets/voice/`), one WAV per paragraph and take
+  (takes differ by seed; the seed is kept in the note), numbers read as words (num2words) and the voiced parts brought
+  to about -16 LUFS. It is imported in one undoable edit: `import … tag=voice as=…`, `note $ '<script>'` and, when
+  asked, `add … at=<time>` for the first take of each part.
+- **AI apps** drive the same setup, voices and tasks through the `voice` MCP tool (status, speak, clone,
+  retranscribe, setup, repair…), which waits for a task and answers with media and clip ids or the explained error;
+  `help voice` is its guide.
 
 The model weights are CC BY-NC 4.0 (non-commercial) and the audio tokenizer is under the Boson Higgs Audio 2 Community
 License; the panel says so before downloading.
@@ -368,7 +389,7 @@ These choices keep a typical edit to a few calls and a few thousand tokens:
 
 | Choice | Effect |
 | --- | --- |
-| **10 coarse tools** (~11.6 KB, ~2,900 tokens of definitions) | Small fixed cost per conversation; the `edit` description carries a cheat sheet so most edits need no `help` call. |
+| **11 coarse tools** (~13 KB, ~3,300 tokens of definitions) | Small fixed cost per conversation; the `edit` description carries a cheat sheet so most edits need no `help` call. |
 | **Batch script instead of one tool per operation** | 20 edits in one call instead of 20 round trips. |
 | **Atomic scripts with line-numbered errors and suggestions** | No half-applied state to inspect; the fix is usually one corrected line. |
 | **Diff replies** (`+t4 …`, `~c1..c3.f1 …`) | The AI learns the new ids and effects without re-reading the project. Repeated changes collapse into id ranges, which also work as targets (`fx c2..c9 blur`). |
@@ -414,7 +435,9 @@ crates/moodcut/src/
   gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture, page building
   gfx/fields.rs    editable fields: HTML scanner, placeholders, context escaping, manifest, make-editable
   sfx.rs           procedural sound effects (synthesis, WAV writer)
-  voice.rs         AI voice: OmniVoice discovery, drive picker, installer (uv, PyTorch), worker process, clone/speak tasks
+  voice.rs         AI voice: OmniVoice discovery, drive picker, installer and repair (uv, PyTorch), /api/voice
+  voice/worker.rs  the Python worker process: start, self-repair, progress, idle unload
+  voice/tasks.rs   clone / fix transcript / speak tasks, plain-language errors, the `voice` MCP tool
   check.rs         measured quality check, expectations, fixes
   export.rs        SRT / WebVTT / YouTube chapters / FCP7 XML / CMX3600 EDL
   tunnel.rs        remote token, cloudflared quick tunnel, connector instructions

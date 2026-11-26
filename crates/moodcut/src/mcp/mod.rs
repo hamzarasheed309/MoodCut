@@ -27,6 +27,7 @@ Custom motion graphics: write HTML/CSS/JS with the graphic tool (rendered to vid
 For a complete edit from one request follow help('workflow'); run check (with expect) before every render and fix what it reports. \
 Direct it like a top creative director: read help('direction') first (brief -> concept -> treatment -> build -> review, design and editing direction, and the ground rules: only commands that exist in help, ids from replies, describe only what a preview or transcript showed, measure before changing, report only what a reply or frame confirmed, say plainly when MoodCut can't do something); help('features') says when to use each feature, how, how to verify it, and when not to. \
 Work like a senior editor and motion designer, never generic: read help('style') and the closest help('recipes') before building; set a brand kit (brand <preset> or the client's font/colors), one look, 2-3 reusable motion moves, and sound design (sfx whoosh/hit/riser); check target=reels|tiktok|shorts|youtube flags hooks, pacing, platform safe zones and craft issues. \
+Voice-over in a cloned voice (OmniVoice, on this computer): the voice tool, help('voice'); clone only with the speaker's permission. \
 Premiere/After Effects tools and panels (rolling edits, lift/extract, paste attributes, align, keyframe assistant, cameras, Lumetri, scopes, Essential Sound) are script commands: help('tools'). \
 The edit tool description has a cheat sheet; call help(topic) for full references (edit, tools, effects, transitions, anim, 3d, text, templates, macros, graphics, color, scopes, render).";
 
@@ -160,8 +161,28 @@ html: full page or body fragment (Inter built in; library media as src='mc://m3'
             "annotations": {"title": "Check edit quality", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
         },
         {
+            "name": "voice",
+            "description": "AI voice-over in a cloned voice: OmniVoice runs on this computer (GPU if there is one); speech is imported as media (tag voice, the script as its note) and can be placed on the timeline. help('voice') has the details. action:\n\
+status: setup state, the voices (id, name, transcript) and recent tasks. Start here.\n\
+speak: voice=<id|name> text='...' (a blank line starts a new clip) [language=English] [speed=0.7-1.4] [quality=fast|standard|best] [takes=1-3] [seed=N to repeat a take] [at=seconds|playhead to also place it] -> media ids (and clip ids). Numbers are read as words; loudness is evened out.\n\
+clone: name='Narrator' media=m3 (or path=...) [start= end= seconds] [transcript='the exact words'] [denoise=true for noisy phone audio] consent=true. ONLY when the person confirms it is their voice or the speaker agreed: ask first. Without end, the best 3-12 s of speech in the first 30 s is picked; without transcript Whisper writes it (check it in the reply).\n\
+retranscribe: voice= transcript='corrected words' (encodes the voice again; a wrong transcript makes a worse clone) | rename: voice= name= | delete: voice=\n\
+setup: drive=D (a drive letter) or folder=... downloads the model and Python with PyTorch (about 10 GB): ask the person first | repair: fixes a moved or broken setup (no model download) | cancel | unload (frees GPU memory).\n\
+speak/clone/retranscribe wait until done (wait=false returns at once). Errors say what to do.",
+            "inputSchema": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["status", "voices", "speak", "clone", "retranscribe", "rename", "delete", "setup", "repair", "cancel", "unload"]},
+                "voice": {"type": "string"}, "text": {"type": "string"}, "language": {"type": "string"}, "speed": {"type": "number"},
+                "quality": {"type": "string", "enum": ["fast", "standard", "best"]}, "takes": {"type": "integer", "minimum": 1, "maximum": 3}, "seed": {"type": "integer"},
+                "split": {"type": "boolean"}, "at": {"type": ["number", "string"]}, "numbers": {"type": "boolean"}, "loudness": {"type": ["number", "boolean"]},
+                "name": {"type": "string"}, "media": {"type": "string"}, "path": {"type": "string"}, "start": {"type": "number"}, "end": {"type": "number"},
+                "transcript": {"type": "string"}, "denoise": {"type": "boolean"}, "consent": {"type": "boolean"},
+                "drive": {"type": "string"}, "folder": {"type": "string"}, "wait": {"type": "boolean"}, "id": {"type": "integer"}
+            }, "required": ["action"]},
+            "annotations": {"title": "AI voice", "destructiveHint": false, "openWorldHint": true}
+        },
+        {
             "name": "help",
-            "description": "MoodCut reference on demand. Start with direction (creative direction and the no-guessing rules) and features (when and how to use each feature). topic: workflow direction features style recipes platforms sfx brand edit tools masks tracking grade mix time props effects audio transitions anim 3d text shapes templates macros color scopes expr render analyze graphics examples fonts.",
+            "description": "MoodCut reference on demand. Start with direction (creative direction and the no-guessing rules) and features (when and how to use each feature). topic: workflow direction features style recipes platforms sfx brand voice edit tools masks tracking grade mix time props effects audio transitions anim 3d text shapes templates macros color scopes expr render analyze graphics examples fonts.",
             "inputSchema": {"type": "object", "properties": {"topic": {"type": "string"}}},
             "annotations": {"title": "Help", "readOnlyHint": true, "openWorldHint": false}
         }
@@ -265,6 +286,7 @@ impl Mcp {
             "check" | "qa" | "review" => return self.t_check(&eng, a),
             "analyze" => self.t_analyze(&eng, a),
             "render" => self.t_render(&eng, a),
+            "voice" | "tts" => crate::voice::mcp_tool(&eng, a),
             other => Err(anyhow::anyhow!("unknown tool '{other}'")),
         };
         match r {

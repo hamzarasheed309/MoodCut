@@ -374,6 +374,8 @@ jobs:
           files: out/*
           body_path: notes.md
           generate_release_notes: true
+          # v1.3.0-rc1 and the like: a pre-release to test, never "latest" (the final release replaces it)
+          prerelease: ${{ contains(github.ref_name, '-') }}
       # a fresh start: when this release's notes carry the marker, every other release and its tag
       # is deleted, only after this one is published
       - name: Remove older releases (when the release notes ask for it)
