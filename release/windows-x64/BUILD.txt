@@ -1,8 +1,8 @@
-MoodCut 1.2.0 for Windows x64
-source commit: 294d27e2a2320a3148fbdb19be177a8537bff30a (tag v1.2.0)
-release: https://github.com/hamzarasheed309/MoodCut/releases/tag/v1.2.0
+MoodCut 1.2.1 for Windows x64
+source commit: 9ed071aca934032ff53484e930aeadcdf37d3a7d (tag v1.2.1)
+release: https://github.com/hamzarasheed309/MoodCut/releases/tag/v1.2.1
 built and tested by CI; copied from the release assets
-moodcut.exe sha256: a8835a3a2f16eb7cf49f7320f267ac8feaf870ec0051390a728dc5a06db31df1  size: 23392768 bytes
-MoodCutApp.exe sha256: 4151ea30960bf90b2d5851988156aab505167cfa53d0ae1dbb10972fd85eae56  size: 23392768 bytes
-MoodCut-Setup-x64.exe sha256: 2ce80af694e8354ba405378dd101829e829753d80345e307ce19a20ad1c4191c  size: 65445091 bytes
+moodcut.exe sha256: a0f1205a1eee67c58fe3a2ab17d554d1c7d1b54c8f17ff5f547adde8721f49a6  size: 23394816 bytes
+MoodCutApp.exe sha256: 2fed3c750b5601355dbaf45430b234b6a9efb3515a30d9a474f4ce8783431e83  size: 23394816 bytes
+MoodCut-Setup-x64.exe sha256: 8c38bca7258fb3933f1f465eb07237c07e09e80ddbd2ecda9c872564d1feb79c  size: 65436145 bytes
 FFmpeg is bundled in MoodCut-Setup-x64.exe and in the release's portable zip (too large for git).
