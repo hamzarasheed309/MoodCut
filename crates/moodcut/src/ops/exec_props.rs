@@ -341,8 +341,13 @@ impl<'a> Exec<'a> {
                 continue;
             }
             let (ts, rest) = tok.split_once(':').ok_or_else(|| anyhow!("keyframe '{tok}' must look like time:value[@ease] e.g. 0:1 1.5:1.2@outBack"))?;
+            // an ease has no commas, except a bezier's numbers: 1:640,200@bezier(.2,.9,.1,1)
+            let bezier = |e: &str| {
+                let l = e.trim().to_ascii_lowercase();
+                l.ends_with(')') && ["bezier(", "cubic-bezier(", "cubic_bezier(", "cubicbezier(", "cb("].iter().any(|p| l.starts_with(p))
+            };
             let (vs, es) = match rest.rsplit_once('@') {
-                Some((v, e)) if !e.is_empty() && !e.contains(',') => (v, Some(e)),
+                Some((v, e)) if !e.is_empty() && (!e.contains(',') || bezier(e)) => (v, Some(e)),
                 _ => (rest, None),
             };
             let t_rel = self.rel_time(ts, dur)?;

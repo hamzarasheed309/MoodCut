@@ -44,6 +44,11 @@ anyway**.
   set up or repair OmniVoice, and follow the same progress you see. Cloning always needs the speaker's permission.
 - `help voice` explains how to get good results.
 
+## Also in this release
+
+- Keyframes take custom bezier eases inline: `kf t1 pos 0:-300,200@bezier(.2,.9,.1,1) 1.5:640,200`.
+- `speedramp` and hand time-remapping (`kf <clip> remap ...`) are listed in the edit reference.
+
 ## Measured on an RTX 4050 Laptop GPU (6 GB)
 
 | Step | Time | GPU memory |

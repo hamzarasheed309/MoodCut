@@ -1,5 +1,6 @@
 use super::exec::{run, Env};
 use super::outline;
+use crate::model::anim::Ease;
 use crate::model::project::*;
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
@@ -678,6 +679,18 @@ fn speed_ramp_remaps_time() {
     ok(&mut q, "add m1[0-5] at=12\nspeedramp c2 at=13 to=25% dur=2");
     assert_eq!(q.item("c2").unwrap().props["interp"].v.str(), "blend");
     assert!(err(&mut q, "speedramp c2 at=20").contains("inside the clip"));
+}
+
+#[test]
+fn kf_takes_inline_bezier_eases() {
+    let mut p = proj();
+    ok(&mut p, "text 'Hi' at=0 dur=5");
+    ok(&mut p, "kf t1 pos 0:-300,200@bezier(.2,.9,.1,1) 1.5:640,200@cubic-bezier(.36,0,.66,-.56) 3:900,200");
+    ok(&mut p, "kf t1 opacity 0:0 1:100%@bezier(.2,.9,.1,1) 2:50%");
+    let t = p.item("t1").unwrap();
+    assert_eq!(t.props["pos"].k[0].e, Ease::Bezier(0.2, 0.9, 0.1, 1.0));
+    assert_eq!(t.props["pos"].k[1].e, Ease::Bezier(0.36, 0.0, 0.66, -0.56));
+    assert_eq!(t.props["opacity"].k[1].e, Ease::Bezier(0.2, 0.9, 0.1, 1.0));
 }
 
 #[test]

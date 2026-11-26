@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/moodcut-logo-dark.svg">
     <img src="assets/brand/moodcut-logo-light.svg" alt="MoodCut" width="420">
@@ -9,14 +9,14 @@
 Claude, ChatGPT and other AI apps can drive over MCP, in one small Windows app with FFmpeg doing the heavy lifting.</p>
 
 <p align="center">
-  <a href="#install-windows"><b>Install</b></a> ·
-  <a href="#connect-your-ai">Connect your AI</a> ·
-  <a href="#smooth-on-any-pc">Performance</a> ·
-  <a href="docs/REFERENCE.md">Script reference</a> ·
+  <a href="#install-windows"><b>Install</b></a> Â·
+  <a href="#connect-your-ai">Connect your AI</a> Â·
+  <a href="#smooth-on-any-pc">Performance</a> Â·
+  <a href="docs/REFERENCE.md">Script reference</a> Â·
   <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
-![MoodCut editor](docs/screenshot.jpg)
+![MoodCut editor](docs/screenshot.png)
 
 Point your assistant at a folder of footage and ask for the finished piece:
 
@@ -41,15 +41,15 @@ Essential Sound (dialogue / music / effects / ambience), an audio track mixer, g
 sidechain ducking, measured loudness normalization (hits the LUFS target exactly) and a limiter, 32 audio
 effects, and markers with colors, durations and comments.
 
-**Motion design (After Effects-style)**: keyframes on every property with 30+ easing curves and custom béziers,
+**Motion design (After Effects-style)**: keyframes on every property with 30+ easing curves and custom bÃ©ziers,
 a keyframe assistant (Easy Ease, reverse, bake, sequence layers), expressions (`wiggle`, `linear`, `ease`,
-`random`, `noise`…), parenting and null objects, 3D layers seen through cameras (two-node or one-node, with
+`random`, `noise`â€¦), parenting and null objects, 3D layers seen through cameras (two-node or one-node, with
 push-in, orbit, truck and shake moves) and depth-sorted, the Align panel, a transform gizmo in the monitor,
 corner pin, motion blur, masks (feather, expand, modes), track mattes, 32 blend modes, adjustment layers, shape
 layers with trim paths and repeaters, per-character text animators, 91 video effects (glow, blurs, chroma key,
 wave warp, turbulent displace, linear/radial/venetian-blind wipes, echo and posterize time, lens flare,
-glitch, light leaks…), 50+ animation presets and 15 editable motion graphics templates (lower thirds, kinetic
-titles, counters, bar charts, callouts, progress bars…).
+glitch, light leaksâ€¦), 50+ animation presets and 15 editable motion graphics templates (lower thirds, kinetic
+titles, counters, bar charts, callouts, progress barsâ€¦).
 
 **Produced, not assembled**: the finishing that separates a professional video from a cut-together one is built
 in and named in the AI's guidance. Sound design comes from 13 synthesized effects (whoosh, swish, riser, reverse
@@ -58,7 +58,7 @@ placed so its peak lands on the cut, title or beat (`sfx whoosh on=transitions`,
 remap time with eased ramps (`speedramp V1 at=3 to=4x`), punch-ins alternate framing on jump cuts (`punchin V1`),
 J and L cuts let sound lead picture, a brand kit gives every title, caption, shape and HTML graphic the same font and
 colors (`brand bold` or the client's own), there are 24 looks (Kodak and Fuji film, bleach bypass, commercial,
-night, pastel…), punchy creator-style captions, and slam, wipe, whip and glitch entrances. `check target=reels`
+night, pastelâ€¦), punchy creator-style captions, and slam, wipe, whip and glitch entrances. `check target=reels`
 (or tiktok, shorts, youtube) knows each platform's UI zones and flags weak hooks, slow pacing, static shots, linear
 easing, too many transition types, silent titles, inconsistent type and missing captions.
 
@@ -73,7 +73,7 @@ with `vars` instead of rewriting the page. The graphic editor previews the page 
 as the render (scrub, play, click a text to jump to its field) and renders only when you apply. A page written
 without fields gets its texts and colors turned into fields automatically. See [examples/graphics](examples/graphics).
 
-**Large libraries**: import whole drives of footage at once (parallel, cached probing; about 150 files in 2–3 s),
+**Large libraries**: import whole drives of footage at once (parallel, cached probing; about 150 files in 2â€“3 s),
 skip unreadable files with a report, tag and annotate media, filter by kind, duration, orientation, tags or
 words, browse poster-frame sheets of 48 clips per image and per-clip filmstrips, batch-analyze, and search
 transcripts across the library.
@@ -109,7 +109,7 @@ install. In the same few clicks Setup can also:
 - **connect the AI apps it finds**: Claude Desktop (including the Microsoft Store build), Claude Code, Cursor, VS Code,
   Windsurf, LM Studio, Gemini CLI and Codex.
 
-Uninstalling (Settings → Apps) reverses all of it, including the AI apps' settings.
+Uninstalling (Settings â†’ Apps) reverses all of it, including the AI apps' settings.
 
 **One line in PowerShell** does the same without clicking through:
 
@@ -122,7 +122,7 @@ and double-click `MoodCutApp.exe` (the editor); `moodcut.exe` is the command lin
 the zip's `ffmpeg` folder, where MoodCut looks first. (Only the bare exe without that folder offers to download FFmpeg
 into `%APPDATA%\MoodCut` on first run.) Both are the same program, so `moodcut.exe` alone also opens the editor (from a terminal, or with a console
 window flashing up when double-clicked). Windows may show *"Windows protected your PC"* because the app
-isn't code-signed yet: **More info → Run anyway**.
+isn't code-signed yet: **More info â†’ Run anyway**.
 
 When MoodCut opens you land on **Home**: start a YouTube, Reel/TikTok, square or 4K project, reopen a recent one, and
 connect your AI apps with one click. `moodcut doctor` checks everything from a terminal.
@@ -138,7 +138,7 @@ expression, mask, transition, text, marker, the audio mix and the brand kit, plu
 **Save** (Ctrl+S) asks where to keep a new project; **Save As** (Ctrl+Shift+S) saves a copy under a new name.
 - Files are written safely: a crash or power cut mid-save leaves the previous version intact, and a backup is kept at
   most every 5 minutes (the last 10) in `%APPDATA%\MoodCut\autosave\backups`. A damaged project names its newest backup.
-- Projects never saved to a file autosave too; **Home → Unsaved projects** brings them back after a crash.
+- Projects never saved to a file autosave too; **Home â†’ Unsaved projects** brings them back after a crash.
 - Moved a project folder to another drive or PC? Media saved inside or beside it are found again on open. Anything still
   missing is listed (relink it with `relink m3 <new path>`), shows red in previews, and stops an export before it starts.
 - Exports encode to a temporary file, so a failed or cancelled export never leaves half a video or replaces an older one.
@@ -181,12 +181,12 @@ moodcut connect
 It opens the editor, starts a free [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
 (it downloads `cloudflared` the first time; no account needed), and prints a connector URL like
 `https://quiet-river-1234.trycloudflare.com/mcp/<secret>` (also copied to the clipboard). In the editor,
-**Connect AI → Create web link** does the same thing.
+**Connect AI â†’ Create web link** does the same thing.
 
-- **claude.ai** (Pro, Max, Team, Enterprise): Settings → Connectors → *Add custom connector* → paste the URL → Add.
+- **claude.ai** (Pro, Max, Team, Enterprise): Settings â†’ Connectors â†’ *Add custom connector* â†’ paste the URL â†’ Add.
   Then enable MoodCut in a chat's tools menu.
-- **ChatGPT** (plans with developer mode): Settings → Connectors (*Apps* in newer versions) → Advanced → turn on
-  *Developer mode* → *Create* → paste the URL, authentication *No authentication*.
+- **ChatGPT** (plans with developer mode): Settings â†’ Connectors (*Apps* in newer versions) â†’ Advanced â†’ turn on
+  *Developer mode* â†’ *Create* â†’ paste the URL, authentication *No authentication*.
 
 Keep the window open while you work. The secret in the URL is the only way in: requests through the tunnel
 without it are refused, and it stays the same across restarts (`moodcut connect --new-token` replaces it). The
@@ -200,7 +200,7 @@ one connector URL for good.
 | --- | --- |
 | **Desktop AI apps** | **Connect AI** in the editor, or `moodcut install-ai` (see above) |
 | **Any MCP client over stdio** | command `moodcut`, arguments `mcp` |
-| **Any MCP client over HTTP** (Open WebUI, MCP Inspector, your own agent…) | `http://127.0.0.1:7878/mcp` (Streamable HTTP; MCP Inspector's page is allowed from the browser, others via `MOODCUT_ALLOW_ORIGINS`) |
+| **Any MCP client over HTTP** (Open WebUI, MCP Inspector, your own agentâ€¦) | `http://127.0.0.1:7878/mcp` (Streamable HTTP; MCP Inspector's page is allowed from the browser, others via `MOODCUT_ALLOW_ORIGINS`) |
 
 `moodcut mcp` (stdio) attaches to the editor if it's already open, so AI edits appear live in the window; otherwise
 it runs the engine itself and serves the editor at `http://127.0.0.1:7878` (or the next free port).
@@ -250,7 +250,7 @@ The window is built from dockable panels like Premiere Pro and After Effects. Pi
 (**Assembly, Editing, Color, Effects, Audio, Motion, Graphics, AI**) or arrange your own: drag a panel's tab onto
 another tab bar to group it, onto the edge of a panel to split it, or anywhere else to float it in its own window;
 drag the dividers to resize, press <kbd>`</kbd> to maximize the panel you're working in, and reopen anything from
-the **Window** menu. Each workspace remembers its arrangement (Window → Reset to saved layout restores it), and on a
+the **Window** menu. Each workspace remembers its arrangement (Window â†’ Reset to saved layout restores it), and on a
 narrow window the panels collapse into one column of tabs.
 
 Every control writes a MoodCut Script line through the same engine the AI uses, so each action is undoable, shows
@@ -258,21 +258,21 @@ up in History, and is something the AI can do too.
 
 | Panel / tool | What it does | Script it sends |
 | --- | --- | --- |
-| Tools: Selection (V), Track Select Forward (A), Ripple (B), Rolling (N), Rate Stretch (R), Razor (C), Slip (Y), Slide (U), Hand (H), Zoom (Z) | timeline editing | `move`, `trim … ripple`, `roll`, `fit`, `cut`, `slip`, `slide` |
-| Type (T), Shape (G), Mask Pen (P) | click or drag in the Program monitor; the mask pen builds closed Bézier contours on the selected video layer | `text … pos=`, `shape rect …`, `mask <id> path d='M… C… Z'`; `kf <id.m1> d …` |
-| Program monitor | drag a layer to move it, corners to scale, the handle to rotate (keyed when animated); safe guides; scopes | `nudge <id> pos=…`, `preview scope=` |
-| Source monitor | preview media, mark In / Out, Insert (`,`) or Overwrite (`.`) into the targeted track | `add m1[2-5] V1 at=… mode=insert` |
+| Tools: Selection (V), Track Select Forward (A), Ripple (B), Rolling (N), Rate Stretch (R), Razor (C), Slip (Y), Slide (U), Hand (H), Zoom (Z) | timeline editing | `move`, `trim â€¦ ripple`, `roll`, `fit`, `cut`, `slip`, `slide` |
+| Type (T), Shape (G), Mask Pen (P) | click or drag in the Program monitor; the mask pen builds closed BÃ©zier contours on the selected video layer | `text â€¦ pos=`, `shape rect â€¦`, `mask <id> path d='Mâ€¦ Câ€¦ Z'`; `kf <id.m1> d â€¦` |
+| Program monitor | drag a layer to move it, corners to scale, the handle to rotate (keyed when animated); safe guides; scopes | `nudge <id> pos=â€¦`, `preview scope=` |
+| Source monitor | preview media, mark In / Out, Insert (`,`) or Overwrite (`.`) into the targeted track | `add m1[2-5] V1 at=â€¦ mode=insert` |
 | Lumetri Color | basic correction, looks, split toning, curves, hue/sat curves, Lift/Gamma/Gain/Offset wheels, HSL secondary, vignette, local mask windows and custom 1D/3D `.cube` LUTs | `color c1 exposure=.4 mask=m1 mix=.8`, `fx c1 curves mask=m1`, `lut c1 file='look.cube' amount=.8 mask=m1` |
 | Audio | Essential Sound tags; mixer with pan, faders, mute/solo, track and master effects, loudness target, peak meter | `sound`, `track set`, `master`, `afx` |
 | Effect Controls | every property and effect with keyframe navigation, Align & Distribute, Keyframe Assistant | `set`, `kf`, `fx`, `align`, `ease`, `stagger` |
 | Markers / History | colored markers with durations and comments; click any step to go back | `marker set`, `undo 3` |
-| Effects & Presets | effects, transitions, animations, titles, looks, audio effects and sound FX, applied to the selection or at the playhead | `fx`, `tr`, `anim`, `title`, `sfx whoosh at=…` |
+| Effects & Presets | effects, transitions, animations, titles, looks, audio effects and sound FX, applied to the selection or at the playhead | `fx`, `tr`, `anim`, `title`, `sfx whoosh at=â€¦` |
 | Brand Kit, Character, Align | the brand's font and colors with presets; type settings of the selected text; After Effects' Align panel | `brand bold`, `set t3 tracking=-2`, `align t3 left to=safe` |
-| Audio Track Mixer effect chains | click an effect to bypass it, ⚙ for its settings, ✕ to remove it | `afx A1.a2 off`, `afx A1.a2 ratio=4`, `afx master.a1 del` |
-| AI Voice | clone a voice from 3-10 s of speech (a clip's In/Out or a file) and speak scripts with it, using [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) on your own computer; finds the model by itself, or locates it or downloads it to the drive you pick; picks the best part of the reference, shows its transcript to correct, live progress, takes to choose from, numbers read as words and even loudness; one clip per paragraph, imported into the Project panel and optionally placed at the playhead. AI apps use it through the `voice` tool | `voice action=speak voice=Host text='…' at=playhead` (MCP); `import '…wav' tag=voice`, `note $ '…'`, `add … at=…` |
+| Audio Track Mixer effect chains | click an effect to bypass it, âš™ for its settings, âœ• to remove it | `afx A1.a2 off`, `afx A1.a2 ratio=4`, `afx master.a1 del` |
+| AI Voice | clone a voice from 3-10 s of speech (a clip's In/Out or a file) and speak scripts with it, using [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) on your own computer; finds the model by itself, or locates it or downloads it to the drive you pick; picks the best part of the reference, shows its transcript to correct, live progress, takes to choose from, numbers read as words and even loudness; one clip per paragraph, imported into the Project panel and optionally placed at the playhead. AI apps use it through the `voice` tool | `voice action=speak voice=Host text='â€¦' at=playhead` (MCP); `import 'â€¦wav' tag=voice`, `note $ 'â€¦'`, `add â€¦ at=â€¦` |
 
 Shortcuts follow Premiere Pro and After Effects: Space, I / O (work area, or In / Out in the Source monitor),
-`;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+←/→ nudge clips a frame, Ctrl+arrows
+`;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+â†/â†’ nudge clips a frame, Ctrl+arrows
 nudge position, Up / Down edit points, Shift+M next marker, J / K keyframes, F9 Easy Ease, Shift+E enable,
 `[` `]` and Alt+`[` `]` move or trim layers to the playhead, Ctrl+C / Ctrl+V / Ctrl+Alt+V (paste attributes),
 S snapping, X mark clip, Ctrl+Shift+C precompose.
@@ -340,7 +340,7 @@ Then `check` reviews the result the way a finishing editor would. On a Reel buil
 
 ```text
 check s2 'Reel' 1080x1920@30 15.26s: 0 error(s), 2 warning(s), 1 note(s), 1 craft note(s)
-4 shots (avg 3.81s, 12 cuts/min) · 1 text · 15 captions · mix -14 LUFS / -3.2 dBTP
+4 shots (avg 3.81s, 12 cuts/min) Â· 1 text Â· 15 captions Â· mix -14 LUFS / -3.2 dBTP
 N1 c4 (m6 talk.mp4) ends the mix without a fade (abrupt cut-off)
    fix: fade c4 out=1 audio
 C1 pacing: average shot 3.81s is slow for Reels (aim 0.8-2 s)
@@ -353,7 +353,7 @@ are never applied automatically.
 ### Motion graphics as HTML
 
 ```json
-{"tool": "graphic", "html": "<div class='lt'><b>{{name}}</b><span>{{role|Director}}</span></div><style>…@keyframes…</style>",
+{"tool": "graphic", "html": "<div class='lt'><b>{{name}}</b><span>{{role|Director}}</span></div><style>â€¦@keyframesâ€¦</style>",
  "name": "Lower third", "dur": 4, "vars": {"name": "Jane Doe"}, "place": "V4 at=0.4"}
 ```
 ```text
@@ -375,11 +375,11 @@ graphics made with an older brand kit. Library media can be used inside the page
 
 ```text
 check s1 'Main' 1920x1080@30 30s: 0 error(s), 1 warning(s), 1 note(s)
-27 shots (avg 1.11s, 52 cuts/min) · 6 captions · 2 graphics/overlays · mix -14 LUFS / -3 dBTP
+27 shots (avg 1.11s, 52 cuts/min) Â· 6 captions Â· 2 graphics/overlays Â· mix -14 LUFS / -3 dBTP
 W1 @4.05s c2,c3 from 640x360 sources shown at up to 3x their resolution: soft/pixelated (use higher-res media, smaller scale, or a smaller comp)
-N1 @8.62s 26 clips (c5,c6,c7,c8…) are portrait in a landscape comp: black bars on the sides
+N1 @8.62s 26 clips (c5,c6,c7,c8â€¦) are portrait in a landscape comp: black bars on the sides
    fix: set c5..c30 fit=blur
-expected: dur 30s ✓ · size 1920x1080 ✓ · captions ✓ · music ✓
+expected: dur 30s âœ“ Â· size 1920x1080 âœ“ Â· captions âœ“ Â· music âœ“
 1 fix line(s) available: check fix=true applies them in one undoable edit, or edit them yourself
 ```
 
@@ -404,17 +404,17 @@ moodcut render explainer.mcut
 | --- | --- |
 | `moodcut` / `moodcut gui [project]` | open the editor (also serves MCP at `/mcp`) |
 | `moodcut connect [project] [--url URL] [--new-token]` | editor + HTTPS tunnel + connector URL for claude.ai / ChatGPT |
-| `moodcut serve [--port 7878] [--public] [--token T] [--allow DIR]…` | headless editor + MCP server; `--public` listens on all interfaces and requires a token, `--allow` limits file access |
+| `moodcut serve [--port 7878] [--public] [--token T] [--allow DIR]â€¦` | headless editor + MCP server; `--public` listens on all interfaces and requires a token, `--allow` limits file access |
 | `moodcut mcp` | MCP over stdio (for Claude Desktop / Claude Code) |
 | `moodcut run <project> <script or @file> [--create WxH@fps]` | apply a script and save |
 | `moodcut render <project> [-o out] [-p preset] [--range a-b] [--scale 0.5] [--hw auto]` | export (presets include `srt`, `vtt`, `chapters`, `xml`, `edl`) |
 | `moodcut frame <project> -t 3.5 -o frame.png` | render one frame |
-| `moodcut graphic <file.html> -o out.mov [--dur 5] [--size 1920x1080] [--var k=v]… [--project p --place "V3 at=2"]` | render an HTML motion graphic (`--dur 0 --at 2` for a still) |
+| `moodcut graphic <file.html> -o out.mov [--dur 5] [--size 1920x1080] [--var k=v]â€¦ [--project p --place "V3 at=2"]` | render an HTML motion graphic (`--dur 0 --at 2` for a still) |
 | `moodcut check <project> [--fix] [--dur 30] [--size 1080x1920] [--strict]` | quality-check an edit; `--strict` fails on errors (CI) |
 | `moodcut doctor` / `moodcut setup [--force]` | check the setup / install (or update) the portable FFmpeg |
 | `moodcut setup --from <ffmpeg.zip> [--dest DIR]` | install FFmpeg from an archive you already downloaded (the installer uses this) |
-| `moodcut install-ai [apps…] [--list]` | connect MoodCut to the AI apps on this computer (all found when no names are given) |
-| `moodcut uninstall-ai [apps…]` | remove MoodCut from the AI apps' settings |
+| `moodcut install-ai [appsâ€¦] [--list]` | connect MoodCut to the AI apps on this computer (all found when no names are given) |
+| `moodcut uninstall-ai [appsâ€¦]` | remove MoodCut from the AI apps' settings |
 | `moodcut install-claude` | same as `install-ai claude` |
 
 Environment: `MOODCUT_FFMPEG` (folder with ffmpeg/ffprobe, or `none` to run without), `MOODCUT_HOME` (data

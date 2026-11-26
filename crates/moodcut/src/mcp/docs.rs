@@ -100,6 +100,7 @@ EDIT
  cut <id|V1|all> at=T[,T2]       trim <id> start=T|+d end=T|-d dur= in= [ripple]
  del <ids> [ripple|ripple=all]   move <ids> at=T|by=+2 [track=V2] [mode=overwrite]
  slip <id> +0.5   slide <id> -0.3   speed <ids> 2x|50% [ripple] [interp=blend|flow]   reverse <id>   fit <id> dur=5
+ speedramp <clip|V1> at=T [to=4x|40%] [dur=0.6] [ramp=0.2] (needs spare source after the out point to speed up; stacks)   time remap by hand: kf <clip> remap 0:0 2:2 3:5.25@easeIn
  freeze <id> at=T dur=2   dup <id> [at= track=]   replace <id> <media>   detach <id> (split audio)   close V1 (remove gaps)   gap V1 at= dur=
  name <id> <name>   marker add T 'drop'   marker del T   precomp <ids> name='Group'
 PROPERTIES & MOTION
