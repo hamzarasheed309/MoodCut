@@ -1,6 +1,6 @@
 // Editor actions shared by panels and keyboard shortcuts. Every edit is a MoodCut Script
 // line sent through `run`, the same path the AI uses over MCP.
-import { clipboard, comp, findItem, fps, mediaById, monitorTab, playhead, playing, run, saveProject, scrollX, selection, setPlayhead, showRender, snapping, sourceIn, sourceMedia, sourceOut, sourceT, toast, tool, zoom } from "./store";
+import { clipboard, comp, confirmLeave, findItem, fps, importPaths, mediaById, monitorTab, pickFiles, playhead, playing, project_, run, saveProject, scrollX, selection, setPlayhead, showRender, snapping, sourceIn, sourceMedia, sourceOut, sourceT, toast, tool, zoom } from "./store";
 import type { Tool } from "./store";
 import { focusedPanel, groupOf, maximized, shown } from "./dock";
 import type { Comp, Item } from "./types";
@@ -155,7 +155,7 @@ export function gotoKey(dir: 1 | -1, prop?: string) {
 // ---------------------------------------------------------------- clip edits
 
 /** Q / W: ripple trim the clip under the playhead to it (start / end). */
-function rippleTrimTo(edge: "start" | "end") {
+export function rippleTrimTo(edge: "start" | "end") {
   const c = comp.value;
   const it = c && clipAtPlayhead(c);
   if (!it) return;
@@ -164,7 +164,7 @@ function rippleTrimTo(edge: "start" | "end") {
   run(`trim ${it.id} ${edge}=${T(t)} ripple`, true).then(() => edge === "start" && setPlayhead(it.start));
 }
 
-function moveToTrack(dir: 1 | -1) {
+export function moveToTrack(dir: 1 | -1) {
   const lines: string[] = [];
   for (const id of selection.value) {
     const f = findItem(id);
@@ -220,6 +220,24 @@ export function installShortcuts(): () => void {
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     const mod = e.ctrlKey || e.metaKey;
+    // File menu keys (Premiere): Ctrl+O open, Ctrl+I import, Ctrl+Alt+N new project
+    const key1 = e.key.length === 1 ? e.key.toLowerCase() : "";
+    if (mod && !e.shiftKey && (key1 === "o" || key1 === "i" || (key1 === "n" && e.altKey))) {
+      e.preventDefault();
+      if (key1 === "o")
+        pickFiles("open", "project").then((f) => {
+          if (f[0] && confirmLeave()) project_({ action: "open", path: f[0] });
+        });
+      else if (key1 === "i")
+        pickFiles("import").then((f) => {
+          if (f.length) importPaths(f);
+        });
+      else if (confirmLeave()) {
+        const name = prompt("Project name", "Untitled");
+        if (name) project_({ action: "new", name, size: "1920x1080", fps: 30 });
+      }
+      return;
+    }
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const step = 1 / fps.value;
     const sel = selection.value;

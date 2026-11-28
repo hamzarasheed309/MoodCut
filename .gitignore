@@ -7,6 +7,6 @@
 *.log
 /dist/
 
-# Python bytecode (testing the OmniVoice worker locally)
+# Python bytecode (local helper scripts)
 __pycache__/
 *.pyc

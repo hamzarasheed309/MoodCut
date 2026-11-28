@@ -246,7 +246,11 @@ The AI can manage proxies too: `media action=proxy ids=all` (status without ids)
 
 ## The editor
 
-The window is built from dockable panels like Premiere Pro and After Effects. Pick a workspace from the top bar
+The window looks and works like Premiere Pro: its menu bar (File, Edit, Clip, Sequence, Markers, Graphics, AI, View,
+Window, Help) lists every command with its shortcut, values in Effect Controls are blue "hot text" you drag to scrub
+(Shift faster, Alt finer) or click to type, the timeline has a timecode ruler, Premiere's label colors and targeted
+tracks, the monitors have Premiere's transport buttons, and Audio Meters sit beside the timeline. Help → Keyboard
+Shortcuts (F1) lists every key. It is built from dockable panels like Premiere Pro and After Effects. Pick a workspace from the top bar
 (**Assembly, Editing, Color, Effects, Audio, Motion, Graphics, AI**) or arrange your own: drag a panel's tab onto
 another tab bar to group it, onto the edge of a panel to split it, or anywhere else to float it in its own window;
 drag the dividers to resize, press <kbd>`</kbd> to maximize the panel you're working in, and reopen anything from
@@ -269,7 +273,9 @@ up in History, and is something the AI can do too.
 | Effects & Presets | effects, transitions, animations, titles, looks, audio effects and sound FX, applied to the selection or at the playhead | `fx`, `tr`, `anim`, `title`, `sfx whoosh at=â€¦` |
 | Brand Kit, Character, Align | the brand's font and colors with presets; type settings of the selected text; After Effects' Align panel | `brand bold`, `set t3 tracking=-2`, `align t3 left to=safe` |
 | Audio Track Mixer effect chains | click an effect to bypass it, âš™ for its settings, âœ• to remove it | `afx A1.a2 off`, `afx A1.a2 ratio=4`, `afx master.a1 del` |
-| AI Voice | clone a voice from 3-10 s of speech (a clip's In/Out or a file) and speak scripts with it, using [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) on your own computer; finds the model by itself, or locates it or downloads it to the drive you pick; picks the best part of the reference, shows its transcript to correct, live progress, takes to choose from, numbers read as words and even loudness; one clip per paragraph, imported into the Project panel and optionally placed at the playhead. AI apps use it through the `voice` tool | `voice action=speak voice=Host text='â€¦' at=playhead` (MCP); `import 'â€¦wav' tag=voice`, `note $ 'â€¦'`, `add â€¦ at=â€¦` |
+| AI Voice | speech through [ElevenLabs](https://elevenlabs.io) with your own API key: your cloned voices and ElevenLabs' library (search, previews), the Eleven v4 / v3 / Multilingual / Flash models, 30+ languages, delivery sliders (stability, similarity, style, speed), 1-3 takes, one clip per paragraph, even loudness; clone a voice from a clip's In/Out or a file with the speaker's permission; your plan's characters left in the header. Clips are imported into the Project panel and optionally placed at the playhead. AI apps use it through the `voice` tool | `voice action=speak voice=Narrator text='...' at=playhead` (MCP); `import '...wav' tag=voice`, `note $ '...'`, `add ... at=...` |
+| AI Video | shots generated through [Runway](https://dev.runway.com) (Gen-4.5, Veo 3.1, Kling 3 and 4, Seedance 2.5, Gemini Omni) [fal.ai](https://fal.ai) (Veo 3.1, Kling, Seedance, Hailuo, Wan, any fal endpoint) or [Higgsfield](https://higgsfield.ai) (Cinema Studio 4, Kling 3.0, Seedance 2.5, Hailuo 3) with your own keys: text to video, or from a first (and last) frame taken from the Program monitor, a still, a video frame or a file; duration, aspect, resolution and sound per model; jobs run 3 at a time with live progress (the provider's percentage, or a marked estimate with time left), cost in credits, cancel (also at the provider), retry, and errors that say what to do; jobs survive a restart. Clips are downloaded, imported (tag ai-video, the prompt as the note) and optionally placed. AI apps use it through the `video` tool | `video action=generate prompt='...' model=runway/veo3.1 duration=8 image=frame at=playhead` (MCP); `import '...mp4' tag=ai-video`, `add ... V2 at=...` |
+| AI Services (Edit menu) | your ElevenLabs, Runway, fal.ai and Higgsfield API keys: saved encrypted for your Windows user (DPAPI) or read from `ELEVENLABS_API_KEY`, `RUNWAYML_API_SECRET`, `FAL_KEY`; tested when saved; never shown to AI apps or web pages | (none: keys stay in the editor) |
 
 Shortcuts follow Premiere Pro and After Effects: Space, I / O (work area, or In / Out in the Source monitor),
 `;` lift, `'` extract, Q / W ripple trim to the playhead, Ctrl+K split, Alt+â†/â†’ nudge clips a frame, Ctrl+arrows

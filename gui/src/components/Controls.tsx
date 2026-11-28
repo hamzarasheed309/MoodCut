@@ -56,8 +56,16 @@ export function NumField({ value, onCommit, step = 0.1, min, max }: { value: num
           setText(fmtNum(value));
           setEditing(false);
         }
+        // hot text: arrows step the value (Shift: 10x, Alt: finer), like Premiere's
+        if (!editing && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+          e.preventDefault();
+          const v = lim(value + (e.key === "ArrowUp" ? 1 : -1) * step * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1));
+          setText(fmtNum(v));
+          onCommit(v);
+        }
         e.stopPropagation();
       }}
+      title="Drag to scrub (Shift: faster, Alt: finer) · click to type · ↑↓ to step"
     />
   );
 }

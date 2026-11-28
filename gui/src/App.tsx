@@ -1,17 +1,19 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { installShortcuts } from "./actions";
 import { CheckPanel } from "./components/CheckPanel";
 import { Dock } from "./components/Dock";
 import { FfmpegBanner } from "./components/FfmpegBanner";
 import { GraphicEditor } from "./components/GraphicEditor";
 import { Home, showHome } from "./components/Home";
+import { MenuBar, ShortcutsModal } from "./components/MenuBar";
 import { ConnectAI, FileBrowser, RenderPanel, Toasts } from "./components/Modals";
-import { LogoMark, Wordmark } from "./brand";
-import { ALL_PANELS, closePanel, isOpen, maximized, narrow, PANEL_TITLES, resetWorkspace, setLayout, showPanel, switchWorkspace, workspace, WORKSPACES } from "./dock";
-import { aiPulse, confirmLeave, connected, dirty, logs, pickFiles, project, project_, projectPath, redoN, rev, run, saveProject, showCheck, showRender, undoN } from "./store";
+import { AIServices } from "./components/aiui";
+import { LogoMark } from "./brand";
+import { narrow, switchWorkspace, workspace, WORKSPACES } from "./dock";
+import { aiPulse, connected, dirty, logs, project, projectPath, redoN, rev, run, showCheck, showRender, undoN } from "./store";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
-/** Workspace switcher, like the tabs at the top of Premiere Pro and After Effects. */
+/** Workspace switcher, the tabs in the middle of Premiere Pro's header. */
 function Workspaces() {
   if (narrow.value) return null;
   return (
@@ -25,56 +27,11 @@ function Workspaces() {
   );
 }
 
-/** Window menu: open or close any panel, reset the workspace, maximize. */
-function WindowMenu() {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const off = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
-    window.addEventListener("pointerdown", off, true);
-    return () => window.removeEventListener("pointerdown", off, true);
-  }, [open]);
-  return (
-    <div class="dock-menu" ref={ref}>
-      <button class={"btn sm ghost" + (open ? " on" : "")} onClick={() => setOpen(!open)} title="Panels and workspaces">
-        Window ▾
-      </button>
-      {open && (
-        <div class="menu-pop wide">
-          <div class="menu-head">Panels</div>
-          {ALL_PANELS.map((p) => {
-            const on = isOpen(p);
-            return (
-              <div key={p} class="menu-item" onClick={() => (on ? setLayout((l) => closePanel(l, p)) : showPanel(p))}>
-                <span class="check">{on ? "✓" : ""}</span>
-                {PANEL_TITLES[p]}
-              </div>
-            );
-          })}
-          <div class="menu-sep" />
-          <div class="menu-head">Workspace</div>
-          {narrow.value && <div class="menu-item disabled">Narrow window: compact layout</div>}
-          {WORKSPACES.map((w) => (
-            <div key={w.id} class="menu-item" onClick={() => (switchWorkspace(w.id), setOpen(false))}>
-              <span class="check">{workspace.value === w.id ? "•" : ""}</span>
-              {w.name}
-            </div>
-          ))}
-          <div class="menu-sep" />
-          <div class="menu-item" onClick={() => (resetWorkspace(), setOpen(false))}>
-            Reset to saved layout
-          </div>
-          {maximized.value && (
-            <div class="menu-item" onClick={() => (maximized.value = null, setOpen(false))}>
-              Restore maximized panel <span class="kbd">`</span>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+const Ico = ({ d }: { d: string }) => (
+  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+    <path d={d} fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+  </svg>
+);
 
 function TopBar({ onConnect }: { onConnect: () => void }) {
   const p = project.value;
@@ -89,53 +46,31 @@ function TopBar({ onConnect }: { onConnect: () => void }) {
   return (
     <div class="topbar">
       <div class="brand" title="MoodCut Home: new project, recent projects, setup" onClick={() => (showHome.value = true)}>
-        <LogoMark size={24} class="brand-mark" />
-        <Wordmark />
+        <LogoMark size={18} class="brand-mark" />
       </div>
-      <button class="btn sm ghost" onClick={async () => {
-        if (!confirmLeave()) return;
-        const name = prompt("Project name", "Untitled");
-        if (name) project_({ action: "new", name, size: "1920x1080", fps: 30 });
-      }}>
-        New
-      </button>
-      <button class="btn sm ghost" title="Open a .mcut project" onClick={async () => {
-        const f = await pickFiles("open", "project");
-        if (f[0] && confirmLeave()) project_({ action: "open", path: f[0] });
-      }}>
-        Open
-      </button>
-      <button class="btn sm ghost" title={projectPath.value ? `Save (Ctrl+S): ${projectPath.value}` : "Save (Ctrl+S): choose where to keep this project"} onClick={() => saveProject()}>
-        Save{dirty.value ? " •" : ""}
-      </button>
-      <button class="btn sm ghost" title="Save As (Ctrl+Shift+S): save a copy under a new name and keep working on it" onClick={() => saveProject(true)}>
-        Save As…
-      </button>
+      <MenuBar onConnect={onConnect} />
       <span class="proj" title={projectPath.value || "not saved to a file yet (autosaved; recover it from Home)"}>
-        {p?.name} <span style={{ color: "var(--faint)" }}>· rev {rev.value}</span>
+        {p?.name}
+        {dirty.value ? " *" : ""} <span class="proj-rev">rev {rev.value}</span>
       </span>
-      <WindowMenu />
       <span class="spacer" />
       <Workspaces />
       <span class="spacer" />
       <button class="btn sm ghost icon" disabled={!undoN.value} title="Undo (Ctrl+Z)" onClick={() => run("undo", true)}>
-        ↶
+        <Ico d="M5.5 4 2.5 7l3 3M3 7h6.5a3.5 3.5 0 0 1 0 7H7" />
       </button>
       <button class="btn sm ghost icon" disabled={!redoN.value} title="Redo (Ctrl+Shift+Z)" onClick={() => run("redo", true)}>
-        ↷
+        <Ico d="M10.5 4l3 3-3 3M13 7H6.5a3.5 3.5 0 0 0 0 7H9" />
       </button>
-      <div class="ai-pill" title="AI edits arrive over MCP and show up live" onClick={onConnect} style={{ cursor: "pointer" }}>
+      <div class="ai-pill" title="AI apps edit over MCP and their edits show up live. Click to connect one." onClick={onConnect}>
         <span class={"ai-dot" + (connected.value ? " live" : "") + (pulse ? " pulse" : "")} />
         {connected.value ? `AI link · ${aiEdits} edit${aiEdits === 1 ? "" : "s"}` : "reconnecting…"}
       </div>
-      <button class="btn sm" onClick={onConnect}>
-        Connect AI
-      </button>
       <button class="btn sm" title="Find problems before exporting (gaps, title-safe, contrast, loudness…)" onClick={() => (showCheck.value = true)}>
         Check
       </button>
-      <button class="btn sm primary" onClick={() => (showRender.value = true)}>
-        Export
+      <button class="btn sm primary" title="Export Media (Ctrl+M)" onClick={() => (showRender.value = true)}>
+        <Ico d="M8 2.5v7.5M5 7l3 3 3-3M3 12.5h10" /> Export
       </button>
     </div>
   );
@@ -167,6 +102,12 @@ export function App() {
       </ErrorBoundary>
       <ErrorBoundary name="Home" floating>
         <Home onConnect={() => setConnect(true)} />
+      </ErrorBoundary>
+      <ErrorBoundary name="AI Services" floating>
+        <AIServices />
+      </ErrorBoundary>
+      <ErrorBoundary name="Keyboard shortcuts" floating>
+        <ShortcutsModal />
       </ErrorBoundary>
       {connect && (
         <ErrorBoundary name="Connect AI" floating>

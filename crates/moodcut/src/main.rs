@@ -8,6 +8,9 @@
 //!   moodcut run        apply a MoodCut Script to a project file
 //!   moodcut doctor     check FFmpeg, encoders, GPU, fonts, speech-to-text
 
+// the MCP tool list is one large json! literal; serde_json's macro recurses per key
+#![recursion_limit = "256"]
+
 pub mod analyze;
 pub mod bench;
 pub mod brand;
@@ -29,7 +32,7 @@ pub mod setup;
 pub mod sfx;
 pub mod shell;
 pub mod tunnel;
-pub mod voice;
+pub mod ai;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};

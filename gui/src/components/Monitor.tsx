@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { placeSource } from "../actions";
+import { liftOrExtract, markWork, placeSource } from "../actions";
 import { attachMeter } from "../meter";
 import { showPanel } from "../dock";
 import { activeId, catalog, comp, createdIds, findItem, fps, mediaById, monitorTab, pausedPlayhead, playhead, playing, project, proxyState, refreshProxies, rev, run, selectedItem, selection, setPlayhead, shapeKind, sourceIn, sourceMedia, sourceOut, sourceT, tool, viewGen } from "../store";
@@ -466,18 +466,13 @@ function SourceBar() {
         {dur > 0 && (a !== null || b !== null) && <div class="src-range" style={{ left: ((a ?? 0) / dur) * 100 + "%", right: (1 - (b ?? dur) / dur) * 100 + "%" }} />}
         <input type="range" min={0} max={Math.max(0.01, dur)} step={1 / f} value={t} disabled={!dur} onInput={(e) => (sourceT.value = parseFloat((e.target as HTMLInputElement).value))} onKeyDown={(e) => e.stopPropagation()} />
       </div>
-      <button class="btn sm" title="Mark In (I)" disabled={!dur} onClick={() => (sourceIn.value = t)}>
-        {"{"} In
-      </button>
-      <button class="btn sm" title="Mark Out (O)" disabled={!dur} onClick={() => (sourceOut.value = t)}>
-        Out {"}"}
-      </button>
-      <button class="btn sm" title="Insert at the playhead, rippling later clips (,)" disabled={!m} onClick={() => placeSource("insert")}>
-        Insert
-      </button>
-      <button class="btn sm" title="Overwrite at the playhead (.)" disabled={!m} onClick={() => placeSource("overwrite")}>
-        Overwrite
-      </button>
+      <div class="transport">
+        <TBtn title="Mark In (I)" d={ICON.markIn} disabled={!dur} onClick={() => (sourceIn.value = t)} />
+        <TBtn title="Mark Out (O)" d={ICON.markOut} disabled={!dur} onClick={() => (sourceOut.value = t)} />
+        <span class="tbtn-sep" />
+        <TBtn title="Insert at the playhead, rippling later clips (,)" d={ICON.insert} disabled={!m} onClick={() => placeSource("insert")} />
+        <TBtn title="Overwrite at the playhead (.)" d={ICON.overwrite} disabled={!m} onClick={() => placeSource("overwrite")} />
+      </div>
       <span class="tc dim">{a !== null || b !== null ? `${fmtNum((b ?? dur) - (a ?? 0), 2)}s` : fmtTC(dur, f)}</span>
     </div>
   );
@@ -645,25 +640,53 @@ export function ProgramMonitor() {
       <div class="mon-bar">
         <Timecode />
         <span style={{ flex: 1 }} />
-        <button class="btn icon ghost" title="Start (Home)" onClick={() => setPlayhead(0)}>
-          ⏮
-        </button>
-        <button class="btn icon ghost" title="Previous frame (←)" onClick={() => step(-1)}>
-          ◀
-        </button>
-        <button class="btn icon" style={{ minWidth: "44px" }} title="Play / pause (Space)" onClick={() => (playing.value = !playing.value)}>
-          {playing.value ? "❚❚" : "▶"}
-        </button>
-        <button class="btn icon ghost" title="Next frame (→)" onClick={() => step(1)}>
-          ▶
-        </button>
-        <button class="btn icon ghost" title="End (End)" onClick={() => setPlayhead(dur)}>
-          ⏭
-        </button>
+        <div class="transport" role="toolbar" aria-label="Program monitor transport">
+          <TBtn title="Add Marker (M)" d={ICON.marker} onClick={() => run(`marker add ${fmtNum(playhead.value, 4)}`, true)} />
+          <TBtn title="Mark In (I)" d={ICON.markIn} onClick={() => markWork("in")} />
+          <TBtn title="Mark Out (O)" d={ICON.markOut} onClick={() => markWork("out")} />
+          <span class="tbtn-sep" />
+          <TBtn title="Go to In (Shift+I)" d={ICON.toIn} onClick={() => setPlayhead(c?.work ? c.work[0] : 0)} />
+          <TBtn title="Step Back 1 Frame (←)" d={ICON.back} onClick={() => step(-1)} />
+          <TBtn title="Play / Stop (Space)" d={playing.value ? ICON.pause : ICON.play} fill cls="play" onClick={() => (playing.value = !playing.value)} />
+          <TBtn title="Step Forward 1 Frame (→)" d={ICON.fwd} onClick={() => step(1)} />
+          <TBtn title="Go to Out (Shift+O)" d={ICON.toOut} onClick={() => setPlayhead(c?.work ? c.work[1] : dur)} />
+          <span class="tbtn-sep" />
+          <TBtn title="Lift: remove In-Out, leave a gap (;)" d={ICON.lift} disabled={!c?.work} onClick={() => liftOrExtract("lift")} />
+          <TBtn title="Extract: remove In-Out and close the gap (')" d={ICON.extract} disabled={!c?.work} onClick={() => liftOrExtract("extract")} />
+        </div>
         <span style={{ flex: 1 }} />
-        <span class="tc dim">{fmtTC(dur, fps.value)}</span>
+        <span class="tc dim" title="Sequence duration">
+          {fmtTC(dur, fps.value)}
+        </span>
       </div>
     </div>
+  );
+}
+
+/** Transport and marking icons, drawn like Premiere Pro's monitor buttons. */
+const ICON = {
+  marker: "M4.5 2.5h7v8L8 13.5l-3.5-3z",
+  markIn: "M5 3v10M5 3h5M5 13h5",
+  markOut: "M11 3v10M11 3H6M11 13H6",
+  toIn: "M3.5 3v10M13 3.5 6.5 8l6.5 4.5z",
+  toOut: "M12.5 3v10M3 3.5 9.5 8 3 12.5z",
+  back: "M11.5 3.5 5 8l6.5 4.5zM4 3.5v9",
+  fwd: "M4.5 3.5 11 8l-6.5 4.5zM12 3.5v9",
+  play: "M5 3l8 5-8 5z",
+  pause: "M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z",
+  lift: "M2.5 11.5h11M8 9.5V3M5.5 5.5 8 3l2.5 2.5",
+  extract: "M2.5 11.5h4M9.5 11.5h4M8 9.5V3M5.5 5.5 8 3l2.5 2.5",
+  insert: "M2.5 12.5h11M8 2.5v7M5.5 7 8 9.5 10.5 7M5 12.5v-2h6v2",
+  overwrite: "M2.5 12.5h11M8 2.5v6M5.5 6 8 8.5 10.5 6M3.5 10.5h9v2h-9z",
+};
+
+function TBtn({ title, d, onClick, disabled, fill, cls }: { title: string; d: string; onClick: () => void; disabled?: boolean; fill?: boolean; cls?: string }) {
+  return (
+    <button class={"tbtn-t" + (cls ? " " + cls : "")} title={title} aria-label={title} disabled={disabled} onClick={onClick}>
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+        <path d={d} fill={fill ? "currentColor" : "none"} stroke="currentColor" stroke-width={fill ? 0 : 1.4} stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
   );
 }
 

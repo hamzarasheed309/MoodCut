@@ -2,7 +2,7 @@ import { useSignalEffect } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { comp, fps, mediaById, playhead, project, rev, run, scrollX, selection, setPlayhead, snapping, tool, zoom } from "../store";
 import type { Comp, Item, Track } from "../types";
-import { clamp, compDuration, fmtNum, fmtShort, isAnimated, itemLabel, kindColor, keyTimes, LABEL_COLORS, speedOf, staticVal } from "../util";
+import { clamp, compDuration, fmtNum, fmtShort, fmtTC, isAnimated, itemLabel, kindColor, keyTimes, LABEL_COLORS, speedOf, staticVal } from "../util";
 
 const RULER = 26;
 const VH = 58;
@@ -65,6 +65,14 @@ type Drag =
   | null;
 
 const fx4 = (v: number) => fmtNum(v, 4);
+
+function HeadIcon({ d }: { d: string }) {
+  return (
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <path d={d} fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  );
+}
 
 /** The playhead is a positioned element over the canvas: moving it never redraws the clips. */
 function PlayheadLine() {
@@ -169,7 +177,7 @@ export function Timeline() {
     const g = cv.getContext("2d")!;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
-    g.fillStyle = "#16161a";
+    g.fillStyle = "#1d1d1d";
     g.fillRect(0, 0, W, H);
     const z = zoom.value;
     const media = mediaById.value;
@@ -179,9 +187,9 @@ export function Timeline() {
     for (const r of rows) {
       const y = RULER + r.y - scrollY;
       if (y > H || y + r.h < RULER) continue;
-      g.fillStyle = r.track.kind === "video" ? "#1c1c22" : "#1a1f1d";
+      g.fillStyle = r.track.kind === "video" ? "#222222" : "#202020";
       g.fillRect(0, y, W, r.h - 1);
-      g.fillStyle = "#24242b";
+      g.fillStyle = "#171717";
       g.fillRect(0, y + r.h - 1, W, 1);
     }
     // comp end shade
@@ -244,59 +252,63 @@ export function Timeline() {
         }
       }
     }
-    // ruler
-    g.fillStyle = "#18181c";
+    // ruler: timecode at the major ticks, like Premiere's
+    g.fillStyle = "#232323";
     g.fillRect(0, 0, W, RULER);
-    g.fillStyle = "#2a2a33";
+    g.fillStyle = "#121212";
     g.fillRect(0, RULER - 1, W, 1);
-    const steps = [1 / c.fps, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-    const major = steps.find((s) => s * z >= 80) || 600;
-    const minor = steps.slice().reverse().find((s) => s < major && s * z >= 8) || major;
+    const fr = 1 / c.fps;
+    const steps = [fr, 2 * fr, 5 * fr, 10 * fr, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600].filter((s) => s >= fr - 1e-9).sort((a, b) => a - b);
+    const major = steps.find((s) => s * z >= 112) || 600;
+    // minor ticks that divide the labelled step evenly, so the labels land on ticks
+    const minor = steps.slice().reverse().find((s) => s < major && s * z >= 9 && Math.abs(major / s - Math.round(major / s)) < 1e-6) || major;
     const t0 = Math.floor(xToT(0) / minor) * minor;
-    g.font = "10px Inter, system-ui";
+    g.font = "10px 'Segoe UI', Inter, system-ui";
     for (let t = t0; tToX(t) < W; t += minor) {
       const x = Math.round(tToX(t)) + 0.5;
       const isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
-      g.strokeStyle = isMajor ? "#55556a" : "#33333f";
+      g.strokeStyle = isMajor ? "#7a7a7a" : "#454545";
       g.beginPath();
-      g.moveTo(x, isMajor ? 10 : 17);
+      g.moveTo(x, isMajor ? 12 : 18);
       g.lineTo(x, RULER - 1);
       g.stroke();
       if (isMajor) {
-        g.fillStyle = "#8a8a9a";
-        g.fillText(fmtShort(Math.max(0, t)), x + 3, 11);
+        g.fillStyle = "#a9a9a9";
+        g.fillText(z * major >= 112 ? fmtTC(Math.max(0, t), c.fps) : fmtShort(Math.max(0, t)), x + 3, 10);
       }
     }
-    // work area (sequence in/out)
+    // work area (sequence In/Out): a light band in the ruler, a lighter tint over the tracks
     const wa = d && d.mode === "work" ? [Math.min(d.t0, d.t1), Math.max(d.t0, d.t1)] : c.work;
     if (wa) {
       const [xa, xb] = [tToX(wa[0]), tToX(wa[1])];
-      g.fillStyle = "rgba(139,124,246,0.55)";
+      g.fillStyle = "rgba(200,200,200,0.45)";
       g.fillRect(xa, RULER - 6, Math.max(2, xb - xa), 5);
-      g.fillStyle = "rgba(139,124,246,0.06)";
+      g.fillStyle = "rgba(255,255,255,0.035)";
       g.fillRect(xa, RULER, Math.max(2, xb - xa), H);
     }
     for (const m of c.markers || []) {
       const x = tToX(m.t);
       if (m.dur && m.dur > 0) {
-        g.fillStyle = (m.color || "#fbbf24") + "88";
+        g.fillStyle = (m.color || "#58b54d") + "88";
         g.fillRect(x, RULER - 4, m.dur * z, 3);
       }
       if (x < -20 || x > W) continue;
-      g.fillStyle = m.color || "#fbbf24";
+      g.fillStyle = m.color || "#58b54d";
       g.beginPath();
-      g.moveTo(x - 5, RULER - 9);
-      g.lineTo(x + 5, RULER - 9);
-      g.lineTo(x, RULER - 2);
+      g.moveTo(x - 5, RULER - 10);
+      g.lineTo(x + 5, RULER - 10);
+      g.lineTo(x + 5, RULER - 5);
+      g.lineTo(x, RULER - 1);
+      g.lineTo(x - 5, RULER - 5);
       g.fill();
       if (m.name && z > 20) {
-        g.fillStyle = "#c9a33a";
-        g.fillText(m.name, x + 6, RULER - 3);
+        g.fillStyle = "#b7dcb3";
+        g.fillText(m.name, x + 7, RULER - 3);
       }
     }
     // razor hover line
     if (tool.value === "razor" && hover) {
-      g.strokeStyle = "#fbbf24";
+      g.strokeStyle = "#e8e8e8";
       g.setLineDash([4, 3]);
       g.beginPath();
       g.moveTo(hover.x + 0.5, RULER);
@@ -313,7 +325,7 @@ export function Timeline() {
     g.save();
     g.globalAlpha = it.off ? 0.35 : ghost ? 0.75 : 1;
     g.beginPath();
-    g.roundRect(x, y, w, h, 5);
+    g.roundRect(x, y, w, h, 3);
     g.fillStyle = base;
     g.fill();
     g.clip();
@@ -357,11 +369,11 @@ export function Timeline() {
         } else g.drawImage(im, x, y + 12, shown, h - 12);
       }
     }
-    // label
-    g.fillStyle = "rgba(0,0,0,0.35)";
+    // label: the clip's name on a darker band of its label color
+    g.fillStyle = "rgba(0,0,0,0.3)";
     g.fillRect(x, y, w, 14);
     g.fillStyle = "#fff";
-    g.font = "600 10.5px Inter, system-ui";
+    g.font = "600 10.5px 'Segoe UI', Inter, system-ui";
     const label = itemLabel(it, it.kind === "comp" ? project.value?.comps.find((c) => c.id === it.src)?.name : m?.name);
     const sp = speedOf(it);
     const extra = (sp !== 1 ? ` ${sp}x` : "") + (staticVal(it.props?.reverse) ? " ⟲" : "") + ((it.fx || []).length ? " ƒ" : "");
@@ -371,7 +383,7 @@ export function Timeline() {
       const kt = new Set<number>();
       for (const a of Object.values(it.props || {})) if (isAnimated(a)) keyTimes(a).forEach((t) => kt.add(t));
       for (const e of it.fx || []) for (const a of Object.values(e.props || {})) keyTimes(a).forEach((t) => kt.add(t));
-      g.fillStyle = "#ffd60a";
+      g.fillStyle = "#ededed";
       for (const t of kt) {
         if (t < 0 || t > it.dur) continue;
         const kx = x + t * zoom.value;
@@ -385,8 +397,8 @@ export function Timeline() {
     }
     g.restore();
     g.beginPath();
-    g.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 5);
-    g.strokeStyle = selected ? "#fff" : "rgba(0,0,0,0.5)";
+    g.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 3);
+    g.strokeStyle = selected ? "#ffffff" : "rgba(0,0,0,0.55)";
     g.lineWidth = selected ? 2 : 1;
     g.stroke();
     g.lineWidth = 1;
@@ -396,10 +408,10 @@ export function Timeline() {
     g.save();
     g.beginPath();
     g.roundRect(x, y + h * 0.35, w, h * 0.5, 4);
-    g.fillStyle = "rgba(255,255,255,0.85)";
+    g.fillStyle = "rgba(214,214,226,0.9)";
     g.fill();
     g.clip();
-    g.strokeStyle = "rgba(139,124,246,0.6)";
+    g.strokeStyle = "rgba(96,96,130,0.45)";
     for (let i = -h; i < w; i += 6) {
       g.beginPath();
       g.moveTo(x + i, y + h);
@@ -645,9 +657,11 @@ export function Timeline() {
     e.preventDefault();
     const rect = canvasRef.current!.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    if (e.ctrlKey || e.metaKey) {
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      // zoom around the pointer (Premiere: Alt+wheel); smooth for trackpads, steady for wheels
       const t = xToT(x);
-      const nz = clamp(zoom.value * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 2, 3000);
+      const f = Math.abs(e.deltaY) < 40 ? Math.pow(1.0035, -e.deltaY) : e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const nz = clamp(zoom.value * f, 2, 3000);
       zoom.value = nz;
       scrollX.value = Math.max(0, t * nz - x);
     } else if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
@@ -685,29 +699,34 @@ export function Timeline() {
     else if (x < 0) scrollX.value = Math.max(0, t * z - 40);
   });
 
+  // the track holding the selected clip is the "targeted" one (Premiere's blue track name)
+  const lastSel = selection.value[selection.value.length - 1];
   const heads = rows.map((r) => {
     const t = r.track;
     const top = RULER + r.y - scrollY;
+    const target = !!lastSel && t.items.some((i) => i.id === lastSel);
     return (
       <div class="tl-head" style={{ top: top + "px", height: r.h + "px" }} key={t.id}>
-        <b style={{ color: t.kind === "video" ? "#8fb3ff" : "#7fe0b3" }}>{t.id}</b>
+        <span class={"tid" + (target ? " target" : "")} title={`${t.kind === "video" ? "Video" : "Audio"} track ${t.id}${target ? " (holds the selected clip)" : ""}`}>
+          {t.id}
+        </span>
+        <span class={"tbtn lock" + (t.locked ? " on" : "")} title={t.locked ? "Unlock track" : "Lock track"} onClick={() => run(`track set ${t.id} lock=${t.locked ? 0 : 1}`, true)}>
+          <HeadIcon d={t.locked ? "M5 7V5a3 3 0 0 1 6 0v2M4 7h8v6H4z" : "M5 7V5a3 3 0 0 1 5.6-1.5M4 7h8v6H4z"} />
+        </span>
         {t.kind === "video" && (
-          <span class={"tbtn" + (t.hidden ? " on" : "")} title="Hide track" onClick={() => run(`track set ${t.id} hidden=${t.hidden ? 0 : 1}`, true)}>
-            {t.hidden ? "◌" : "◉"}
+          <span class={"tbtn eye" + (t.hidden ? " on" : "")} title={t.hidden ? "Show track output" : "Toggle track output (hide)"} onClick={() => run(`track set ${t.id} hidden=${t.hidden ? 0 : 1}`, true)}>
+            <HeadIcon d={t.hidden ? "M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4zM3 13 13 3" : "M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4zM8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 1 0 0-3"} />
           </span>
         )}
-        <span class={"tbtn" + (t.muted ? " on" : "")} title="Mute" onClick={() => run(`track set ${t.id} mute=${t.muted ? 0 : 1}`, true)}>
+        <span class={"tbtn mute" + (t.muted ? " on" : "")} title={t.muted ? "Unmute" : "Mute track"} onClick={() => run(`track set ${t.id} mute=${t.muted ? 0 : 1}`, true)}>
           M
         </span>
         {t.kind === "audio" && (
-          <span class={"tbtn" + (t.solo ? " on" : "")} title="Solo" onClick={() => run(`track set ${t.id} solo=${t.solo ? 0 : 1}`, true)}>
+          <span class={"tbtn solo" + (t.solo ? " on" : "")} title={t.solo ? "Unsolo" : "Solo track"} onClick={() => run(`track set ${t.id} solo=${t.solo ? 0 : 1}`, true)}>
             S
           </span>
         )}
-        <span class={"tbtn" + (t.locked ? " on" : "")} title="Lock" onClick={() => run(`track set ${t.id} lock=${t.locked ? 0 : 1}`, true)}>
-          {t.locked ? "🔒" : "🔓"}
-        </span>
-        <span style={{ color: "#6d6d7c", fontSize: "11px", marginLeft: "auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name || (t.duck ? "ducked" : "")}</span>
+        <span class="tname">{t.name || (t.duck ? "ducked" : "")}</span>
       </div>
     );
   });
@@ -715,12 +734,12 @@ export function Timeline() {
   return (
     <div class="tl-body">
       <div class="tl-heads">
-        <div style={{ height: RULER + "px", borderBottom: "1px solid var(--line)", display: "flex", alignItems: "center", gap: "4px", padding: "0 6px" }}>
-          <button class="btn sm ghost" title="Add video track" onClick={() => run("track add V", true)}>
-            +V
+        <div class="tl-heads-top" style={{ height: RULER + "px" }}>
+          <button class="btn sm ghost" title="Add a video track" onClick={() => run("track add V", true)}>
+            + Video
           </button>
-          <button class="btn sm ghost" title="Add audio track" onClick={() => run("track add A", true)}>
-            +A
+          <button class="btn sm ghost" title="Add an audio track" onClick={() => run("track add A", true)}>
+            + Audio
           </button>
         </div>
         {heads}

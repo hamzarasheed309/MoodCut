@@ -122,23 +122,25 @@ export const LABEL_COLORS: Record<string, string> = {
   gray: "#7b7b88",
 };
 
+/** Default clip colors, after Premiere Pro's labels: video Violet, audio Caribbean, graphics
+ * Rose, color mattes Mango, adjustment layers Iris, nested sequences Forest. */
 export function kindColor(kind: string, trackKind: string): string {
-  if (trackKind === "audio") return "#2f9e6e";
+  if (trackKind === "audio") return "#2a9d78";
   switch (kind) {
     case "clip":
-      return "#3d6fd6";
+      return "#7d74d6";
     case "text":
-      return "#9a55e0";
+      return "#c46aaa";
     case "shape":
-      return "#e08a2e";
+      return "#b25fb8";
     case "solid":
-      return "#b0485f";
+      return "#c98a35";
     case "adjust":
-      return "#6b7280";
+      return "#5f6fbf";
     case "comp":
-      return "#1f9aa6";
+      return "#3f8a4d";
     case "null":
-      return "#5b5b6b";
+      return "#666670";
     case "camera":
       return "#4b6584";
     default:

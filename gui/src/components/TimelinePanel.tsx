@@ -2,16 +2,27 @@
 // canvas timeline. When the Tools panel is closed the timeline carries its own tool strip.
 import { fitTimeline, liftOrExtract, markWork, splitAtPlayhead } from "../actions";
 import { isOpen } from "../dock";
-import { comp, playhead, run, tool, zoom } from "../store";
-import { compDuration, fmtNum } from "../util";
+import { comp, fps, playhead, run, tool, zoom } from "../store";
+import { compDuration, fmtNum, fmtTC } from "../util";
 import { Timeline } from "./Timeline";
 import { ToolsPanel, toolName } from "./Tools";
+
+/** The playhead's timecode in blue at the timeline's top left, as in Premiere (only this
+ * re-renders while playing). */
+function PlayheadTC() {
+  return (
+    <span class="tl-tc" title="Playhead position (hours:minutes:seconds:frames)">
+      {fmtTC(playhead.value, fps.value)}
+    </span>
+  );
+}
 
 function TimelineToolbar() {
   const c = comp.value;
   const w = c?.work;
   return (
     <div class="tl-toolbar">
+      <PlayheadTC />
       <span class="tool-name" title="Current tool (see the Tools strip on the left)">{toolName(tool.value)}</span>
       <button class="btn sm" title="Split selected / all at playhead (Ctrl+K)" onClick={splitAtPlayhead}>
         Split

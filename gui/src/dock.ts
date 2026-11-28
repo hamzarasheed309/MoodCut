@@ -22,7 +22,9 @@ export type PanelId =
   | "character"
   | "brand"
   | "tracker"
-  | "voice";
+  | "voice"
+  | "aivideo"
+  | "meters";
 
 export const PANEL_TITLES: Record<PanelId, string> = {
   project: "Project",
@@ -44,6 +46,8 @@ export const PANEL_TITLES: Record<PanelId, string> = {
   brand: "Brand Kit",
   tracker: "Tracker",
   voice: "AI Voice",
+  aivideo: "AI Video",
+  meters: "Audio Meters",
 };
 
 export const ALL_PANELS = Object.keys(PANEL_TITLES) as PanelId[];
@@ -86,8 +90,9 @@ export const g = (panels: PanelId[], active?: PanelId): Group => ({ t: "group", 
 const row = (kids: Node[], sizes: number[]): Split => ({ t: "split", id: nid("s"), dir: "row", kids, sizes });
 const col = (kids: Node[], sizes: number[]): Split => ({ t: "split", id: nid("s"), dir: "col", kids, sizes });
 
-/** Bottom of most workspaces: Tools | Timeline. */
-const editBottom = (left: PanelId[] | null) => row(left ? [g(left), g(["tools"]), g(["timeline"])] : [g(["tools"]), g(["timeline"])], left ? [0.26, 0, 0.74] : [0, 1]);
+/** Bottom of most workspaces, as in Premiere Pro: [panels] | Tools | Timeline | Audio Meters. */
+const editBottom = (left: PanelId[] | null) =>
+  row(left ? [g(left), g(["tools"]), g(["timeline"]), g(["meters"])] : [g(["tools"]), g(["timeline"]), g(["meters"])], left ? [0.26, 0, 0.74, 0] : [0, 1, 0]);
 
 export const WORKSPACES: { id: string; name: string; desc: string; build: () => Layout }[] = [
   {
@@ -101,7 +106,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
     name: "Editing",
     desc: "Premiere Pro's default: Source and Program monitors over the timeline",
     build: () => ({
-      root: col([row([g(["source", "controls", "lumetri", "essential", "mixer", "voice"], "controls"), g(["program"])], [0.5, 0.5]), editBottom(["project", "effects", "markers", "history", "ai"])], [0.56, 0.44]),
+      root: col([row([g(["source", "controls", "lumetri", "essential", "mixer", "voice", "aivideo"], "controls"), g(["program"])], [0.5, 0.5]), editBottom(["project", "effects", "markers", "history", "ai"])], [0.56, 0.44]),
       floats: [],
     }),
   },
@@ -159,9 +164,9 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
   {
     id: "ai",
     name: "AI",
-    desc: "The AI console beside the Program monitor, with History to review its edits",
+    desc: "AI Video, AI Voice and the AI console beside the Program monitor, with History to review AI edits",
     build: () => ({
-      root: col([row([g(["ai", "voice", "project"]), g(["program"]), g(["controls", "history", "markers"])], [0.3, 0.45, 0.25]), editBottom(null)], [0.62, 0.38]),
+      root: col([row([g(["aivideo", "voice", "ai", "project"], "aivideo"), g(["program"]), g(["controls", "history", "markers"])], [0.32, 0.43, 0.25]), editBottom(null)], [0.62, 0.38]),
       floats: [],
     }),
   },
@@ -170,7 +175,7 @@ export const WORKSPACES: { id: string; name: string; desc: string; build: () => 
 /** Narrow windows (phones, split screens): one column of tabs. */
 function compactLayout(): Layout {
   return {
-    root: col([g(["program", "source", "scopes"]), g(["timeline"]), g(["controls", "project", "effects", "lumetri", "essential", "mixer", "ai", "markers", "history", "character", "brand", "align", "tracker", "voice", "tools"])], [0.42, 0.33, 0.25]),
+    root: col([g(["program", "source", "scopes"]), g(["timeline"]), g(["controls", "project", "effects", "lumetri", "essential", "mixer", "ai", "markers", "history", "character", "brand", "align", "tracker", "voice", "aivideo", "tools"])], [0.42, 0.33, 0.25]),
     floats: [],
   };
 }
@@ -349,7 +354,8 @@ export function resize(l: Layout, splitId: string, sizes: number[]): Layout {
 
 // ---------------------------------------------------------------- state + persistence
 
-const KEY = "moodcut.dock.v1";
+// v2: Premiere-style layouts with Audio Meters and AI Video (older saved arrangements are reset once)
+const KEY = "moodcut.dock.v2";
 
 function load(): { ws: string; saved: Record<string, Layout> } {
   try {

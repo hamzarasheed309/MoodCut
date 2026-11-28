@@ -117,54 +117,48 @@ WebSocket notice cost one fetch.
   titles, inconsistent type, missing brand or captions, length. Their suggestions are printed as `try:` and are
   never applied by `fix=true`.
 
-## AI voice (`src/voice.rs`, `src/voice/`, `assets/omnivoice_worker.py`, `components/VoicePanel.tsx`)
+## AI services (`src/ai.rs`, `src/ai/`, `components/VoicePanel.tsx`, `components/VideoPanel.tsx`, `components/aiui.tsx`)
 
-The AI Voice panel clones a voice from a few seconds of speech and speaks scripts with it, using OmniVoice
-(`k2-fsa/OmniVoice`, a 0.6B zero-shot TTS model) on the person's own computer. MoodCut stays one Rust binary:
-OmniVoice is Python (PyTorch), so it runs in an environment of its own.
+AI Voice and AI Video run on cloud APIs with the person's own accounts; nothing is installed or run locally beyond
+the requests (1.3.x ran OmniVoice in a local Python environment; 1.4.0 removed it).
 
-- **Finding the model.** The saved location (`settings.json` → `omnivoice`), `MOODCUT_OMNIVOICE_MODEL`,
-  `<drive>\MoodCut\OmniVoice` on every fixed drive, usual model folders and the Hugging Face caches. A model folder
-  counts when it has `config.json`, `tokenizer.json`, `model.safetensors` and `audio_tokenizer/model.safetensors`.
-  When nothing is found the panel offers **Locate** (a model folder, an install folder or an HF cache) or **Download**.
-- **Installing.** The person picks a drive (the panel lists fixed and removable drives with their free space) or a
-  folder; everything goes into `<drive>\MoodCut\OmniVoice`: `model/` (about 3.3 GB, downloaded file by file from
-  Hugging Face with curl, resumable), `tools/uv`, a uv-managed Python 3.12 and `env/` with PyTorch 2.8 (CUDA 12.8 or
-  12.6 wheels picked from the NVIDIA driver, CPU otherwise) and `omnivoice`, plus `hf/` as `HF_HOME` for the Whisper
-  model OmniVoice downloads the first time a voice is cloned without a transcript. uv's cache is kept on that drive
-  and removed afterwards; Python is installed with `--no-bin --no-registry`, so nothing lands outside that folder. A
-  free-space check runs first, a cancelled install continues where it stopped, and the setup ends with the worker's
-  `--check` (imports, device) and `--selftest` (its audio and text helpers). **Repair** runs the same steps over what is
-  there (no model download).
-- **Running** (`voice/worker.rs`). `omnivoice_worker.py` (embedded in the binary, written next to the environment)
-  loads the model once at below-normal priority and answers JSON lines on stdin/stdout (`clone`, `generate`, `info`),
-  sending progress lines while a request runs: a forward hook counts the diffusion steps and a wrapper around OmniVoice's
-  text chunker gives the part count, so long scripts report "part 2 of 3"; Whisper's first download is measured from
-  its cache folder. Its stdout is redirected to stderr so library prints can't be taken for replies. It runs without
-  autograd (`inference_mode`, parameters frozen), caps PyTorch at 92% of the GPU's memory so it fails fast instead of
-  spilling into shared system memory, leaves two CPU cores free, and retries once after an out-of-memory error. It is
-  stopped after ten idle minutes. Starting it also repairs an environment whose folder was moved (uv's launchers keep
-  absolute paths) and installs packages newer versions need (`RUNTIME_REV`).
-- **Tasks and errors** (`voice/tasks.rs`). Clone, transcript fixes and speech are queued tasks run one at a time, with a
-  fraction, a stage and elapsed time; the editor polls `/api/voice` while one runs and hears `voice` events. A failure is
-  explained in plain words with what to do and the button that helps (Retry or Repair), and keeps the technical text
-  (the worker's traceback) for Details.
-- **Voices** live in the install folder (`voices/<id>/`: `ref.wav`, the encoded `prompt.pt` and `voice.json`), so they
-  work in every project. Without an end time, the reference is the best 3-12 s of speech in the first 30 s, found by a
-  frame-energy speech detector (noise floor from the live frames, speech within 30 dB of the loud parts) and cut at
-  pauses. FFmpeg removes rumble (and, when asked, steady noise). Whisper runs on the GPU when there is room next to
-  OmniVoice, otherwise on the CPU, and is released after each clone; a wrong transcript can be corrected, which encodes
-  the voice again. Cloning asks for the speaker's consent.
-- **Speech** is written next to the project's graphics (`<project> assets/voice/`), one WAV per paragraph and take
-  (takes differ by seed; the seed is kept in the note), numbers read as words (num2words) and the voiced parts brought
-  to about -16 LUFS. It is imported in one undoable edit: `import … tag=voice as=…`, `note $ '<script>'` and, when
-  asked, `add … at=<time>` for the first take of each part.
-- **AI apps** drive the same setup, voices and tasks through the `voice` MCP tool (status, speak, clone,
-  retranscribe, setup, repair…), which waits for a task and answers with media and clip ids or the explained error;
-  `help voice` is its guide.
-
-The model weights are CC BY-NC 4.0 (non-commercial) and the audio tokenizer is under the Boson Higgs Audio 2 Community
-License; the panel says so before downloading.
+- **Keys** (`ai/keys.rs`). ElevenLabs, Runway and fal.ai. A key pasted in the editor (Edit > AI Services, or a panel's
+  Connect card) is tested at once and saved in `settings.json` → `ai_keys`, encrypted with Windows DPAPI for the
+  current user (`dpapi:<base64>`; other systems only encode it). Without a saved key the environment is read
+  (`ELEVENLABS_API_KEY`, `RUNWAYML_API_SECRET`, `FAL_KEY`). The editor and AI apps only ever see whether a key is set,
+  where it came from and its last characters; `/api/ai/services` is local-only.
+- **HTTP** (`ai/http.rs`). Requests go through curl (built into Windows 10+). The URL and headers (keys) are written to
+  curl's stdin as a config file (`-K -`), never its command line; JSON bodies go through a temporary file. Requests can
+  be cancelled; downloads report bytes and follow redirects without sending keys. An HTTP error becomes an `ApiError`
+  with the provider's code and message, read from every shape the providers use.
+- **Tasks** (`ai/tasks.rs`). Voice and video work are queued tasks in two lanes (voice one at a time, video three at
+  once). Each has a stage, a fraction (the provider's own when it reports one, otherwise an estimate from the model's
+  usual time, flagged `estimated`, with the seconds probably left), elapsed time and cost. Cancel also stops the job at
+  the provider; Retry reruns it with the same settings. `explain()` turns failures into a message, what to do, and the
+  button that fixes it (`keys` opens AI Services, `billing` the provider's page, `retry`), keeping the raw text for
+  Details: rejected key, out of credits or characters, plan can't clone, no voice slot, rate limits and plan limits of
+  jobs at once, provider outages, content filters, settings a model doesn't take, network problems. The editor polls
+  `/api/voice` and `/api/video` while work runs and hears `voice` / `video` events ("done …" / "failed …").
+- **Voice** (`ai/voice.rs`, ElevenLabs). Voices come from `GET /v2/voices` (the person's own first, then the library),
+  the plan from `/v1/user/subscription`. Speech: `POST /v1/text-to-speech/{voice}` per paragraph and take (the model,
+  language code where the model takes one, stability/similarity/style/speed, a seed per take, neighbouring paragraphs
+  for continuity on models that use them), MP3 converted by FFmpeg to 48 kHz WAV with optional loudnorm to -16 LUFS in
+  `<project> assets/voice/`, imported as one undoable edit (`import … tag=voice`, `note $`, optional `add … at=`).
+  Cloning cuts the reference (In/Out or up to two minutes) with FFmpeg and sends it to `POST /v1/voices/add`, with
+  the speaker's consent. Rename and delete work on the person's own voices.
+- **Video** (`ai/video.rs`, Runway and fal.ai). A curated catalog (`MODELS`) describes each model: its provider
+  model or endpoint for text and image to video, durations, sizes (aspect and resolution, mapped to Runway ratios or
+  fal resolution values), sound, negative prompt, seed, last frame, prompt length and usual time; `body_of` writes the
+  provider's request shape (Runway's per-model unions on `/v1/text_to_video` and `/v1/image_to_video`; each fal model's
+  own fields on `queue.fal.run`), and `params` adds any provider field. First and last frames are data URIs: the
+  Program monitor's frame (rendered by the engine), a project still or video frame, or a file (FFmpeg scales anything
+  over 1920 px). A job is followed by polling (`/v1/tasks/{id}` every 5 s; fal's `status_url` every 3 s with queue
+  position), downloaded to `<project> assets/ai-video/`, and imported as one edit (`import … tag=ai-video`, the prompt
+  and model as the note, optional `add … [V2] at=`). Submitted jobs are written to `ai-video-jobs.json` in the data
+  folder and picked up again on the next start, since they keep running (and costing) at the provider.
+- **AI apps** use the same keys, voices, models and tasks through the `voice` and `video` MCP tools. They wait for a
+  result (video up to four minutes, then `wait id=`), answer with media and clip ids or the explained error, and never
+  take keys: without one they ask the person to add it in the editor. `help voice` and `help video` are their guides.
 
 ## Data model (`src/model`)
 
@@ -435,9 +429,12 @@ crates/moodcut/src/
   gfx.rs           HTML motion graphics: browser discovery, DevTools client, asset server, frame capture, page building
   gfx/fields.rs    editable fields: HTML scanner, placeholders, context escaping, manifest, make-editable
   sfx.rs           procedural sound effects (synthesis, WAV writer)
-  voice.rs         AI voice: OmniVoice discovery, drive picker, installer and repair (uv, PyTorch), /api/voice
-  voice/worker.rs  the Python worker process: start, self-repair, progress, idle unload
-  voice/tasks.rs   clone / fix transcript / speak tasks, plain-language errors, the `voice` MCP tool
+  ai.rs            AI services: /api/ai/services (keys), shared helpers
+  ai/keys.rs       API keys: DPAPI-encrypted settings or environment, masked status
+  ai/http.rs       curl requests with keys on stdin, cancel, downloads, provider error parsing
+  ai/tasks.rs      voice/video task lanes, progress and estimates, cancel/retry, plain-language errors
+  ai/voice.rs      ElevenLabs: voices, plan, clone, speech, /api/voice, the `voice` MCP tool
+  ai/video.rs      Runway and fal.ai: model catalog, frames, jobs, resume, /api/video, the `video` MCP tool
   check.rs         measured quality check, expectations, fixes
   export.rs        SRT / WebVTT / YouTube chapters / FCP7 XML / CMX3600 EDL
   tunnel.rs        remote token, cloudflared quick tunnel, connector instructions

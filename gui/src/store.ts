@@ -45,8 +45,14 @@ export const graphicEditor = signal<null | { id?: string; item?: string }>(null)
 /** Preview proxies (Premiere's Toggle Proxies): status per media and the on/off switch. */
 export type ProxyState = { enabled: boolean; mode: string; summary: string; media: Record<string, string>; busy: boolean };
 export const proxyState = signal<ProxyState | null>(null);
-/** Bumped by the engine's "voice" events (AI voice setup and tasks): the AI Voice panel reloads. */
+/** Bumped by the engine's "voice" events (AI voice tasks): the AI Voice panel reloads. */
 export const voiceTick = signal(0);
+/** Bumped by the engine's "video" events (AI video jobs): the AI Video panel reloads. */
+export const videoTick = signal(0);
+/** The AI Services window (API keys): open, focused on a service id ("" for none), or closed (null). */
+export const showServices = signal<string | null>(null);
+/** Bumped when a key is added or removed, so the AI panels reload. */
+export const servicesTick = signal(0);
 /** Bumped when previews of the same revision may look different (a proxy finished, proxies toggled). */
 export const viewGen = signal(0);
 export const fileBrowser = signal<null | { kind: "open" | "save" | "import" | "folder"; filter: string; resolve: (p: string[]) => void }>(null);
@@ -328,6 +334,12 @@ export function connectWS() {
         toast(e.text, true, 20000);
       } else if (e.kind === "voice") {
         voiceTick.value++;
+      } else if (e.kind === "video") {
+        videoTick.value++;
+        // a finished or failed job is news even when the panel is hidden ("done <label>: <result>")
+        const t: string = e.text || "";
+        const m = /^(done|failed) (.*)$/s.exec(t);
+        if (m && !t.endsWith("Cancelled.")) toast(`AI video · ${m[2]}`, m[1] === "failed", 10000);
       } else if (e.kind === "proxy") {
         viewGen.value++;
         refreshProxies();
